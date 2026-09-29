@@ -1,0 +1,15 @@
+# mise — voila dev toolchain.
+# Run `mise install` to provision everything pinned below (versions + checksums
+# are locked in mise.lock). See doc/DEV_SETUP.md for the full Mac/Linux setup.
+
+[tools]
+go = "1.26.2"
+# Codegen tools used by `make proto` (buf.gen.yaml runs these as local plugins).
+# Installed via mise's `go:` backend so a single `mise install` provisions the
+# whole toolchain reproducibly — no separate `go install` step required.
+"go:github.com/bufbuild/buf/cmd/buf" = "1.71.0"
+"go:google.golang.org/protobuf/cmd/protoc-gen-go" = "1.36.11"
+"go:google.golang.org/grpc/cmd/protoc-gen-go-grpc" = "1.6.2"
+# OpenAPI spec linter used by `make spec` (vacuum, from the pb33f ecosystem —
+# the same libopenapi parser the contract test uses).
+"go:github.com/daveshanley/vacuum" = "0.16.3"

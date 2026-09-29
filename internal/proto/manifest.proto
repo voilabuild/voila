@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package voila.v1;
+
+option go_package = "voila/internal/proto;voilapb";
+
+message File {
+  uint64 inode = 1;
+  uint32 mode = 2;             // st_mode
+  uint32 uid = 3;
+  uint32 gid = 4;
+  uint64 size = 5;             // explicit logical size (covers sparse tails)
+  uint64 mtime_ns = 6;
+  uint32 nlink = 7;            // >1 when hardlinked
+  map<string, bytes> xattrs = 8;
+  repeated Block blocks = 9;   // ordered; sparse holes = len-only Block with empty chunk_id
+}
+message Block {
+  uint64 offset_in_file = 1;   // multiple of 1 MiB
+  bytes  chunk_id = 2;         // 32-byte BLAKE3 of raw content (compression is store-internal)
+  uint64 logical_len = 3;
+}
+message Dir {
+  uint64 inode = 1;
+  uint32 mode = 2;
+  uint32 uid = 3;
+  uint32 gid = 4;
+  uint64 mtime_ns = 5;
+  map<string, uint64> entries = 6;   // name -> child inode
+}
+message Symlink { uint64 inode = 1; string target = 2; uint32 uid = 3; uint32 gid = 4; }
+message Device  { uint64 inode = 1; uint32 mode = 2; uint32 uid = 3; uint32 gid = 4;
+                  uint32 rdev_major = 5; uint32 rdev_minor = 6;
+                  bool is_char = 7; }  // true = char device, false = block device
+
+// Hardlink is a SYMBOLIC cross-layer hardlink, present only in per-layer
+// provenance manifests (which must be pure functions of their layer tar; the
+// link target may live in a lower layer this manifest cannot see). Merged
+// manifests never contain Hardlink entries — the merge resolves them to
+// shared inodes (two Dir entries pointing at one File).
+message Hardlink {
+  uint64 inode = 1;
+  string target_path = 2;  // cleaned path, relative to rootfs
+}
+
+message Manifest {
+  repeated Dir dirs = 1;
+  map<uint64, File> files = 2;
+  map<uint64, Symlink> symlinks = 3;
+  map<uint64, Device> devices = 4;
+  map<uint64, bytes> external_subtrees = 5;  // dir inode -> chunk ID of child Manifest
+  map<uint64, Hardlink> hardlinks = 6;       // per-layer manifests only; empty in merged
+}

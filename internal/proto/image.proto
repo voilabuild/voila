@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package voila.v1;
+
+option go_package = "voila/internal/proto;voilapb";
+
+message ImageManifest {
+  string image_ref = 1;                       // "python:3.13" or hash
+  bytes  image_digest = 2;
+  bytes  config_chunk = 3;                    // original OCI config.json stored as a chunk
+  bytes  merged_root_manifest_chunk = 4;      // what the mount daemon walks
+  repeated Layer provenance_layers = 5;       // lower -> upper, kept for debug
+  uint64 total_size = 6;                      // ingest bytes-in (feeds fetch-stats %)
+  uint64 chunk_count = 7;                     // ingest chunk count (feeds fetch-stats %)
+}
+message Layer {
+  bytes  root_manifest_chunk = 1;
+  uint64 whiteouts_count = 2;
+}

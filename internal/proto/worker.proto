@@ -1,0 +1,188 @@
+syntax = "proto3";
+
+package voila.v1;
+
+option go_package = "voila/internal/proto;voilapb";
+
+// Worker is the daemon-side control/IO surface (plan §8). v0.1 serves it over
+// a local Unix-domain socket; Phase 3 exposes the same service over TCP+TLS.
+service Worker {
+  // Run launches a context. First client message MUST be RunSpec; subsequent
+  // messages carry stdin. First server message is the context id; then
+  // stdout/stderr data; the final message is the exit code.
+  rpc Run(stream RunInput) returns (stream RunOutput);
+
+  // Exec starts an additional process in a running context. Same message
+  // discipline as Run.
+  rpc Exec(stream ExecInput) returns (stream ExecOutput);
+
+  // Events streams lifecycle transitions. Clients subscribe, never poll.
+  rpc Events(EventsRequest) returns (stream Event);
+
+  // Logs replays the context's ring buffer and (optionally) follows.
+  rpc Logs(LogsRequest) returns (stream LogChunk);
+
+  rpc List(ListRequest) returns (ListResponse);
+  rpc Kill(KillRequest) returns (KillResponse);
+
+  // SetRegistry hands registry URL + bearer token from the CLI to the daemon.
+  // The CLI calls this over the local socket (and persists the same values to
+  // <root>/registry.creds) so voilad can lazy-fetch and auto-pull without
+  // $VOILA_REGISTRY_TOKEN in the daemon's environment.
+  rpc SetRegistry(SetRegistryRequest) returns (SetRegistryResponse);
+
+  // BuildRun executes one Dockerfile RUN step: mounts the parent image with a
+  // writable overlay, runs argv in a throwaway container, snapshots the overlay
+  // upper into a layer manifest chunk, and returns it. First client message
+  // MUST be BuildRunSpec; stdout/stderr stream back; terminal message carries
+  // exit_code and (on success) layer_manifest_chunk.
+  rpc BuildRun(stream BuildRunInput) returns (stream BuildRunOutput);
+}
+
+message RunSpec {
+  string image = 1;                  // ref or unique digest prefix
+  repeated string args = 2;          // argv override; empty = image entrypoint/cmd
+  int64  memory_limit_bytes = 3;     // 0 = unlimited
+  int32  cpu_quota_percent = 4;      // 100 = one core; 0 = unlimited
+  bool   attach_stdin = 5;           // when false the daemon closes stdin immediately
+}
+
+message RunInput {
+  oneof input {
+    RunSpec spec = 1;   // required first message
+    bytes stdin = 2;
+    bool  stdin_eof = 3;
+  }
+}
+
+message RunOutput {
+  oneof output {
+    string context_id = 1;  // always the first message
+    bytes  stdout = 2;
+    bytes  stderr = 3;
+    int32  exit_code = 4;   // terminal message; stream closes after
+    FetchStats stats = 5;   // sent once, immediately before exit_code
+  }
+}
+
+// FetchStats reports how much of the image a context actually touched: the
+// distinct chunks (manifests + file content) read through the mount's chunk
+// store during the run, against the image's ingest totals. In v0.1 fetches
+// are local SSD reads; under Phase 1's remote store the same numbers are the
+// cold-start network cost — this is the "nothing is fetched unless touched"
+// measurement.
+message FetchStats {
+  uint64 chunks_fetched = 1;  // distinct chunks read via store.Get
+  uint64 bytes_fetched = 2;   // logical (uncompressed) bytes of those chunks
+  uint64 image_chunks = 3;    // image total from ingest (0 = unknown)
+  uint64 image_bytes = 4;     // image total bytes-in from ingest (0 = unknown)
+}
+
+message ExecSpec {
+  string context_id = 1;
+  repeated string args = 2;          // required, non-empty
+  bool attach_stdin = 3;
+}
+
+message ExecInput {
+  oneof input {
+    ExecSpec spec = 1;  // required first message
+    bytes stdin = 2;
+    bool  stdin_eof = 3;
+  }
+}
+
+message ExecOutput {
+  oneof output {
+    bytes stdout = 1;
+    bytes stderr = 2;
+    int32 exit_code = 3;  // terminal message
+  }
+}
+
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  EVENT_TYPE_SCHEDULED = 1;
+  EVENT_TYPE_STARTED = 2;
+  EVENT_TYPE_READY = 3;     // reserved; not emitted in v0.1
+  EVENT_TYPE_FINISHED = 4;
+}
+
+message Event {
+  string context_id = 1;
+  EventType type = 2;
+  int64 timestamp_ns = 3;
+  int32 exit_code = 4;  // set on FINISHED
+}
+
+message EventsRequest {
+  string context_id = 1;  // empty = all contexts
+}
+
+message LogsRequest {
+  string context_id = 1;
+  bool follow = 2;  // after replay, stream new chunks until ctx finishes
+}
+
+message LogChunk {
+  bytes data = 1;
+  bool  stderr = 2;  // false = stdout
+  int64 timestamp_ns = 3;
+}
+
+message ListRequest {}
+
+message ContextInfo {
+  string id = 1;
+  string image_ref = 2;
+  string status = 3;      // scheduled | running | finished
+  int64  started_ns = 4;
+  int32  pid = 5;         // container init pid, 0 unless running
+  int32  exit_code = 6;   // valid when finished
+  FetchStats stats = 7;   // live fetch counters (running) or final (finished)
+}
+
+message ListResponse {
+  repeated ContextInfo contexts = 1;
+}
+
+message KillRequest {
+  string context_id = 1;
+  int32 signal = 2;  // 0 = SIGTERM
+}
+
+message KillResponse {}
+
+message SetRegistryRequest {
+  string registry_url = 1; // registry base URL (e.g. https://host/registry)
+  string token = 2;        // bearer API key; empty for public-only reads
+}
+
+message SetRegistryResponse {}
+
+message BuildRunSpec {
+  bytes root_chunk = 1;    // parent merged-root manifest chunk
+  bytes config_chunk = 2;  // OCI image config chunk
+  repeated string argv = 3;
+  repeated string env = 4;
+  string cwd = 5;
+  string user = 6;
+  bool host_network = 7;   // default true for build RUN (apt-get, curl, …)
+}
+
+message BuildRunInput {
+  oneof input {
+    BuildRunSpec spec = 1;
+    bytes stdin = 2;
+    bool stdin_eof = 3;
+  }
+}
+
+message BuildRunOutput {
+  oneof output {
+    bytes stdout = 1;
+    bytes stderr = 2;
+    int32 exit_code = 3;
+    bytes layer_manifest_chunk = 4; // set on success before exit_code
+  }
+}

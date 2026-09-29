@@ -1,0 +1,25 @@
+# Binaries
+/voila
+/bin/
+*.test
+
+# Local voila state
+/.voila/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Task scratch (worker specs, not part of the source tree)
+/tasks/
+
+# Fixture tarballs (docker save / skopeo output) — never commit these
+*.tar
+
+# goreleaser scratch dir (local `goreleaser --snapshot` runs)
+/dist/
+
+# Railway local config (kept in working tree for `railway up`, not committed)
+.railway/
+railway.json

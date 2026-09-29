@@ -1,0 +1,105 @@
+# .goreleaser.yaml — release pipeline config (driven by .github/workflows/release.yml,
+# fired on every `v*` tag push). Publishes to GitHub Releases.
+#
+# One artifact set per tag:
+#
+#   voila_<tag>_linux_amd64.tar.gz   → voila, voilad, voila-registry
+#   voila_<tag>_linux_arm64.tar.gz   → voila, voilad, voila-registry
+#   voila_<tag>_darwin_amd64.tar.gz → voila only
+#   voila_<tag>_darwin_arm64.tar.gz → voila only
+#   checksums.txt                    → sha256 of every tarball above
+#
+# `voila` is built for both linux and darwin; `voilad` and `voila-registry` are
+# built only for linux. The single grouped archive therefore has a DIFFERENT
+# binary count per platform (linux → 3 binaries, darwin → 1), which is exactly
+# what we want: a darwin `voilad` would just print "voilad requires linux", so
+# shipping one would be pure waste. `allow_different_binary_count: true` is the
+# goreleaser signal that we know the skew is intentional (see
+# https://goreleaser.com/errors/multiple-binaries-archive).
+#
+# `files: [none*]` keeps the archives binaries-only — by default goreleaser
+# auto-includes README/LICENSE, which we don't want in the install tarballs
+# (see https://goreleaser.com/customization/package/archives/#packaging-only-the-binaries).
+#
+# CGO is disabled everywhere: the voila deps (go-fuse/v2, modernc.org/sqlite,
+# lukechampine.com/blake3, opencontainers/*) are all pure-Go, so the
+# cross-compile matrix needs no C toolchain. `voila/internal/version` is stamped
+# via `-ldflags -X` (mirrored by the `make build` / `make install` recipes in
+# the Makefile); `voila -version` / `voilad -version` / `voila-registry
+# -version` read it back.
+
+version: 2
+
+project_name: voila
+
+builds:
+  - id: voila
+    main: ./cmd/voila
+    binary: voila
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - "-X 'voila/internal/version.Version={{ .Tag }}'"
+      - "-X 'voila/internal/version.Commit={{ .ShortCommit }}'"
+      - "-X 'voila/internal/version.Date={{ .Date }}'"
+      - -s -w
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  - id: voilad
+    main: ./cmd/voilad
+    binary: voilad
+    goos: [linux]
+    goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - "-X 'voila/internal/version.Version={{ .Tag }}'"
+      - "-X 'voila/internal/version.Commit={{ .ShortCommit }}'"
+      - "-X 'voila/internal/version.Date={{ .Date }}'"
+      - -s -w
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  - id: voila-registry
+    main: ./cmd/voila-registry
+    binary: voila-registry
+    goos: [linux]
+    goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - "-X 'voila/internal/version.Version={{ .Tag }}'"
+      - "-X 'voila/internal/version.Commit={{ .ShortCommit }}'"
+      - "-X 'voila/internal/version.Date={{ .Date }}'"
+      - -s -w
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  # One grouped archive: goreleaser pairs each (os,arch) with the binaries the
+  # builds produced for it. linux_* → voila + voilad + voila-registry;
+  # darwin_* → voila only. Binaries land at the archive root (no wrapping dir),
+  # so `tar -xzf voila_<tag>_<os>_<arch>.tar.gz -C /usr/local/bin` puts every
+  # binary in the archive on $PATH in one shot.
+  - id: default
+    formats: [tar.gz]
+    name_template: "voila_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
+    wrap_in_directory: false
+    allow_different_binary_count: true
+    files:
+      - none*
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+changelog:
+  use: github
+
+# No published source tarball — the git tag IS the canonical source.
+source:
+  enabled: false
+
+release:
+  draft: false
+  prerelease: auto

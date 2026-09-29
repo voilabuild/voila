@@ -1,0 +1,20 @@
+version: "2"
+sql:
+  - engine: "sqlite"
+    schema: "internal/chunkstore/schema.sql"
+    queries: "internal/chunkstore/query.sql"
+    gen:
+      go:
+        package: "chunkstore"
+        out: "internal/chunkstore"
+        emit_json_tags: false
+        emit_db_tags: true
+  - engine: "sqlite"
+    schema: "internal/imagestore/schema.sql"
+    queries: "internal/imagestore/query.sql"
+    gen:
+      go:
+        package: "imagestore"
+        out: "internal/imagestore"
+        emit_json_tags: false
+        emit_db_tags: true

@@ -1,0 +1,18 @@
+{
+	"name": "voila",
+	"image": "mcr.microsoft.com/devcontainers/go:1-bookworm",
+	// Privileged is required for milestone 3+: /dev/fuse + CAP_SYS_ADMIN for the
+	// FUSE mount daemon, and namespace/cgroup access for nested runc.
+	// Gates 1-2 (chunkstore, ingest) are pure Go and don't need it, but one
+	// environment for everything keeps CI parity simple.
+	"runArgs": ["--privileged"],
+	"remoteUser": "root",
+	"postCreateCommand": ".devcontainer/post-create.sh",
+	// cgroup v2 nesting fix must run on every container start, not just create.
+	"postStartCommand": ".devcontainer/cgroup-init.sh",
+	"customizations": {
+		"vscode": {
+			"extensions": ["golang.go"]
+		}
+	}
+}

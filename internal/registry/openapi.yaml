@@ -1,0 +1,518 @@
+openapi: 3.1.0
+
+info:
+  title: voila-registry
+  version: 1.0.0
+  description: |
+    The voila chunk + image-manifest registry. A thin HTTP server backed by a
+    content-addressed chunk store (BLAKE3) and a flat JSON manifest file tree.
+    All API routes are under `/v1`; the unversioned `/healthz` and
+    `/openapi.yaml` are operational endpoints.
+
+    No authentication is implemented — the registry is intended for trusted
+    networks (local or private). TLS is supported via `-tls-cert`/`-tls-key`
+    flags (auto-enables HTTP/2).
+
+    The canonical schema for the ImageManifest is `internal/proto/image.proto`;
+    the JSON wire form uses hex-encoded chunk ids (64 lowercase hex chars) so
+    they match `/v1/chunks/{id}` paths and the missing endpoint.
+  license:
+    name: MIT
+    url: https://github.com/nicolasgere/voila/blob/main/LICENSE
+
+servers:
+  - url: http://localhost:7423
+    description: Default local registry
+
+tags:
+  - name: Health
+    description: Liveness and self-documentation endpoints
+  - name: Chunks
+    description: Content-addressed chunk storage (raw bytes)
+  - name: Images
+    description: Image manifest storage (JSON)
+
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      operationId: getHealthz
+      summary: Liveness probe
+      description: |
+        A cheap liveness/readiness probe for load balancers and PaaS health
+        checks. Exercises nothing beyond the handler goroutine itself.
+      responses:
+        "200":
+          description: Registry is alive
+          content:
+            text/plain:
+              schema:
+                type: string
+                const: ok
+              example: ok
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /openapi.yaml:
+    get:
+      tags: [Health]
+      operationId: getOpenApiSpec
+      summary: Self-served OpenAPI spec
+      description: |
+        Returns the OpenAPI 3.1 spec embedded in the running binary, so any
+        running registry self-documents its wire protocol. The served spec is
+        always the one matching the binary.
+      responses:
+        "200":
+          description: The OpenAPI 3.1 YAML document
+          content:
+            application/yaml:
+              schema:
+                type: string
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /v1/chunks/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ChunkId"
+    get:
+      tags: [Chunks]
+      operationId: getChunk
+      summary: Fetch chunk bytes
+      description: |
+        Returns the raw (uncompressed) bytes of a chunk. Chunks are
+        content-addressed and immutable; the response is cacheable by a CDN
+        indefinitely (`Cache-Control: public, max-age=31536000, immutable`).
+      responses:
+        "200":
+          description: Raw chunk bytes
+          headers:
+            Content-Type:
+              $ref: "#/components/headers/OctetStream"
+            Content-Length:
+              description: Byte count of the chunk
+              schema:
+                type: integer
+            Cache-Control:
+              $ref: "#/components/headers/ImmutableCache"
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Chunk not found
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "404 page not found\n"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    head:
+      tags: [Chunks]
+      operationId: headChunk
+      summary: Check chunk existence
+      description: |
+        Probes whether the registry holds a chunk without transferring bytes.
+        Returns 200 if present, 404 if absent. Does NOT set Content-Length
+        (uses `store.Stat`, never fetches bytes).
+      responses:
+        "200":
+          description: Chunk exists
+          headers:
+            Content-Type:
+              $ref: "#/components/headers/OctetStream"
+            Cache-Control:
+              $ref: "#/components/headers/ImmutableCache"
+        "404":
+          description: Chunk not found
+    put:
+      tags: [Chunks]
+      operationId: putChunk
+      summary: Upload a chunk
+      description: |
+        Uploads a chunk. The server verifies that `BLAKE3(body) == {id}` (the
+        path id IS the digest — there is no separate `Digest` header). If
+        `Content-Encoding: zstd` is present, the body is decompressed before
+        hashing. The PUT is idempotent: 201 if newly stored, 200 if the chunk
+        already existed.
+
+        Body size cap: 8 MiB (`maxChunkBody`). Oversized bodies are rejected
+        with 413 before reading.
+      parameters:
+        - in: header
+          name: Content-Encoding
+          description: |
+            Transport compression. Only `zstd` is supported. When present, the
+            server decompresses the body before its BLAKE3-against-id check.
+            The id is always the hash of the RAW (decompressed) content.
+          required: false
+          schema:
+            type: string
+            enum: [zstd]
+      requestBody:
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "201":
+          description: Chunk stored (newly created)
+        "200":
+          description: Chunk already existed (idempotent re-PUT)
+        "400":
+          description: |
+            BLAKE3 mismatch (body hash does not match path id) or zstd decode
+            failure.
+          content:
+            text/plain:
+              schema:
+                type: string
+                examples:
+                  hashMismatch:
+                    value: "chunk id mismatch: body BLAKE3 does not match path id\n"
+                  decodeError:
+                    value: "decode Content-Encoding: zstd: invalid frame\n"
+        "413":
+          description: Body exceeds 8 MiB cap
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "body too large\n"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/chunks/missing:
+    post:
+      tags: [Chunks]
+      operationId: postMissingChunks
+      summary: Bulk existence check
+      description: |
+        Given a set of chunk ids, returns the subset the server does NOT hold.
+        The server answers via `store.Stat` only — it never fetches bytes —
+        so the endpoint is cheap even when the store is network-backed.
+
+        Limits: max 8 MiB request body, max 65536 ids per request. Either
+        over → 400. A malformed id anywhere → 400 naming the index (0-indexed)
+        and quoting the bad value. An empty body or `{"ids":[]}` is a legal
+        request meaning "you sent me nothing" (response is `{"missing":[]}`).
+
+        Order of the returned ids is unspecified; callers must treat the
+        response as a set.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MissingRequest"
+            examples:
+              typical:
+                value:
+                  ids:
+                    - "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6f15b0f0a08"
+                    - "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc8b6034f9a1b2b3c4d5e6f"
+      responses:
+        "200":
+          description: Subset of ids the server does NOT hold
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MissingResponse"
+              examples:
+                someMissing:
+                  value:
+                    missing:
+                      - "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc8b6034f9a1b2b3c4d5e6f"
+                allPresent:
+                  value:
+                    missing: []
+        "400":
+          description: |
+            Malformed JSON, oversized body (> 8 MiB), too many ids (> 65536),
+            or a malformed chunk id in the array.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                malformedId:
+                  value:
+                    error: "malformed chunk id at index 1: \"ZZtop\""
+                tooMany:
+                  value:
+                    error: "too many ids (max 65536)"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+
+  /v1/images/{ref}:
+    parameters:
+      - $ref: "#/components/parameters/ImageRef"
+    get:
+      tags: [Images]
+      operationId: getImage
+      summary: Fetch an image manifest
+      description: |
+        Returns the JSON ImageManifest for the given ref. Refs are mutable
+        (`voila push` may overwrite), so the response is `Cache-Control:
+        no-store`. Manifests are small (KB-scale) and fetched once per pull.
+      responses:
+        "200":
+          description: The image manifest
+          headers:
+            Cache-Control:
+              description: Manifests are mutable; never cache.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageManifest"
+        "404":
+          description: Image ref not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "image not found"
+        "500":
+          $ref: "#/components/responses/JSONInternalError"
+    put:
+      tags: [Images]
+      operationId: putImage
+      summary: Publish an image manifest
+      description: |
+        Uploads a JSON ImageManifest for the given ref. The server validates
+        the JSON and checks that the manifest's `image_ref` (if non-empty)
+        matches the URL ref. Always returns 201 (even on overwrite). Writes
+        are atomic (tmp + rename).
+
+        Body size cap: 4 MiB (`maxImageBody`). Oversized bodies are rejected
+        with 413.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImageManifest"
+      responses:
+        "201":
+          description: Manifest published (always 201, even on overwrite)
+        "400":
+          description: |
+            Invalid JSON or `image_ref` in the manifest does not match the URL
+            ref.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidJson:
+                  value:
+                    error: "invalid image manifest: invalid character 'x' looking for beginning of value"
+                refMismatch:
+                  value:
+                    error: "image_ref in manifest does not match URL ref"
+        "413":
+          description: Body exceeds 4 MiB cap
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "body too large"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "500":
+          $ref: "#/components/responses/JSONInternalError"
+
+components:
+  parameters:
+    ChunkId:
+      name: id
+      in: path
+      required: true
+      description: |
+        The BLAKE3-256 hash of the chunk's raw (uncompressed) content, encoded
+        as 64 lowercase hexadecimal characters. Uppercase hex is rejected (404,
+        not 400).
+      schema:
+        type: string
+        pattern: "^[0-9a-f]{64}$"
+        minLength: 64
+        maxLength: 64
+      example: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+
+    ImageRef:
+      name: ref
+      in: path
+      required: true
+      description: |
+        The image reference, URL-path-escaped (`url.QueryEscape`). Refs
+        containing `/` (e.g. `library/python:3.13`) arrive as `%2F` in the
+        path. The server unescapes using `r.URL.RawPath` so the full ref
+        survives.
+      schema:
+        type: string
+        minLength: 1
+      example: "library%2Fpython%3A3.13"
+
+  headers:
+    OctetStream:
+      description: Binary chunk data
+      schema:
+        type: string
+        const: application/octet-stream
+    ImmutableCache:
+      description: |
+        Chunks are content-addressed and immutable; a CDN may cache
+        indefinitely without revalidation.
+      schema:
+        type: string
+        const: "public, max-age=31536000, immutable"
+
+  schemas:
+    MissingRequest:
+      type: object
+      description: Request body for POST /v1/chunks/missing — a set of chunk ids to check.
+      properties:
+        ids:
+          type: array
+          items:
+            type: string
+            pattern: "^[0-9a-f]{64}$"
+            description: 64-char lowercase hex chunk id (BLAKE3-256)
+          maxItems: 65536
+          description: |
+            The chunk ids to check. An empty or missing array is a legal
+            "no-op" request.
+      additionalProperties: false
+
+    MissingResponse:
+      type: object
+      description: Response from POST /v1/chunks/missing — the subset of ids the server does NOT hold.
+      properties:
+        missing:
+          type: array
+          items:
+            type: string
+            pattern: "^[0-9a-f]{64}$"
+          description: |
+            The subset of requested ids the server does NOT hold. Order is
+            unspecified. An empty array means the server has all requested
+            chunks.
+      required: [missing]
+      additionalProperties: false
+
+    ImageManifest:
+      type: object
+      description: |
+        The wire JSON representation of an ImageManifest. Chunk ids and the
+        image digest are 64-char lowercase hex strings (matching `/v1/chunks/{id}`
+        paths and the missing endpoint). The canonical schema source is
+        `internal/proto/image.proto`; this is the JSON projection.
+      properties:
+        image_ref:
+          type: string
+          description: The image reference (e.g. "python:3.13" or a hash).
+          example: "python:3.13"
+        image_digest:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: |
+            The image's SHA-256 digest as 64-char hex, or omitted/empty if
+            unset.
+        config_chunk:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: |
+            The chunk id of the original OCI config.json (stored as a chunk).
+        merged_root_manifest_chunk:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: |
+            The chunk id of the merged root manifest that the FUSE mount
+            daemon walks.
+        provenance_layers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Layer"
+          description: |
+            Provenance layers (lower → upper), kept for debugging. May be
+            omitted if empty.
+        total_size:
+          type: integer
+          format: uint64
+          description: Total ingest bytes (feeds fetch-stats percentage).
+          example: 12345678
+        chunk_count:
+          type: integer
+          format: uint64
+          description: Total ingest chunk count.
+          example: 42
+      required:
+        - image_ref
+        - config_chunk
+        - merged_root_manifest_chunk
+        - total_size
+        - chunk_count
+      additionalProperties: false
+
+    Layer:
+      type: object
+      description: A single provenance layer in an ImageManifest.
+      properties:
+        root_manifest_chunk:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: The chunk id of this layer's root manifest.
+        whiteouts_count:
+          type: integer
+          format: uint64
+          description: Number of whiteouts in this layer.
+      required: [root_manifest_chunk, whiteouts_count]
+      additionalProperties: false
+
+    ErrorResponse:
+      type: object
+      description: JSON error envelope returned by the JSON-speaking endpoints (chunks/missing and images).
+      properties:
+        error:
+          type: string
+          description: Human-readable error message.
+      required: [error]
+      additionalProperties: false
+
+  responses:
+    MethodNotAllowed:
+      description: Method not allowed
+      headers:
+        Allow:
+          description: Allowed methods
+          schema:
+            type: string
+      content:
+        text/plain:
+          schema:
+            type: string
+            example: "method not allowed\n"
+    InternalError:
+      description: Internal server error
+      content:
+        text/plain:
+          schema:
+            type: string
+    JSONInternalError:
+      description: Internal server error (JSON endpoints)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "store: permission denied"

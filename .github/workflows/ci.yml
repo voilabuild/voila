@@ -1,0 +1,43 @@
+# ci.yml — fast checks on every pull request (and pushes to main).
+# Privileged gate scripts (FUSE/runc/NBD) stay manual/devcontainer — see doc/TESTING.md.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+      - run: go build ./...
+      - run: go vet ./...
+      - run: CGO_ENABLED=0 go test ./...
+      - name: gofmt
+        run: |
+          gofmt -l internal/ cmd/ && test -z "$(gofmt -l internal/ cmd/)"
+
+  lint-openapi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install vacuum (prebuilt binary)
+        run: |
+          VACUUM=v0.30.0
+          curl -fsSL "https://github.com/daveshanley/vacuum/releases/download/${VACUUM}/vacuum_${VACUUM#v}_linux_x86_64.tar.gz" -o vacuum.tgz
+          tar -xzf vacuum.tgz vacuum
+      - name: Lint OpenAPI spec
+        run: ./vacuum lint -d internal/registry/openapi.yaml
