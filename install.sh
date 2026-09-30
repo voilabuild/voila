@@ -56,7 +56,7 @@ TOKEN=""
 # --registry <url>; clear it with --registry "" to run fully offline.
 # The hosted registry serves the wire protocol under the /registry path prefix
 # (the management UI lives at the root), so the base includes it.
-REGISTRY_URL="https://drift-registry-production.up.railway.app/registry"
+REGISTRY_URL="https://registry.voila.build/registry"
 
 usage() {
 	sed -n 's/^# \{0,1\}//p' "$0" | sed -n '2,/^$/p' || true
@@ -66,7 +66,7 @@ Flags:
   --version <tag>      Pin to a specific release tag (default: latest).
   --prefix <dir>       Install directory (default: /usr/local/bin).
   --registry <url>     Remote chunk registry the daemon lazy-fetches from
-                      (default: https://drift-registry-production.up.railway.app/registry;
+                      (default: https://registry.voila.build/registry;
                       pass "" to run offline).
   --token <key>       Registry API key (dreg_...) to configure for auth
                       (push/private images). If omitted, the installer asks
