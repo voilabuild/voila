@@ -15,9 +15,9 @@ import (
 	"strings"
 )
 
-// DefaultRegistryURL is the hosted voila-registry base when login is run
-// interactively without a URL argument.
-const DefaultRegistryURL = "https://drift-registry-production.up.railway.app/registry"
+// DefaultRegistryURL is the hosted cloud registry API base when login is run
+// interactively without a URL argument (not the local voila-registry binary).
+const DefaultRegistryURL = "https://registry.voila.build/registry"
 
 // LoginCreds is the on-disk login payload under the XDG config dir.
 type LoginCreds struct {
