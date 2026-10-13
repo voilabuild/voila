@@ -47,6 +47,19 @@ Serve only (root):
 zig build run -- serve fixture-out /dev/nbd0
 ```
 
+## Container test (privileged)
+
+On a Linux host where `sudo modprobe nbd` works (module present in `/lib/modules/$(uname -r)`):
+
+```bash
+# from voila repo root
+./poc/zig-nbd/container/run-prove.sh
+```
+
+The image installs Zig 0.17, Go, and `erofs-utils`, then runs `zig build test` and `zig-nbd prove` as root with `modprobe nbd` inside a **`docker run --privileged`** container.
+
+**This cloud VM cannot pass the mount step:** the kernel image has no `nbd` module (`modprobe nbd` → “Module nbd not found”), including inside a privileged Ubuntu container (containers use the host’s module tree). Use a normal Linux VM or CI runner with `linux-modules-extra` / NBD enabled.
+
 ## VM result (this agent run)
 
-Non-root (`uid=1000`), no `/dev/nbd0` — root mount skipped; unit tests and concurrent slot load ran. See PR body for `zig build run -- prove` log.
+Non-root (`uid=1000`), no `/dev/nbd0`, no `nbd` kernel module — root mount skipped; unit tests and concurrent slot load ran. Privileged Docker was tried; `modprobe nbd` failed for the same reason.
