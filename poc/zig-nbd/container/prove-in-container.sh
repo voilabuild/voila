@@ -6,17 +6,28 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
-if ! modprobe nbd max_part=8 2>/dev/null; then
-  echo "modprobe nbd failed: kernel module missing on this host (container shares host modules)" >&2
-  exit 2
+nbd_ok=0
+if modprobe nbd max_part=8 2>/dev/null && [[ -e /dev/nbd0 ]]; then
+  nbd_ok=1
+else
+  echo "warn: modprobe nbd failed or /dev/nbd0 missing (container uses host kernel modules)" >&2
+  echo "warn: will run zig build test + prove readAt path only; mount step skipped" >&2
 fi
 
-if [[ ! -e /dev/nbd0 ]]; then
-  echo "/dev/nbd0 not present after modprobe nbd" >&2
-  exit 3
+fixture="/voila/poc/zig-nbd/fixture-out"
+if [[ ! -f "$fixture/meta.bin" ]]; then
+  echo "generating fixture with Go..."
+  (cd /voila && go run -tags zig_nbd_fixture ./poc/zig-nbd/fixture -o poc/zig-nbd/fixture-out)
 fi
 
 cd /voila/poc/zig-nbd
 zig build
 zig build test
 ./zig-out/bin/zig-nbd prove fixture-out
+
+if [[ "$nbd_ok" -eq 1 ]]; then
+  echo "container prove: mount path exercised (nbd + erofs)"
+else
+  echo "container prove: mount skipped (no nbd module on host kernel)"
+  exit 2
+fi

@@ -60,6 +60,10 @@ The image installs Zig 0.17, Go, and `erofs-utils`, then runs `zig build test` a
 
 **This cloud VM cannot pass the mount step:** the kernel image has no `nbd` module (`modprobe nbd` → “Module nbd not found”), including inside a privileged Ubuntu container (containers use the host’s module tree). Use a normal Linux VM or CI runner with `linux-modules-extra` / NBD enabled.
 
+When NBD is missing, the container still runs `zig build test` and `zig-nbd prove` (readAt + concurrent slot load) and exits **2** so CI can distinguish “tests OK, mount not exercised” from a hard failure.
+
+`run-prove.sh` uses `sudo docker` when the current user cannot access the Docker socket.
+
 ## VM result (this agent run)
 
-Non-root (`uid=1000`), no `/dev/nbd0`, no `nbd` kernel module — root mount skipped; unit tests and concurrent slot load ran. Privileged Docker was tried; `modprobe nbd` failed for the same reason.
+Privileged container: **Zig build + unit tests pass** inside Ubuntu 24.04; **root mount not exercised** (`modprobe nbd` fails on kernel `6.12.94+`, no `/dev/nbd0`). Host non-root `prove` also skips mount.

@@ -3,12 +3,17 @@
 # Requires: Docker, host kernel with nbd module (modprobe nbd works on the host).
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 IMAGE="${ZIG_NBD_IMAGE:-zig-nbd-prove:latest}"
 
-docker build -f "$ROOT/poc/zig-nbd/container/Dockerfile" -t "$IMAGE" "$ROOT"
+docker_cmd=(docker)
+if ! docker info &>/dev/null; then
+  docker_cmd=(sudo docker)
+fi
 
-docker run --rm --privileged \
+"${docker_cmd[@]}" build -f "$ROOT/poc/zig-nbd/container/Dockerfile" -t "$IMAGE" "$ROOT"
+
+"${docker_cmd[@]}" run --rm --privileged \
   -v "$ROOT:/voila" \
   -w /voila \
   "$IMAGE"
