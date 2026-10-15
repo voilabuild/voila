@@ -47,7 +47,26 @@ zig build run -- serve fixture-out /tmp/zig-fuse-mnt
 
 (Blocks in `fuse_loop` until unmount.)
 
+## Real voila store (next step)
+
+Go exports a flattened JSON index from an ingested image (`mount.Tree` + chunk store). Zig mounts it with lazy chunk reads (zstd via `zstd` CLI when `algo=1`).
+
+```bash
+# ingest once
+voila import -root /tmp/voila-store alpine:latest
+
+cd poc/zig-fuse
+zig build
+go run -tags zig_fuse_export ./export -root /tmp/voila-store -image alpine:latest -o /tmp/zig-index.json
+sudo ./zig-out/bin/zig-fuse prove-store /tmp/voila-store alpine:latest
+# or: sudo ./zig-out/bin/zig-fuse serve-index /tmp/zig-index.json /tmp/mnt
+```
+
+`prove-store` runs the export step automatically, then checks root listing and a sample read of `/etc/os-release`.
+
 ## Build deps
 
 - Zig 0.17
 - `pkg-config fuse3` (links `-lfuse3 -lpthread`, includes under `/usr/include/fuse3`)
+- `zstd` on `PATH` (for compressed chunks in real stores)
+- Go toolchain (export step and fixture writer)

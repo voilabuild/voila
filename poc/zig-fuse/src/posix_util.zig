@@ -66,6 +66,13 @@ pub fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8, limit: usiz
     return buf;
 }
 
+pub fn unlink(path: []const u8) void {
+    const path_z = std.heap.page_allocator.allocSentinel(u8, path.len, 0) catch return;
+    defer std.heap.page_allocator.free(path_z);
+    @memcpy(path_z, path);
+    _ = std.c.unlink(path_z);
+}
+
 pub fn makePath(path: []const u8) !void {
     if (access(path)) return;
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;

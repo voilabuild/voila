@@ -1,6 +1,5 @@
 const std = @import("std");
-const vfs_mod = @import("vfs.zig");
-const constants = @import("constants.zig");
+const fuse_vfs = @import("fuse_vfs.zig");
 
 const c = @import("fuse3");
 
@@ -8,7 +7,7 @@ fn pathSlice(path: [*c]const u8) []const u8 {
     return std.mem.sliceTo(path, 0);
 }
 
-fn vfsFromCtx() *vfs_mod.Vfs {
+fn vfsFromCtx() *fuse_vfs.FuseVfs {
     const ctx = c.fuse_get_context();
     return @ptrCast(@alignCast(ctx[0].private_data));
 }
@@ -17,7 +16,7 @@ fn negErr(e: std.posix.E) c_int {
     return -@as(c_int, @intCast(@intFromEnum(e)));
 }
 
-fn fillStatFromAttr(vfs: *const vfs_mod.Vfs, ino: u64, stbuf: [*c]c.struct_stat) bool {
+fn fillStatFromAttr(vfs: *const fuse_vfs.FuseVfs, ino: u64, stbuf: [*c]c.struct_stat) bool {
     const attr = vfs.attr(ino) orelse return false;
     const st: *c.struct_stat = @ptrCast(stbuf);
     st.* = std.mem.zeroes(c.struct_stat);
@@ -58,7 +57,7 @@ fn readlinkCb(path: [*c]const u8, buf: [*c]u8, size: usize) callconv(.c) c_int {
 fn openCb(path: [*c]const u8, fi: ?*c.struct_fuse_file_info) callconv(.c) c_int {
     const vfs = vfsFromCtx();
     const ino = vfs.inoFromPath(pathSlice(path)) orelse return negErr(.NOENT);
-    if (ino != constants.file_ino) return negErr(.ISDIR);
+    if (!vfs.isFile(ino)) return negErr(.ISDIR);
     const info = fi orelse return negErr(.INVAL);
     const open_flags = @as(*const c_int, @alignCast(@ptrCast(info)));
     const accmode = @as(u32, @intCast(open_flags.*)) & 3; // O_ACCMODE
@@ -88,10 +87,11 @@ fn readdirCb(
     _ = fi;
     _ = flags;
     const vfs = vfsFromCtx();
-    if (!std.mem.eql(u8, pathSlice(path), "/")) return negErr(.NOTDIR);
+    const dir_ino = vfs.inoFromPath(pathSlice(path)) orelse return negErr(.NOTDIR);
+    if (!vfs.isDir(dir_ino)) return negErr(.NOTDIR);
     var idx: usize = @intCast(offset);
     while (true) {
-        const ent = vfs.readdirEntry(idx) orelse return 0;
+        const ent = vfs.readdirEntry(dir_ino, idx) orelse return 0;
         var name_buf: [256]u8 = undefined;
         if (ent.name.len >= name_buf.len) return negErr(.NAMETOOLONG);
         @memcpy(name_buf[0..ent.name.len], ent.name);
@@ -107,7 +107,7 @@ fn opendirCb(path: [*c]const u8, fi: ?*c.struct_fuse_file_info) callconv(.c) c_i
     _ = fi;
     const vfs = vfsFromCtx();
     const ino = vfs.inoFromPath(pathSlice(path)) orelse return negErr(.NOENT);
-    if (ino != constants.root_ino) return negErr(.NOTDIR);
+    if (!vfs.isDir(ino)) return negErr(.NOTDIR);
     return 0;
 }
 
@@ -142,7 +142,7 @@ pub const Session = struct {
     }
 };
 
-pub fn mountSession(allocator: std.mem.Allocator, mountpoint: []const u8, vfs: *vfs_mod.Vfs) !Session {
+pub fn mountSession(allocator: std.mem.Allocator, mountpoint: []const u8, vfs: *fuse_vfs.FuseVfs) !Session {
     const mnt = try allocator.dupe(u8, mountpoint);
     errdefer allocator.free(mnt);
     const mnt_z = try allocator.allocSentinel(u8, mnt.len, 0);
@@ -190,7 +190,7 @@ pub fn serveSession(session: *Session) !void {
     if (rc != 0) return error.FuseLoopFailed;
 }
 
-pub fn mountAndServe(allocator: std.mem.Allocator, vfs: *vfs_mod.Vfs, mountpoint: []const u8) !void {
+pub fn mountAndServe(allocator: std.mem.Allocator, vfs: *fuse_vfs.FuseVfs, mountpoint: []const u8) !void {
     var session = try mountSession(allocator, mountpoint, vfs);
     defer session.deinit();
     try serveSession(&session);

@@ -1,6 +1,8 @@
 const std = @import("std");
 const zio = @import("zio");
 const vfs_mod = @import("vfs.zig");
+const fuse_vfs_mod = @import("fuse_vfs.zig");
+const voila_vfs_mod = @import("voila_vfs.zig");
 const fuse_linux = @import("fuse_linux.zig");
 const posix_util = @import("posix_util.zig");
 const constants = @import("constants.zig");
@@ -15,59 +17,62 @@ pub fn main(init: std.process.Init) !void {
     var args = std.process.Args.Iterator.init(init.minimal.args);
     _ = args.next();
     const sub = args.next() orelse "prove";
-    const fixture_dir = args.next() orelse "fixture-out";
 
     if (std.mem.eql(u8, sub, "prove")) {
+        const fixture_dir = args.next() orelse "fixture-out";
         try prove(io, init, fixture_dir);
         return;
     }
+    if (std.mem.eql(u8, sub, "prove-store")) {
+        const voila_root = args.next() orelse return error.NeedVoilaRoot;
+        const image = args.next() orelse return error.NeedImage;
+        try proveStore(io, init, voila_root, image);
+        return;
+    }
     if (std.mem.eql(u8, sub, "serve")) {
+        const fixture_dir = args.next() orelse "fixture-out";
         const mountpoint = args.next() orelse return error.NeedMountpoint;
         const fixture_abs = try resolveAbs(init.gpa, fixture_dir);
         defer init.gpa.free(fixture_abs);
-        var vfs = try vfs_mod.Vfs.load(init.gpa, fixture_abs);
-        defer vfs.deinit();
-        try vfs.preloadAllChunks(io);
-        try fuse_linux.mountAndServe(io, init.gpa, &vfs, mountpoint);
+        var fixture_vfs = try vfs_mod.Vfs.load(init.gpa, fixture_abs);
+        defer fixture_vfs.deinit();
+        try fixture_vfs.preloadAllChunks(io);
+        var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .fixture = fixture_vfs };
+        try fuse_linux.mountAndServe(io, init.gpa, &fuse_vfs, mountpoint);
         return;
     }
-    std.debug.print("usage: zig-fuse prove [fixture-dir]\n       zig-fuse serve [fixture-dir] <mountpoint>\n", .{});
-}
-
-fn prove(io: std.Io, init: std.process.Init, fixture_dir: []const u8) !void {
-    try ensureFixture(init, fixture_dir);
-    const fixture_abs = try resolveAbs(init.gpa, fixture_dir);
-    defer init.gpa.free(fixture_abs);
-
-    var vfs = try vfs_mod.Vfs.load(init.gpa, fixture_abs);
-    defer vfs.deinit();
-
-    if (!fuse_linux.canUseFuse()) {
-        std.debug.print("skip: need root and /dev/fuse (read walker unit tests: zig build test)\n", .{});
+    if (std.mem.eql(u8, sub, "serve-index")) {
+        const index_path = args.next() orelse return error.NeedIndex;
+        const mountpoint = args.next() orelse return error.NeedMountpoint;
+        var voila_vfs = try voila_vfs_mod.VoilaVfs.load(init.gpa, index_path);
+        defer voila_vfs.deinit();
+        var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs };
+        try fuse_linux.mountAndServe(io, init.gpa, &fuse_vfs, mountpoint);
         return;
     }
-
-    try rootMountProve(io, init, fixture_abs);
+    std.debug.print(
+        "usage:\n  zig-fuse prove [fixture-dir]\n  zig-fuse prove-store <voila-root> <image>\n  zig-fuse serve [fixture-dir] <mountpoint>\n  zig-fuse serve-index <zig-index.json> <mountpoint>\n",
+        .{},
+    );
 }
 
-fn rootMountProve(io: std.Io, init: std.process.Init, fixture_dir: []const u8) !void {
+fn rootMountProve(io: std.Io, init: std.process.Init, fuse_vfs: *fuse_vfs_mod.FuseVfs) !void {
     const mount_dir = try std.fmt.allocPrint(init.gpa, "/tmp/zig-fuse-mnt-{d}", .{std.c.getpid()});
     defer init.gpa.free(mount_dir);
     try posix_util.makePath(mount_dir);
 
-    var vfs = try vfs_mod.Vfs.load(init.gpa, fixture_dir);
-    try vfs.preloadAllChunks(io);
+    try fuse_vfs.preloadAllChunks(io);
 
     const ServeCtx = struct {
         session: fuse_linux.Session,
-        vfs: vfs_mod.Vfs,
+        fuse_vfs: *fuse_vfs_mod.FuseVfs,
         err: ?anyerror,
     };
 
     var ctx: ServeCtx = undefined;
     ctx.err = null;
-    ctx.vfs = vfs;
-    ctx.session = fuse_linux.mountSession(init.gpa, mount_dir, &ctx.vfs) catch |e| return e;
+    ctx.fuse_vfs = fuse_vfs;
+    ctx.session = fuse_linux.mountSession(init.gpa, mount_dir, fuse_vfs) catch |e| return e;
 
     const thread = try std.Thread.spawn(.{}, struct {
         fn run(shared: *ServeCtx) void {
@@ -107,9 +112,109 @@ fn rootMountProve(io: std.Io, init: std.process.Init, fixture_dir: []const u8) !
     ctx.session.stop();
     thread.join();
     ctx.session.deinit();
-    ctx.vfs.deinit();
     if (ctx.err != null) return ctx.err.?;
     std.debug.print("prove: readdir, readlink, boundary bytes, write EROFS — ok\n", .{});
+}
+
+fn prove(io: std.Io, init: std.process.Init, fixture_dir: []const u8) !void {
+    try ensureFixture(init, fixture_dir);
+    const fixture_abs = try resolveAbs(init.gpa, fixture_dir);
+    defer init.gpa.free(fixture_abs);
+
+    var fixture_vfs = try vfs_mod.Vfs.load(init.gpa, fixture_abs);
+    defer fixture_vfs.deinit();
+    var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .fixture = fixture_vfs };
+
+    if (!fuse_linux.canUseFuse()) {
+        std.debug.print("skip: need root and /dev/fuse (read walker unit tests: zig build test)\n", .{});
+        return;
+    }
+
+    try rootMountProve(io, init, &fuse_vfs);
+}
+
+fn proveStore(io: std.Io, init: std.process.Init, voila_root: []const u8, image: []const u8) !void {
+    if (!fuse_linux.canUseFuse()) {
+        std.debug.print("skip: need root and /dev/fuse\n", .{});
+        return;
+    }
+    const voila_root_abs = try resolveAbs(init.gpa, voila_root);
+    defer init.gpa.free(voila_root_abs);
+    const index_path = try std.fmt.allocPrint(init.gpa, "/tmp/zig-index-{d}.json", .{std.c.getpid()});
+    defer init.gpa.free(index_path);
+    try exportIndex(init, voila_root_abs, image, index_path);
+
+    var voila_vfs = try voila_vfs_mod.VoilaVfs.load(init.gpa, index_path);
+    defer voila_vfs.deinit();
+    var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs };
+
+    const mount_dir = try std.fmt.allocPrint(init.gpa, "/tmp/zig-fuse-store-mnt-{d}", .{std.c.getpid()});
+    defer init.gpa.free(mount_dir);
+    try posix_util.makePath(mount_dir);
+
+    const ServeCtx = struct {
+        session: fuse_linux.Session,
+        err: ?anyerror,
+    };
+    var ctx: ServeCtx = .{
+        .session = try fuse_linux.mountSession(init.gpa, mount_dir, &fuse_vfs),
+        .err = null,
+    };
+
+    const thread = try std.Thread.spawn(.{}, struct {
+        fn run(shared: *ServeCtx) void {
+            fuse_linux.serveSession(&shared.session) catch |e| {
+                shared.err = e;
+            };
+        }
+    }.run, .{&ctx});
+
+    for (0..5000) |_| {
+        const probe = try std.fmt.allocPrint(init.gpa, "{s}/bin", .{mount_dir});
+        defer init.gpa.free(probe);
+        if (posix_util.access(probe)) break;
+        try io.sleep(std.Io.Duration.fromMilliseconds(1), .awake);
+    }
+
+    try checkReaddirStore(init.gpa, mount_dir);
+    const os_release = try std.fmt.allocPrint(init.gpa, "{s}/etc/os-release", .{mount_dir});
+    defer init.gpa.free(os_release);
+    if (posix_util.access(os_release)) {
+        var hdr: [64]u8 = undefined;
+        try preadFile(os_release, &hdr, 0);
+        if (!std.mem.startsWith(u8, hdr[0..], "NAME=")) return error.OsReleaseWrong;
+        std.debug.print("etc/os-release: {s}...\n", .{hdr[0..@min(hdr.len, 32)]});
+    }
+
+    ctx.session.stop();
+    thread.join();
+    ctx.session.deinit();
+    if (ctx.err != null) return ctx.err.?;
+    std.debug.print("prove-store: export index, mount, readdir, sample read — ok\n", .{});
+}
+
+fn checkReaddirStore(allocator: std.mem.Allocator, mount_dir: []const u8) !void {
+    const cmd = try std.fmt.allocPrint(allocator, "ls -1 {s} | head -5", .{mount_dir});
+    defer allocator.free(cmd);
+    const cmd_z = try allocator.allocSentinel(u8, cmd.len, 0);
+    defer allocator.free(cmd_z);
+    @memcpy(cmd_z, cmd);
+    if (posix_util.shell(cmd_z) != 0) return error.ReaddirMissing;
+}
+
+fn exportIndex(init: std.process.Init, voila_root: []const u8, image: []const u8, out_path: []const u8) !void {
+    const repo = try findVoilaRoot(init.gpa);
+    defer init.gpa.free(repo);
+    const cmd = try std.fmt.allocPrint(
+        init.gpa,
+        "cd {s} && go run -tags zig_fuse_export ./poc/zig-fuse/export -root {s} -image {s} -o {s}",
+        .{ repo, voila_root, image, out_path },
+    );
+    defer init.gpa.free(cmd);
+    const cmd_z = try init.gpa.allocSentinel(u8, cmd.len, 0);
+    defer init.gpa.free(cmd_z);
+    @memcpy(cmd_z, cmd);
+    if (posix_util.shell(cmd_z) != 0) return error.ExportFailed;
 }
 
 fn checkReaddir(allocator: std.mem.Allocator, mount_dir: []const u8) !void {
