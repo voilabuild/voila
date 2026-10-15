@@ -23,14 +23,36 @@ pub fn loadChunkRaw(
     chunk_hex: []const u8,
     algo: i32,
 ) ![]u8 {
+    if (chunk_hex.len != 64) return error.BadChunkHex;
     const path = try chunkBlobPath(allocator, voila_root, chunk_hex);
     defer allocator.free(path);
     const stored = try posix_util.readFileAlloc(allocator, path, 16 * ChunkSize);
-    return switch (algo) {
+    const raw: []u8 = switch (algo) {
         AlgoRaw => stored,
-        AlgoZstd => decompressZstd(allocator, stored),
-        else => error.UnknownChunkAlgo,
+        AlgoZstd => try decompressZstd(allocator, stored),
+        else => {
+            allocator.free(stored);
+            return error.UnknownChunkAlgo;
+        },
     };
+    if (algo == AlgoZstd) allocator.free(stored);
+    verifyChunkId(chunk_hex, raw) catch |e| {
+        allocator.free(raw);
+        return e;
+    };
+    return raw;
+}
+
+/// Matches chunkstore.LocalStore.Get: BLAKE3-256 of raw (uncompressed) bytes
+/// must equal the content-addressed chunk id (64-char lowercase hex).
+fn verifyChunkId(chunk_hex: []const u8, raw: []const u8) !void {
+    if (chunk_hex.len != 64) return error.BadChunkHex;
+    var expect: [32]u8 = undefined;
+    _ = try std.fmt.hexToBytes(expect[0..], chunk_hex);
+
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.Blake3.hash(raw, &digest, .{});
+    if (!std.mem.eql(u8, &digest, &expect)) return error.ChunkIntegrity;
 }
 
 fn decompressZstd(allocator: std.mem.Allocator, compressed: []const u8) ![]u8 {
@@ -47,6 +69,19 @@ fn decompressZstd(allocator: std.mem.Allocator, compressed: []const u8) ![]u8 {
     if (zstd.ZSTD_isError(n) != 0) return error.ZstdDecode;
 
     return out[0..@intCast(n)];
+}
+
+test "verify chunk id matches blake3 of raw bytes" {
+    const payload = "voila-chunk-verify";
+    // BLAKE3-256(payload), same as Go chunkstore.hash.
+    const id_hex = "96e67efc75e9297e57b40b1ea934a8c4e115070bc2576ca6aea609de93df9ce8";
+    try verifyChunkId(id_hex, payload);
+}
+
+test "verify rejects hash mismatch" {
+    const payload = "voila-chunk-verify";
+    const wrong_id = "0000000000000000000000000000000000000000000000000000000000000000";
+    try std.testing.expectError(error.ChunkIntegrity, verifyChunkId(wrong_id, payload));
 }
 
 test "decompress zstd empty frame" {
