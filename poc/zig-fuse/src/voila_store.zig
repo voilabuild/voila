@@ -1,5 +1,6 @@
 const std = @import("std");
 const posix_util = @import("posix_util.zig");
+const zstd = @import("zstd");
 
 pub const ChunkSize = 1 << 20;
 
@@ -35,26 +36,17 @@ pub fn loadChunkRaw(
 fn decompressZstd(allocator: std.mem.Allocator, compressed: []const u8) ![]u8 {
     if (compressed.len == 0) return error.ZstdDecode;
 
-    var out: std.Io.Writer.Allocating = .init(allocator);
-    errdefer out.deinit();
+    const bound = zstd.ZSTD_decompressBound(compressed.ptr, compressed.len);
+    if (zstd.ZSTD_isError(bound) != 0) return error.ZstdDecode;
+    if (bound > ChunkSize) return error.ChunkOversize;
 
-    var in: std.Io.Reader = .fixed(compressed);
-    var zstd_stream: std.compress.zstd.Decompress = .init(&in, &.{}, .{
-        .window_len = @intCast(ChunkSize),
-    });
+    const out = try allocator.alloc(u8, @intCast(bound));
+    errdefer allocator.free(out);
 
-    _ = zstd_stream.reader.streamRemaining(&out.writer) catch |e| {
-        if (zstd_stream.err) |ze| return ze;
-        return e;
-    };
-    if (zstd_stream.err) |ze| return ze;
+    const n = zstd.ZSTD_decompress(out.ptr, out.len, compressed.ptr, compressed.len);
+    if (zstd.ZSTD_isError(n) != 0) return error.ZstdDecode;
 
-    const result = try out.toOwnedSlice();
-    if (result.len > ChunkSize) {
-        allocator.free(result);
-        return error.ChunkOversize;
-    }
-    return result;
+    return out[0..@intCast(n)];
 }
 
 test "decompress zstd empty frame" {
@@ -70,5 +62,5 @@ test "decompress zstd empty frame" {
 
 test "decompress zstd rejects truncated frame" {
     const gpa = std.testing.allocator;
-    try std.testing.expectError(std.compress.zstd.Decompress.Error.BadMagic, decompressZstd(gpa, "\x28\xb5\x2f"));
+    try std.testing.expectError(error.ZstdDecode, decompressZstd(gpa, "\x28\xb5\x2f"));
 }

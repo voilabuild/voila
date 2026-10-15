@@ -1,5 +1,23 @@
 const std = @import("std");
 
+fn linkStaticZstd(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    mod: *std.Build.Module,
+) void {
+    const zstd_dep = b.dependency("zstd", .{
+        .target = target,
+        .optimize = optimize,
+        .linkage = .static,
+        .compression = false,
+        .decompression = true,
+        .dictbuilder = false,
+        .deprecated = false,
+    });
+    mod.linkLibrary(zstd_dep.artifact("zstd"));
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -8,6 +26,15 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    const zstd_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/zstd_shim.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const zstd_mod = zstd_translate.createModule();
+    linkStaticZstd(b, target, optimize, zstd_mod);
 
     const fuse3_translate = b.addTranslateC(.{
         .root_source_file = b.path("src/fuse3_shim.h"),
@@ -27,10 +54,12 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "zio", .module = zio.module("zio") },
             .{ .name = "fuse3", .module = fuse3_mod },
+            .{ .name = "zstd", .module = zstd_mod },
         },
     });
     root_mod.linkSystemLibrary("fuse3", .{});
     root_mod.linkSystemLibrary("pthread", .{});
+    linkStaticZstd(b, target, optimize, root_mod);
 
     const exe = b.addExecutable(.{
         .name = "zig-fuse",
@@ -65,8 +94,12 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
+            .imports = &.{
+                .{ .name = "zstd", .module = zstd_mod },
+            },
         }),
     });
+    linkStaticZstd(b, target, optimize, voila_store_tests.root_module);
     const run_voila_store_tests = b.addRunArtifact(voila_store_tests);
 
     const test_step = b.step("test", "Run unit tests");
