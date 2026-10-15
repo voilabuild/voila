@@ -33,7 +33,7 @@ pub fn access(path: []const u8) bool {
     @memcpy(buf[0..path.len], path);
     buf[path.len] = 0;
     const rc = std.os.linux.access(buf[0..path.len :0], 0);
-    return rc == 0;
+    return !syscallFailed(rc);
 }
 
 pub fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8, limit: usize) ![]u8 {
