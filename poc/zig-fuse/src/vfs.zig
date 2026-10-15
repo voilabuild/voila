@@ -34,6 +34,19 @@ pub const Vfs = struct {
         self.tree.deinit();
     }
 
+    pub fn inoFromPath(self: *const Vfs, path: []const u8) ?u64 {
+        if (std.mem.eql(u8, path, "/")) return constants.root_ino;
+        const file = self.tree.file orelse return null;
+        const link = self.tree.symlink orelse return null;
+        if (path.len == file.name.len + 1 and path[0] == '/' and std.mem.eql(u8, path[1..], file.name)) {
+            return constants.file_ino;
+        }
+        if (path.len == link.name.len + 1 and path[0] == '/' and std.mem.eql(u8, path[1..], link.name)) {
+            return constants.link_ino;
+        }
+        return null;
+    }
+
     pub fn lookup(self: *const Vfs, parent: u64, name: []const u8) ?u64 {
         if (parent == constants.root_ino and (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, ".."))) {
             return constants.root_ino;

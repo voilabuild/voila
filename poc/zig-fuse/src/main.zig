@@ -67,15 +67,15 @@ fn rootMountProve(io: std.Io, init: std.process.Init, fixture_dir: []const u8) !
     var ctx: ServeCtx = undefined;
     ctx.err = null;
     ctx.vfs = vfs;
-    ctx.session = fuse_linux.mountSession(init.gpa, mount_dir) catch |e| return e;
+    ctx.session = fuse_linux.mountSession(init.gpa, mount_dir, &ctx.vfs) catch |e| return e;
 
     const thread = try std.Thread.spawn(.{}, struct {
-        fn run(io_inner: std.Io, gpa: std.mem.Allocator, shared: *ServeCtx) void {
-            fuse_linux.serveSession(io_inner, gpa, &shared.vfs, &shared.session) catch |e| {
-                if (e != error.FuseClosed) shared.err = e;
+        fn run(shared: *ServeCtx) void {
+            fuse_linux.serveSession(&shared.session) catch |e| {
+                shared.err = e;
             };
         }
-    }.run, .{ io, init.gpa, &ctx });
+    }.run, .{&ctx});
 
     for (0..3000) |_| {
         if (dirHasEntries(mount_dir)) break;

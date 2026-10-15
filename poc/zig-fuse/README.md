@@ -1,6 +1,6 @@
 # Zig FUSE proof (poc)
 
-**Claim:** a Zig 0.17 process using [zio](https://github.com/lalinsky/zio) and `std.Io` is the read-only filesystem behind a Linux kernel FUSE mount. A read that crosses a 1 MiB chunk boundary must return the correct bytes (byte `1048575` is `0xAA`, byte `1048576` is `0xCC`).
+**Claim:** a Zig 0.17 process using [zio](https://github.com/lalinsky/zio) and `std.Io` implements the read-only VFS; **libfuse3** handles the Linux FUSE session and kernel protocol. A read that crosses a 1 MiB chunk boundary must return the correct bytes (byte `1048575` is `0xAA`, byte `1048576` is `0xCC`).
 
 This PoC does not use go-fuse, image ingest, the worker socket, xattrs, statfs, or the EROFS/NBD path. macOS / FSKit are out of scope.
 
@@ -18,7 +18,7 @@ Zig does not rebuild the fixture.
 
 ## Checks (pass bar)
 
-On Linux as root with `/dev/fuse`:
+On Linux as root with `/dev/fuse` and **libfuse3** dev headers/libs installed (e.g. `libfuse3-dev` on Debian/Ubuntu):
 
 1. Root listing exposes `big.bin` and `link`
 2. `readlink` of `link` is `big.bin`
@@ -45,4 +45,9 @@ Serve only (root):
 zig build run -- serve fixture-out /tmp/zig-fuse-mnt
 ```
 
-(Blocks in the FUSE read loop until unmount.)
+(Blocks in `fuse_loop` until unmount.)
+
+## Build deps
+
+- Zig 0.17
+- `pkg-config fuse3` (links `-lfuse3 -lpthread`, includes under `/usr/include/fuse3`)
