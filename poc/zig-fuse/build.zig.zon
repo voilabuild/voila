@@ -1,0 +1,22 @@
+.{
+    .name = .zig_fuse,
+    .version = "0.0.0",
+    .fingerprint = 0x9c93817987c37926,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .zio = .{
+            .url = "git+https://github.com/lalinsky/zio#main",
+            .hash = "zio-0.19.0-xHbVVGyfLADixywCvig4DnuueTSGVzZMUbeI5DMdNvhw",
+        },
+        .zstd = .{
+            .url = "git+https://github.com/allyourcodebase/zstd?ref=master#4ccb01e6fceae86fb9fe36c60b8a103cdc058155",
+            .hash = "zstd-1.5.7-2-KEItkAMwAADNhCbGaImKrjXjnSA51jcqEbGCA3RasVZ9",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "README.md",
+    },
+}
