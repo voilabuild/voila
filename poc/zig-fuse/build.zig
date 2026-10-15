@@ -18,6 +18,60 @@ fn linkStaticZstd(
     mod.linkLibrary(zstd_dep.artifact("zstd"));
 }
 
+fn createStaticBlake3(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    blake3_dep: *std.Build.Dependency,
+) *std.Build.Step.Compile {
+    const c_root = blake3_dep.path("c");
+    const lib = b.addLibrary(.{
+        .name = "blake3",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    lib.root_module.addCSourceFiles(.{
+        .root = c_root,
+        .files = &.{
+            "blake3.c",
+            "blake3_dispatch.c",
+            "blake3_portable.c",
+        },
+    });
+    switch (target.result.cpu.arch) {
+        .x86_64 => {
+            if (target.result.os.tag == .windows) {
+                lib.root_module.addAssemblyFile(blake3_dep.path("c/blake3_sse2_x86-64_windows_gnu.S"));
+                lib.root_module.addAssemblyFile(blake3_dep.path("c/blake3_sse41_x86-64_windows_gnu.S"));
+                lib.root_module.addAssemblyFile(blake3_dep.path("c/blake3_avx2_x86-64_windows_gnu.S"));
+                lib.root_module.addAssemblyFile(blake3_dep.path("c/blake3_avx512_x86-64_windows_gnu.S"));
+            } else {
+                lib.root_module.addAssemblyFile(blake3_dep.path("c/blake3_sse2_x86-64_unix.S"));
+                lib.root_module.addAssemblyFile(blake3_dep.path("c/blake3_sse41_x86-64_unix.S"));
+                lib.root_module.addAssemblyFile(blake3_dep.path("c/blake3_avx2_x86-64_unix.S"));
+                lib.root_module.addAssemblyFile(blake3_dep.path("c/blake3_avx512_x86-64_unix.S"));
+            }
+        },
+        .aarch64, .aarch64_be => {
+            lib.root_module.addCSourceFiles(.{
+                .root = c_root,
+                .files = &.{"blake3_neon.c"},
+            });
+        },
+        else => {},
+    }
+    lib.root_module.addIncludePath(c_root);
+    return lib;
+}
+
+fn linkStaticBlake3(mod: *std.Build.Module, blake3_lib: *std.Build.Step.Compile) void {
+    mod.linkLibrary(blake3_lib);
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -26,6 +80,21 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    const blake3_dep = b.dependency("blake3", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const blake3_lib = createStaticBlake3(b, target, optimize, blake3_dep);
+
+    const blake3_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/blake3_shim.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    blake3_translate.addIncludePath(blake3_dep.path("c"));
+    const blake3_mod = blake3_translate.createModule();
+    linkStaticBlake3(blake3_mod, blake3_lib);
 
     const zstd_translate = b.addTranslateC(.{
         .root_source_file = b.path("src/zstd_shim.h"),
@@ -55,11 +124,13 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zio", .module = zio.module("zio") },
             .{ .name = "fuse3", .module = fuse3_mod },
             .{ .name = "zstd", .module = zstd_mod },
+            .{ .name = "blake3_c", .module = blake3_mod },
         },
     });
     root_mod.linkSystemLibrary("fuse3", .{});
     root_mod.linkSystemLibrary("pthread", .{});
     linkStaticZstd(b, target, optimize, root_mod);
+    linkStaticBlake3(root_mod, blake3_lib);
 
     const exe = b.addExecutable(.{
         .name = "zig-fuse",
@@ -96,10 +167,12 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
             .imports = &.{
                 .{ .name = "zstd", .module = zstd_mod },
+                .{ .name = "blake3_c", .module = blake3_mod },
             },
         }),
     });
     linkStaticZstd(b, target, optimize, voila_store_tests.root_module);
+    linkStaticBlake3(voila_store_tests.root_module, blake3_lib);
     const run_voila_store_tests = b.addRunArtifact(voila_store_tests);
 
     const test_step = b.step("test", "Run unit tests");

@@ -49,7 +49,7 @@ zig build run -- serve fixture-out /tmp/zig-fuse-mnt
 
 ## Real voila store (next step)
 
-Go exports a flattened JSON index from an ingested image (`mount.Tree` + chunk store). Zig mounts it with lazy chunk reads (`algo=0` raw, `algo=1` zstd via vendored **static** libzstd, decompression-only).
+Go exports a flattened JSON index from an ingested image (`mount.Tree` + chunk store). Zig mounts it with lazy chunk reads (`algo=0` raw, `algo=1` zstd via vendored **static** libzstd, decompression-only). After decode, each chunk is checked with **BLAKE3-256 of the raw bytes** against the chunk id (same as `chunkstore.LocalStore.Get`), using the official [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) C implementation (static, runtime SIMD dispatch).
 
 ```bash
 # ingest once
