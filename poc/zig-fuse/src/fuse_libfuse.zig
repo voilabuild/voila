@@ -182,11 +182,7 @@ pub fn mountSession(allocator: std.mem.Allocator, mountpoint: []const u8, vfs: *
 
 pub fn serveSession(session: *Session) !void {
     const f = session.fuse orelse return error.NoFuse;
-    if (c.fuse_daemonize(1) != 0) return error.FuseDaemonizeFailed;
     const rc = c.fuse_loop(f);
-    c.fuse_unmount(f);
-    c.fuse_destroy(f);
-    session.fuse = null;
     if (rc != 0) return error.FuseLoopFailed;
 }
 

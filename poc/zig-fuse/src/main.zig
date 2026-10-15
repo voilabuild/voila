@@ -6,6 +6,7 @@ const voila_vfs_mod = @import("voila_vfs.zig");
 const fuse_linux = @import("fuse_linux.zig");
 const posix_util = @import("posix_util.zig");
 const constants = @import("constants.zig");
+const voila_loader = @import("voila_loader.zig");
 
 pub const std_options_debug_io = zio.debug_io;
 
@@ -50,8 +51,20 @@ pub fn main(init: std.process.Init) !void {
         try fuse_linux.mountAndServe(io, init.gpa, &fuse_vfs, mountpoint);
         return;
     }
+    if (std.mem.eql(u8, sub, "serve-store")) {
+        const voila_root = args.next() orelse return error.NeedVoilaRoot;
+        const image = args.next() orelse return error.NeedImage;
+        const mountpoint = args.next() orelse return error.NeedMountpoint;
+        const voila_root_abs = try resolveAbs(init.gpa, voila_root);
+        defer init.gpa.free(voila_root_abs);
+        const index = try voila_loader.loadIndex(init.gpa, voila_root_abs, image);
+        var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = try voila_vfs_mod.VoilaVfs.initFromIndex(init.gpa, index) };
+        defer fuse_vfs.deinit();
+        try fuse_linux.mountAndServe(io, init.gpa, &fuse_vfs, mountpoint);
+        return;
+    }
     std.debug.print(
-        "usage:\n  zig-fuse prove [fixture-dir]\n  zig-fuse prove-store <voila-root> <image>\n  zig-fuse serve [fixture-dir] <mountpoint>\n  zig-fuse serve-index <zig-index.json> <mountpoint>\n",
+        "usage:\n  zig-fuse prove [fixture-dir]\n  zig-fuse prove-store <voila-root> <image>\n  zig-fuse serve [fixture-dir] <mountpoint>\n  zig-fuse serve-index <zig-index.json> <mountpoint>\n  zig-fuse serve-store <voila-root> <image-ref> <mountpoint>\n",
         .{},
     );
 }
@@ -140,13 +153,9 @@ fn proveStore(io: std.Io, init: std.process.Init, voila_root: []const u8, image:
     }
     const voila_root_abs = try resolveAbs(init.gpa, voila_root);
     defer init.gpa.free(voila_root_abs);
-    const index_path = try std.fmt.allocPrint(init.gpa, "/tmp/zig-index-{d}.json", .{std.c.getpid()});
-    defer init.gpa.free(index_path);
-    try exportIndex(init, voila_root_abs, image, index_path);
-
-    var voila_vfs = try voila_vfs_mod.VoilaVfs.load(init.gpa, index_path);
-    defer voila_vfs.deinit();
-    var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs };
+    const index = try voila_loader.loadIndex(init.gpa, voila_root_abs, image);
+    var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = try voila_vfs_mod.VoilaVfs.initFromIndex(init.gpa, index) };
+    defer fuse_vfs.deinit();
 
     const mount_dir = try std.fmt.allocPrint(init.gpa, "/tmp/zig-fuse-store-mnt-{d}", .{std.c.getpid()});
     defer init.gpa.free(mount_dir);
@@ -168,29 +177,80 @@ fn proveStore(io: std.Io, init: std.process.Init, voila_root: []const u8, image:
             };
         }
     }.run, .{&ctx});
+    defer {
+        ctx.session.stop();
+        thread.join();
+        ctx.session.deinit();
+    }
 
     for (0..5000) |_| {
-        const probe = try std.fmt.allocPrint(init.gpa, "{s}/bin", .{mount_dir});
-        defer init.gpa.free(probe);
-        if (posix_util.access(probe)) break;
+        if (mountDirReady(mount_dir)) break;
         try io.sleep(std.Io.Duration.fromMilliseconds(1), .awake);
     }
 
     try checkReaddirStore(init.gpa, mount_dir);
-    const os_release = try std.fmt.allocPrint(init.gpa, "{s}/etc/os-release", .{mount_dir});
-    defer init.gpa.free(os_release);
+
+    if (fuse_vfs.inoFromPath("/bench/large.bin")) |_| {
+        try verifyMountBytes(init.gpa, mount_dir, &fuse_vfs, "/bench/large.bin", 0, 32);
+        try verifyMountBytes(init.gpa, mount_dir, &fuse_vfs, "/bench/large.bin", constants.chunk_size - 1, 2);
+        std.debug.print("bench/large.bin: nested path + byte match at 0 and chunk boundary\n", .{});
+    }
+
+    try proveStoreDistroExtras(init.gpa, mount_dir);
+    try fusermountU(init.gpa, mount_dir);
+    std.debug.print("prove-store: native index, mount, readdir, sample read — ok\n", .{});
+}
+
+fn proveStoreDistroExtras(allocator: std.mem.Allocator, mount_dir: []const u8) !void {
+    const os_release = try std.fmt.allocPrint(allocator, "{s}/etc/os-release", .{mount_dir});
+    defer allocator.free(os_release);
     if (posix_util.access(os_release)) {
         var hdr: [64]u8 = undefined;
-        try preadFile(os_release, &hdr, 0);
+        preadFile(os_release, &hdr, 0) catch return;
         if (!std.mem.startsWith(u8, hdr[0..], "NAME=")) return error.OsReleaseWrong;
         std.debug.print("etc/os-release: {s}...\n", .{hdr[0..@min(hdr.len, 32)]});
     }
 
-    ctx.session.stop();
-    thread.join();
-    ctx.session.deinit();
-    if (ctx.err != null) return ctx.err.?;
-    std.debug.print("prove-store: export index, mount, readdir, sample read — ok\n", .{});
+    const link_candidates = [_][]const u8{ "bin", "lib", "lib64", "sbin" };
+    for (link_candidates) |name| {
+        const link_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ mount_dir, name });
+        defer allocator.free(link_path);
+        if (!posix_util.access(link_path)) continue;
+        const target = readlinkAlloc(allocator, link_path) catch continue;
+        defer allocator.free(target);
+        std.debug.print("readlink {s} -> {s}\n", .{ name, target });
+        break;
+    }
+}
+
+fn fusermountU(allocator: std.mem.Allocator, mount_dir: []const u8) !void {
+    const cmd = try std.fmt.allocPrint(allocator, "fusermount3 -u {s} 2>/dev/null || umount {s}", .{ mount_dir, mount_dir });
+    defer allocator.free(cmd);
+    const cmd_z = try allocator.allocSentinel(u8, cmd.len, 0);
+    defer allocator.free(cmd_z);
+    @memcpy(cmd_z, cmd);
+    _ = posix_util.shell(cmd_z);
+}
+
+fn verifyMountBytes(
+    allocator: std.mem.Allocator,
+    mount_dir: []const u8,
+    vfs: *fuse_vfs_mod.FuseVfs,
+    vpath: []const u8,
+    off: u64,
+    len: usize,
+) !void {
+    const ino = vfs.inoFromPath(vpath) orelse return error.NoTestFile;
+    var expect: [64]u8 = undefined;
+    if (len > expect.len) return error.NoTestFile;
+    const got = vfs.readFuse(ino, expect[0..len], off);
+    if (got < len) return error.ShortRead;
+    const rel = if (vpath.len > 0 and vpath[0] == '/') vpath[1..] else vpath;
+    const mount_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ mount_dir, rel });
+    defer allocator.free(mount_path);
+    var fuse_buf: [64]u8 = undefined;
+    try preadFile(mount_path, fuse_buf[0..len], off);
+    if (!std.mem.eql(u8, expect[0..len], fuse_buf[0..len])) return error.BytesMismatch;
 }
 
 fn checkReaddirStore(allocator: std.mem.Allocator, mount_dir: []const u8) !void {
@@ -200,21 +260,6 @@ fn checkReaddirStore(allocator: std.mem.Allocator, mount_dir: []const u8) !void 
     defer allocator.free(cmd_z);
     @memcpy(cmd_z, cmd);
     if (posix_util.shell(cmd_z) != 0) return error.ReaddirMissing;
-}
-
-fn exportIndex(init: std.process.Init, voila_root: []const u8, image: []const u8, out_path: []const u8) !void {
-    const repo = try findVoilaRoot(init.gpa);
-    defer init.gpa.free(repo);
-    const cmd = try std.fmt.allocPrint(
-        init.gpa,
-        "cd {s} && go run -tags zig_fuse_export ./poc/zig-fuse/export -root {s} -image {s} -o {s}",
-        .{ repo, voila_root, image, out_path },
-    );
-    defer init.gpa.free(cmd);
-    const cmd_z = try init.gpa.allocSentinel(u8, cmd.len, 0);
-    defer init.gpa.free(cmd_z);
-    @memcpy(cmd_z, cmd);
-    if (posix_util.shell(cmd_z) != 0) return error.ExportFailed;
 }
 
 fn checkReaddir(allocator: std.mem.Allocator, mount_dir: []const u8) !void {
@@ -240,6 +285,15 @@ fn checkReaddir(allocator: std.mem.Allocator, mount_dir: []const u8) !void {
         if (std.mem.eql(u8, line, "link")) has_link = true;
     }
     if (!has_big or !has_link) return error.ReaddirMissing;
+}
+
+fn mountDirReady(mount_dir: []const u8) bool {
+    const cmd = std.fmt.allocPrint(std.heap.page_allocator, "ls -1 {s} 2>/dev/null | head -1", .{mount_dir}) catch return false;
+    defer std.heap.page_allocator.free(cmd);
+    const cmd_z = std.heap.page_allocator.allocSentinel(u8, cmd.len, 0) catch return false;
+    defer std.heap.page_allocator.free(cmd_z);
+    @memcpy(cmd_z, cmd);
+    return posix_util.shell(cmd_z) == 0;
 }
 
 fn dirHasEntries(mount_dir: []const u8) bool {

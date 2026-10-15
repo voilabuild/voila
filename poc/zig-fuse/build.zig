@@ -105,6 +105,15 @@ pub fn build(b: *std.Build) void {
     const zstd_mod = zstd_translate.createModule();
     linkStaticZstd(b, target, optimize, zstd_mod);
 
+    const sqlite_translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/sqlite_shim.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const sqlite_mod = sqlite_translate.createModule();
+    sqlite_mod.linkSystemLibrary("sqlite3", .{});
+
     const fuse3_translate = b.addTranslateC(.{
         .root_source_file = b.path("src/fuse3_shim.h"),
         .target = target,
@@ -125,10 +134,12 @@ pub fn build(b: *std.Build) void {
             .{ .name = "fuse3", .module = fuse3_mod },
             .{ .name = "zstd", .module = zstd_mod },
             .{ .name = "blake3_c", .module = blake3_mod },
+            .{ .name = "sqlite_c", .module = sqlite_mod },
         },
     });
     root_mod.linkSystemLibrary("fuse3", .{});
     root_mod.linkSystemLibrary("pthread", .{});
+    root_mod.linkSystemLibrary("sqlite3", .{});
     linkStaticZstd(b, target, optimize, root_mod);
     linkStaticBlake3(root_mod, blake3_lib);
 
@@ -175,8 +186,27 @@ pub fn build(b: *std.Build) void {
     linkStaticBlake3(voila_store_tests.root_module, blake3_lib);
     const run_voila_store_tests = b.addRunArtifact(voila_store_tests);
 
+    const loader_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/voila_loader_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "zstd", .module = zstd_mod },
+                .{ .name = "blake3_c", .module = blake3_mod },
+                .{ .name = "sqlite_c", .module = sqlite_mod },
+            },
+        }),
+    });
+    loader_tests.root_module.linkSystemLibrary("sqlite3", .{});
+    linkStaticZstd(b, target, optimize, loader_tests.root_module);
+    linkStaticBlake3(loader_tests.root_module, blake3_lib);
+    const run_loader_tests = b.addRunArtifact(loader_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_abi_tests.step);
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&run_voila_store_tests.step);
+    test_step.dependOn(&run_loader_tests.step);
 }
