@@ -27,6 +27,7 @@ pub fn main(init: std.process.Init) !void {
         defer init.gpa.free(fixture_abs);
         var vfs = try vfs_mod.Vfs.load(init.gpa, fixture_abs);
         defer vfs.deinit();
+        try vfs.preloadAllChunks(io);
         try fuse_linux.mountAndServe(io, init.gpa, &vfs, mountpoint);
         return;
     }
@@ -54,7 +55,8 @@ fn rootMountProve(io: std.Io, init: std.process.Init, fixture_dir: []const u8) !
     defer init.gpa.free(mount_dir);
     try posix_util.makePath(mount_dir);
 
-    const vfs = try vfs_mod.Vfs.load(init.gpa, fixture_dir);
+    var vfs = try vfs_mod.Vfs.load(init.gpa, fixture_dir);
+    try vfs.preloadAllChunks(io);
 
     const ServeCtx = struct {
         session: fuse_linux.Session,
@@ -70,7 +72,7 @@ fn rootMountProve(io: std.Io, init: std.process.Init, fixture_dir: []const u8) !
     const thread = try std.Thread.spawn(.{}, struct {
         fn run(io_inner: std.Io, gpa: std.mem.Allocator, shared: *ServeCtx) void {
             fuse_linux.serveSession(io_inner, gpa, &shared.vfs, &shared.session) catch |e| {
-                shared.err = e;
+                if (e != error.FuseClosed) shared.err = e;
             };
         }
     }.run, .{ io, init.gpa, &ctx });
@@ -107,6 +109,7 @@ fn rootMountProve(io: std.Io, init: std.process.Init, fixture_dir: []const u8) !
     ctx.session.deinit();
     ctx.vfs.deinit();
     if (ctx.err != null) return ctx.err.?;
+    std.debug.print("prove: readdir, readlink, boundary bytes, write EROFS — ok\n", .{});
 }
 
 fn checkReaddir(allocator: std.mem.Allocator, mount_dir: []const u8) !void {

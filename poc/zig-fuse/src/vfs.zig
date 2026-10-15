@@ -108,6 +108,22 @@ pub const Vfs = struct {
         };
     }
 
+    pub fn preloadAllChunks(self: *Vfs, io: std.Io) !void {
+        for (0..self.walker.chunk_names.len) |slot| {
+            try self.walker.ensureChunkLoaded(io, slot);
+        }
+    }
+
+    /// FUSE READ handler: chunks must be preloaded on the main thread (no io / alloc on serve thread).
+    pub fn readFuse(self: *Vfs, ino: u64, buf: []u8, off: u64) usize {
+        if (ino != constants.file_ino) return 0;
+        const file = self.tree.file orelse return 0;
+        if (off >= file.size) return 0;
+        const max = @min(buf.len, @as(usize, @intCast(file.size - off)));
+        self.walker.readSync(buf[0..max], off);
+        return max;
+    }
+
     pub fn read(self: *Vfs, io: std.Io, ino: u64, buf: []u8, off: u64) !usize {
         if (ino != constants.file_ino) return 0;
         const file = self.tree.file orelse return 0;

@@ -5,6 +5,8 @@ fn readFd(fd: std.posix.fd_t, buf: []u8) !usize {
     if (n < 0) {
         const err: std.posix.E = @enumFromInt(std.c._errno().*);
         if (err == .SUCCESS) return error.Unexpected;
+        const code: u16 = @intCast(@intFromEnum(err));
+        if (code == 19 or code == 9) return error.FuseClosed; // ENODEV, EBADF after unmount
         return std.posix.unexpectedErrno(err);
     }
     if (n == 0) return error.FuseClosed;
@@ -33,7 +35,10 @@ pub const Server = struct {
 
     pub fn serve(self: *Server) !void {
         while (true) {
-            const n = try readFd(self.fuse_fd, self.read_buf);
+            const n = readFd(self.fuse_fd, self.read_buf) catch |e| switch (e) {
+                error.FuseClosed => return,
+                else => return e,
+            };
             if (n < @sizeOf(abi.InHeader)) return error.BadFuseLen;
             var off: usize = 0;
             while (off + @sizeOf(abi.InHeader) <= n) {
@@ -59,7 +64,8 @@ pub const Server = struct {
             abi.FUSE_READLINK => try self.handleReadlink(hdr),
             abi.FUSE_ACCESS => try self.replyOk(hdr, &.{}),
             abi.FUSE_STATX => try self.handleStatx(hdr),
-            abi.FUSE_FORGET, abi.FUSE_RELEASE, abi.FUSE_FLUSH, abi.FUSE_RELEASEDIR => {},
+            abi.FUSE_FORGET => {},
+            abi.FUSE_FLUSH, abi.FUSE_RELEASE, abi.FUSE_RELEASEDIR => try self.replyOk(hdr, &.{}),
             else => try self.replyErr(hdr, -abi.EOPNOTSUPP),
         }
     }
@@ -194,7 +200,7 @@ pub const Server = struct {
     fn handleRead(self: *Server, hdr: *const abi.InHeader, payload: []const u8) !void {
         const read_in = try abi.readInFrom(payload);
         const want = @min(read_in.size, @as(u32, @intCast(self.reply_buf.len - @sizeOf(abi.OutHeader))));
-        const n = try self.vfs.read(self.io, hdr.nodeid, self.reply_buf[@sizeOf(abi.OutHeader) ..][0..want], read_in.offset);
+        const n = self.vfs.readFuse(hdr.nodeid, self.reply_buf[@sizeOf(abi.OutHeader) ..][0..want], read_in.offset);
         try self.replyOk(hdr, self.reply_buf[@sizeOf(abi.OutHeader) ..][0..n]);
     }
 
