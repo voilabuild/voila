@@ -58,7 +58,19 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_tests = b.addRunArtifact(walker_tests);
+
+    const voila_store_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/voila_store.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    const run_voila_store_tests = b.addRunArtifact(voila_store_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_abi_tests.step);
     test_step.dependOn(&run_tests.step);
+    test_step.dependOn(&run_voila_store_tests.step);
 }

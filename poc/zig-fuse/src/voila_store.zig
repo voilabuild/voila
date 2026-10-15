@@ -33,33 +33,42 @@ pub fn loadChunkRaw(
 }
 
 fn decompressZstd(allocator: std.mem.Allocator, compressed: []const u8) ![]u8 {
-    const tmp_in = try std.fmt.allocPrint(allocator, "/tmp/zig-fuse-chunk-{d}.zst", .{std.c.getpid()});
-    defer allocator.free(tmp_in);
-    const tmp_out = try std.fmt.allocPrint(allocator, "/tmp/zig-fuse-chunk-{d}.raw", .{std.c.getpid()});
-    defer allocator.free(tmp_out);
-    try writeFileBytes(tmp_in, compressed);
-    const cmd = try std.fmt.allocPrint(allocator, "zstd -dq -f -o {s} {s}", .{ tmp_out, tmp_in });
-    defer allocator.free(cmd);
-    const cmd_z = try allocator.allocSentinel(u8, cmd.len, 0);
-    defer allocator.free(cmd_z);
-    @memcpy(cmd_z, cmd);
-    if (posix_util.shell(cmd_z) != 0) return error.ZstdDecode;
-    defer posix_util.unlink(tmp_in);
-    defer posix_util.unlink(tmp_out);
-    return posix_util.readFileAlloc(allocator, tmp_out, ChunkSize);
+    if (compressed.len == 0) return error.ZstdDecode;
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+
+    var in: std.Io.Reader = .fixed(compressed);
+    var zstd_stream: std.compress.zstd.Decompress = .init(&in, &.{}, .{
+        .window_len = @intCast(ChunkSize),
+    });
+
+    _ = zstd_stream.reader.streamRemaining(&out.writer) catch |e| {
+        if (zstd_stream.err) |ze| return ze;
+        return e;
+    };
+    if (zstd_stream.err) |ze| return ze;
+
+    const result = try out.toOwnedSlice();
+    if (result.len > ChunkSize) {
+        allocator.free(result);
+        return error.ChunkOversize;
+    }
+    return result;
 }
 
-fn writeFileBytes(path: []const u8, data: []const u8) !void {
-    const path_z = try std.heap.page_allocator.allocSentinel(u8, path.len, 0);
-    defer std.heap.page_allocator.free(path_z);
-    @memcpy(path_z, path);
-    const fd = std.c.open(path_z, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o644));
-    if (fd < 0) return error.FileOpenFailed;
-    defer _ = std.c.close(fd);
-    var off: usize = 0;
-    while (off < data.len) {
-        const n = std.c.write(fd, data[off..].ptr, data.len - off);
-        if (n < 0) return error.WriteFailed;
-        off += @intCast(n);
-    }
+test "decompress zstd empty frame" {
+    const input_raw =
+        "\x28\xb5\x2f\xfd" ++ // zstandard frame magic number
+        "\x20\x00" ++ // frame header: single_segment_flag, frame_content_size zero
+        "\x01\x00\x00"; // last block, raw, size zero
+    const gpa = std.testing.allocator;
+    const raw = try decompressZstd(gpa, input_raw);
+    defer gpa.free(raw);
+    try std.testing.expectEqualSlices(u8, "", raw);
+}
+
+test "decompress zstd rejects truncated frame" {
+    const gpa = std.testing.allocator;
+    try std.testing.expectError(std.compress.zstd.Decompress.Error.BadMagic, decompressZstd(gpa, "\x28\xb5\x2f"));
 }
