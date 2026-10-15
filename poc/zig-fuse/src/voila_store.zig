@@ -1,6 +1,7 @@
 const std = @import("std");
 const posix_util = @import("posix_util.zig");
 const zstd = @import("zstd");
+const blake3_c = @import("blake3_c");
 
 pub const ChunkSize = 1 << 20;
 
@@ -50,8 +51,11 @@ fn verifyChunkId(chunk_hex: []const u8, raw: []const u8) !void {
     var expect: [32]u8 = undefined;
     _ = try std.fmt.hexToBytes(expect[0..], chunk_hex);
 
+    var hasher: blake3_c.blake3_hasher = undefined;
+    blake3_c.blake3_hasher_init(&hasher);
+    blake3_c.blake3_hasher_update(&hasher, raw.ptr, raw.len);
     var digest: [32]u8 = undefined;
-    std.crypto.hash.Blake3.hash(raw, &digest, .{});
+    blake3_c.blake3_hasher_finalize(&hasher, &digest, blake3_c.BLAKE3_OUT_LEN);
     if (!std.mem.eql(u8, &digest, &expect)) return error.ChunkIntegrity;
 }
 

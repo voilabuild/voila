@@ -12,6 +12,10 @@
             .url = "git+https://github.com/allyourcodebase/zstd?ref=master#4ccb01e6fceae86fb9fe36c60b8a103cdc058155",
             .hash = "zstd-1.5.7-2-KEItkAMwAADNhCbGaImKrjXjnSA51jcqEbGCA3RasVZ9",
         },
+        .blake3 = .{
+            .url = "git+https://github.com/BLAKE3-team/BLAKE3?ref=master#f55849f89cd85083c1c9daa2c5de20766f309c00",
+            .hash = "N-V-__8AAMnrGwBumfNI7pLRW-e3ONLneFXxMkMcrlvmHMn-",
+        },
     },
     .paths = .{
         "build.zig",
