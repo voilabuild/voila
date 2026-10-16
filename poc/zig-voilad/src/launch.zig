@@ -1,8 +1,12 @@
 const std = @import("std");
 const voila_resolve = @import("voila_resolve");
+const voila_image_pull = @import("voila_image_pull");
+const voila_registry = @import("voila_registry");
+const image_totals = @import("image_totals");
 const grpc_shim = @import("grpc_shim");
 const posix_util = @import("posix_util");
 const runtime = @import("runtime");
+const registry_creds = @import("registry_creds");
 
 fn runCmd(argv: []const []const u8) !void {
     var child = try std.process.spawn(runtime.io, .{ .argv = argv });
@@ -37,12 +41,13 @@ pub fn runContainer(
     args: []const []const u8,
     cb: *grpc_shim.RunCallbacks,
 ) !i32 {
-    const rec = try voila_resolve.resolveImage(allocator, voila_root, image);
+    const rec = resolveWithAutoPull(allocator, voila_root, image) catch return -1;
     defer {
         allocator.free(rec.ref);
         allocator.free(rec.image_digest);
         allocator.free(rec.merged_root_manifest);
     }
+    const totals = image_totals.loadForRef(allocator, voila_root, rec.ref);
 
     const t: u32 = @intCast(std.c.getpid());
     var rnd: [4]u8 = undefined;
@@ -77,13 +82,29 @@ pub fn runContainer(
         try posix_util.makePath(d);
     }
 
+    const stats_path = try std.fmt.allocPrint(allocator, "{s}/fetch-stats.json", .{ctx_dir});
+    defer allocator.free(stats_path);
+
+    const chunks_arg = try std.fmt.allocPrint(allocator, "{d}", .{totals.chunks});
+    defer allocator.free(chunks_arg);
+    const bytes_arg = try std.fmt.allocPrint(allocator, "{d}", .{totals.bytes});
+    defer allocator.free(bytes_arg);
+
     var fuse = try std.process.spawn(runtime.io, .{
-        .argv = &[_][]const u8{ zig_fuse_bin, "serve-store", voila_root, rec.ref, lower },
+        .argv = &[_][]const u8{
+            zig_fuse_bin, "serve-store", voila_root, rec.ref, lower, stats_path, chunks_arg, bytes_arg,
+        },
     });
-    defer {
-        fuse.kill(runtime.io);
-        if (fuse.id != null) _ = fuse.wait(runtime.io) catch {};
-    }
+    var fuse_stopped = false;
+    const stopFuse = struct {
+        fn stop(f: *std.process.Child, done: *bool) void {
+            if (done.*) return;
+            done.* = true;
+            f.kill(runtime.io);
+            if (f.id != null) _ = f.wait(runtime.io) catch {};
+        }
+    }.stop;
+    defer stopFuse(&fuse, &fuse_stopped);
     const probe = try std.fmt.allocPrint(allocator, "{s}/etc/os-release", .{lower});
     defer allocator.free(probe);
     var fuse_ready = false;
@@ -155,7 +176,58 @@ pub fn runContainer(
         .exited => |c| @intCast(c),
         else => 255,
     };
+    stopFuse(&fuse, &fuse_stopped);
+    const fetch = readFetchStats(allocator, stats_path);
+    _ = cb.on_stats(cb.ctx, fetch.chunks_fetched, fetch.bytes_fetched, totals.chunks, totals.bytes);
     _ = cb.on_exit(cb.ctx, code);
     _ = std.process.spawn(runtime.io, .{ .argv = &[_][]const u8{ "/usr/sbin/runc", "delete", ctx_id, "--force" } }) catch {};
     return code;
+}
+
+fn ensureRegistryFromDisk(allocator: std.mem.Allocator, voila_root: []const u8) void {
+    if (voila_registry.getConfigCopy(allocator) != null) return;
+    const creds = registry_creds.load(allocator, voila_root) catch return;
+    defer {
+        allocator.free(creds.registry);
+        allocator.free(creds.token);
+    }
+    if (creds.registry.len == 0) return;
+    voila_registry.configure(allocator, creds.registry, creds.token) catch {};
+}
+
+fn resolveWithAutoPull(allocator: std.mem.Allocator, voila_root: []const u8, image: []const u8) !voila_resolve.ImageRecord {
+    return voila_resolve.resolveImage(allocator, voila_root, image) catch |e| {
+        ensureRegistryFromDisk(allocator, voila_root);
+        const man = voila_image_pull.autoPull(runtime.io, allocator, voila_root, image) catch |pull_err| {
+            if (pull_err == error.Skip or pull_err == error.NoRegistry) return e;
+            return pull_err;
+        };
+        defer {
+            allocator.free(man.image_ref);
+            allocator.free(man.image_digest);
+            allocator.free(man.merged_root);
+        }
+        return voila_resolve.resolveImage(allocator, voila_root, image);
+    };
+}
+
+fn readFetchStats(allocator: std.mem.Allocator, path: []const u8) struct {
+    chunks_fetched: u64,
+    bytes_fetched: u64,
+} {
+    const data = posix_util.readFileAlloc(allocator, path, 4096) catch return .{ .chunks_fetched = 0, .bytes_fetched = 0 };
+    defer allocator.free(data);
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{ .ignore_unknown_fields = true }) catch
+        return .{ .chunks_fetched = 0, .bytes_fetched = 0 };
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    var chunks: u64 = 0;
+    var bytes: u64 = 0;
+    if (obj.get("chunks_fetched")) |v| {
+        if (v == .integer) chunks = @intCast(v.integer);
+    }
+    if (obj.get("bytes_fetched")) |v| {
+        if (v == .integer) bytes = @intCast(v.integer);
+    }
+    return .{ .chunks_fetched = chunks, .bytes_fetched = bytes };
 }

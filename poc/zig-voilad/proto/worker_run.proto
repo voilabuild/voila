@@ -37,6 +37,14 @@ message RunOutput {
   }
 }
 
+message SetRegistryRequest {
+  string registry_url = 1;
+  string token = 2;
+}
+
+message SetRegistryResponse {}
+
 service Worker {
   rpc Run(stream RunInput) returns (stream RunOutput);
+  rpc SetRegistry(SetRegistryRequest) returns (SetRegistryResponse);
 }
