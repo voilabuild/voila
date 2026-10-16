@@ -16,7 +16,7 @@ fn negErr(e: std.posix.E) c_int {
     return -@as(c_int, @intCast(@intFromEnum(e)));
 }
 
-fn fillStatFromAttr(vfs: *const fuse_vfs.FuseVfs, ino: u64, stbuf: [*c]c.struct_stat) bool {
+fn fillStatFromAttr(vfs: *fuse_vfs.FuseVfs, ino: u64, stbuf: [*c]c.struct_stat) bool {
     const attr = vfs.attr(ino) orelse return false;
     const st: *c.struct_stat = @ptrCast(stbuf);
     st.* = std.mem.zeroes(c.struct_stat);

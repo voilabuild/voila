@@ -57,8 +57,8 @@ pub fn main(init: std.process.Init) !void {
         const mountpoint = args.next() orelse return error.NeedMountpoint;
         const voila_root_abs = try resolveAbs(init.gpa, voila_root);
         defer init.gpa.free(voila_root_abs);
-        const index = try voila_loader.loadIndex(init.gpa, voila_root_abs, image);
-        var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = try voila_vfs_mod.VoilaVfs.initFromIndex(init.gpa, index) };
+        const tree = try voila_loader.loadTreeRoot(init.gpa, voila_root_abs, image);
+        var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(init.gpa, tree) };
         defer fuse_vfs.deinit();
         try fuse_linux.mountAndServe(io, init.gpa, &fuse_vfs, mountpoint);
         return;

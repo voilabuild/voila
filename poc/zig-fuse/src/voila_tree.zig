@@ -173,7 +173,7 @@ pub const Tree = struct {
         }
     }
 
-    fn ensureInode(self: *Tree, ino: u64) !void {
+    pub fn ensureInode(self: *Tree, ino: u64) !void {
         if (self.dir_by_inode.contains(ino) or self.file_by_inode.contains(ino) or
             self.symlink_by_inode.contains(ino) or self.device_by_inode.contains(ino)) return;
         const cid = self.external_subtrees.get(ino) orelse return error.InodeNotFound;
@@ -280,6 +280,7 @@ pub const Error = error{
     InodeNotFound,
 };
 
+/// Root manifest only; external subtrees load on first touch (matches Go mount.Load).
 pub fn openTree(allocator: std.mem.Allocator, voila_root: []const u8, root_chunk: []const u8) !Tree {
     var tree: Tree = .{
         .voila_root = try allocator.dupe(u8, voila_root),
@@ -293,6 +294,12 @@ pub fn openTree(allocator: std.mem.Allocator, voila_root: []const u8, root_chunk
         .root_ino = 1,
     };
     try tree.loadRoot(root_chunk);
+    return tree;
+}
+
+/// Eager load for debug export / full index build (not used on FUSE serve-store hot path).
+pub fn openTreeEager(allocator: std.mem.Allocator, voila_root: []const u8, root_chunk: []const u8) !Tree {
+    var tree = try openTree(allocator, voila_root, root_chunk);
     tree.prefetchAll();
     return tree;
 }
