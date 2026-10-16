@@ -6,6 +6,8 @@ const image_totals = @import("image_totals");
 const grpc_shim = @import("grpc_shim");
 const posix_util = @import("posix_util");
 const runtime = @import("runtime");
+const contexts = @import("contexts");
+const registry_global = @import("registry_global");
 const registry_creds = @import("registry_creds");
 
 fn runCmd(argv: []const []const u8) !void {
@@ -27,10 +29,130 @@ fn writeFile(allocator: std.mem.Allocator, path: []const u8, data: []const u8) !
     var off: usize = 0;
     while (off < data.len) {
         const n = std.c.write(fd, data[off..].ptr, data.len - off);
-        if (n < 0) return error.FileWriteFailed;
-        if (n == 0) return error.FileWriteFailed;
+        if (n <= 0) return error.FileWriteFailed;
         off += @intCast(n);
     }
+}
+
+fn newContextId(allocator: std.mem.Allocator) ![]u8 {
+    var b: [4]u8 = undefined;
+    const fd = std.c.open("/dev/urandom", .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
+    if (fd >= 0) {
+        defer _ = std.c.close(fd);
+        _ = std.c.read(fd, &b, 4);
+    }
+    return std.fmt.allocPrint(allocator, "voila-{x:0>8}", .{std.mem.readInt(u32, &b, .little)});
+}
+
+const IoSink = struct {
+    ctx: *contexts.Context,
+    cb: *grpc_shim.RunCallbacks,
+    stream_ctx: ?*anyopaque,
+    attach_stream: bool,
+
+    fn onOut(self: *IoSink, data: []const u8, stderr: bool) void {
+        const ts = contexts.nowNs();
+        self.ctx.ring.append(data, stderr, ts);
+        if (!self.attach_stream) return;
+        if (stderr) {
+            if (self.cb.on_stderr(self.stream_ctx, data.ptr, data.len) != 0) self.attach_stream = false;
+        } else {
+            if (self.cb.on_stdout(self.stream_ctx, data.ptr, data.len) != 0) self.attach_stream = false;
+        }
+    }
+};
+
+fn pumpFd(fd: std.posix.fd_t, sink: *IoSink, stderr: bool) void {
+    var buf: [4096]u8 = undefined;
+    while (true) {
+        const n = std.posix.read(fd, &buf) catch break;
+        if (n == 0) break;
+        sink.onOut(buf[0..@intCast(n)], stderr);
+    }
+}
+
+fn pollRuncPid(ctx_id: []const u8) ?i32 {
+    const out_path = "/tmp/voilad-runc-state";
+    const sh = std.fmt.allocPrint(
+        std.heap.page_allocator,
+        "(/usr/sbin/runc state {s} 2>/dev/null || runc state {s} 2>/dev/null) > {s}",
+        .{ ctx_id, ctx_id, out_path },
+    ) catch return null;
+    defer std.heap.page_allocator.free(sh);
+    const sh_z = std.heap.page_allocator.allocSentinel(u8, sh.len, 0) catch return null;
+    defer std.heap.page_allocator.free(sh_z);
+    @memcpy(sh_z, sh);
+    if (posix_util.shell(sh_z) != 0) return null;
+    const data = posix_util.readFileAlloc(std.heap.page_allocator, out_path, 1 << 20) catch return null;
+    defer std.heap.page_allocator.free(data);
+    const needle = "\"pid\":";
+    const idx = std.mem.indexOf(u8, data, needle) orelse return null;
+    var i = idx + needle.len;
+    while (i < data.len and (data[i] == ' ' or data[i] == '\t')) i += 1;
+    var end = i;
+    while (end < data.len and data[end] >= '0' and data[end] <= '9') end += 1;
+    if (end == i) return null;
+    return std.fmt.parseInt(i32, data[i..end], 10) catch null;
+}
+
+fn awaitRunning(ctx: *contexts.Context, ctx_id: []const u8, run_done: *std.atomic.Value(bool)) void {
+    const deadline = contexts.nowNs() + 30 * 1_000_000_000;
+    while (contexts.nowNs() < deadline and !run_done.load(.acquire)) {
+        if (pollRuncPid(ctx_id)) |pid| {
+            _ = ctx.start(pid) catch {};
+            return;
+        }
+        _ = posix_util.shell("sleep 0.01");
+    }
+    if (!run_done.load(.acquire)) _ = ctx.start(0) catch {};
+}
+
+fn ensureRegistryFromDisk(allocator: std.mem.Allocator, voila_root: []const u8) void {
+    if (voila_registry.getConfigCopy(allocator) != null) return;
+    const creds = registry_creds.load(allocator, voila_root) catch return;
+    defer {
+        allocator.free(creds.registry);
+        allocator.free(creds.token);
+    }
+    if (creds.registry.len == 0) return;
+    voila_registry.configure(allocator, creds.registry, creds.token) catch {};
+}
+
+fn resolveWithAutoPull(allocator: std.mem.Allocator, voila_root: []const u8, image: []const u8) !voila_resolve.ImageRecord {
+    return voila_resolve.resolveImage(allocator, voila_root, image) catch |e| {
+        ensureRegistryFromDisk(allocator, voila_root);
+        const man = voila_image_pull.autoPull(runtime.io, allocator, voila_root, image) catch |pull_err| {
+            if (pull_err == error.Skip or pull_err == error.NoRegistry) return e;
+            return pull_err;
+        };
+        defer {
+            allocator.free(man.image_ref);
+            allocator.free(man.image_digest);
+            allocator.free(man.merged_root);
+        }
+        return voila_resolve.resolveImage(allocator, voila_root, image);
+    };
+}
+
+fn readFetchStats(allocator: std.mem.Allocator, path: []const u8) struct {
+    chunks_fetched: u64,
+    bytes_fetched: u64,
+} {
+    const data = posix_util.readFileAlloc(allocator, path, 4096) catch return .{ .chunks_fetched = 0, .bytes_fetched = 0 };
+    defer allocator.free(data);
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{ .ignore_unknown_fields = true }) catch
+        return .{ .chunks_fetched = 0, .bytes_fetched = 0 };
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    var chunks: u64 = 0;
+    var bytes: u64 = 0;
+    if (obj.get("chunks_fetched")) |v| {
+        if (v == .integer) chunks = @intCast(v.integer);
+    }
+    if (obj.get("bytes_fetched")) |v| {
+        if (v == .integer) bytes = @intCast(v.integer);
+    }
+    return .{ .chunks_fetched = chunks, .bytes_fetched = bytes };
 }
 
 pub fn runContainer(
@@ -49,11 +171,12 @@ pub fn runContainer(
     }
     const totals = image_totals.loadForRef(allocator, voila_root, rec.ref);
 
-    const t: u32 = @intCast(std.c.getpid());
-    var rnd: [4]u8 = undefined;
-    @memcpy(&rnd, @as(*const [4]u8, @ptrCast(&t)));
-    const ctx_id = try std.fmt.allocPrint(allocator, "voila-{x:0>8}", .{std.mem.readInt(u32, &rnd, .little)});
+    const ctx_id = try newContextId(allocator);
     defer allocator.free(ctx_id);
+    const reg = registry_global.get();
+    const vctx = try reg.newContext(ctx_id, rec.ref);
+    defer {} // context stays in registry after finish
+
     const ctx_id_z = try allocator.allocSentinel(u8, ctx_id.len, 0);
     defer allocator.free(ctx_id_z);
     @memcpy(ctx_id_z, ctx_id);
@@ -165,17 +288,36 @@ pub fn runContainer(
     , .{ args_json.items, rootfs });
     defer allocator.free(patched);
     try writeFile(allocator, config_path, patched);
+    try vctx.setLaunch(bundle);
+
+    var sink = IoSink{ .ctx = vctx, .cb = cb, .stream_ctx = cb.ctx, .attach_stream = true };
+    var run_done: std.atomic.Value(bool) = .init(false);
+
+    const pid_thread = try std.Thread.spawn(.{}, awaitRunning, .{ vctx, ctx_id, &run_done });
 
     var child = try std.process.spawn(runtime.io, .{
         .argv = &[_][]const u8{ "/usr/sbin/runc", "run", "--bundle", bundle, ctx_id },
-        .stdout = .inherit,
-        .stderr = .inherit,
+        .stdout = .pipe,
+        .stderr = .pipe,
     });
+    const stdout_f = child.stdout orelse return error.NoStdout;
+    const stderr_f = child.stderr orelse return error.NoStderr;
+
+    const out_thread = try std.Thread.spawn(.{}, pumpFd, .{ stdout_f.handle, &sink, false });
+    const err_thread = try std.Thread.spawn(.{}, pumpFd, .{ stderr_f.handle, &sink, true });
+
     const term = try child.wait(runtime.io);
+    run_done.store(true, .release);
+    pid_thread.join();
+    out_thread.join();
+    err_thread.join();
+
     const code: i32 = switch (term) {
         .exited => |c| @intCast(c),
         else => 255,
     };
+    _ = vctx.finish(code) catch {};
+    vctx.clearLaunch();
     stopFuse(&fuse, &fuse_stopped);
     const fetch = readFetchStats(allocator, stats_path);
     _ = cb.on_stats(cb.ctx, fetch.chunks_fetched, fetch.bytes_fetched, totals.chunks, totals.bytes);
@@ -184,50 +326,78 @@ pub fn runContainer(
     return code;
 }
 
-fn ensureRegistryFromDisk(allocator: std.mem.Allocator, voila_root: []const u8) void {
-    if (voila_registry.getConfigCopy(allocator) != null) return;
-    const creds = registry_creds.load(allocator, voila_root) catch return;
-    defer {
-        allocator.free(creds.registry);
-        allocator.free(creds.token);
-    }
-    if (creds.registry.len == 0) return;
-    voila_registry.configure(allocator, creds.registry, creds.token) catch {};
-}
+pub fn execInContext(
+    allocator: std.mem.Allocator,
+    ctx_id: []const u8,
+    args: []const []const u8,
+    cb: *grpc_shim.ExecCallbacks,
+) !i32 {
+    const reg = registry_global.get();
+    const vctx = reg.get(ctx_id) orelse return error.NotFound;
+    if (!vctx.running()) return error.NotRunning;
+    if (args.len == 0) return error.InvalidArgs;
 
-fn resolveWithAutoPull(allocator: std.mem.Allocator, voila_root: []const u8, image: []const u8) !voila_resolve.ImageRecord {
-    return voila_resolve.resolveImage(allocator, voila_root, image) catch |e| {
-        ensureRegistryFromDisk(allocator, voila_root);
-        const man = voila_image_pull.autoPull(runtime.io, allocator, voila_root, image) catch |pull_err| {
-            if (pull_err == error.Skip or pull_err == error.NoRegistry) return e;
-            return pull_err;
-        };
-        defer {
-            allocator.free(man.image_ref);
-            allocator.free(man.image_digest);
-            allocator.free(man.merged_root);
-        }
-        return voila_resolve.resolveImage(allocator, voila_root, image);
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(allocator);
+    try argv.appendSlice(allocator, &[_][]const u8{ "/usr/sbin/runc", "exec", ctx_id });
+    try argv.appendSlice(allocator, args);
+
+    var child = try std.process.spawn(runtime.io, .{
+        .argv = argv.items,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
+    const stdout_f = child.stdout orelse return error.NoStdout;
+    const stderr_f = child.stderr orelse return error.NoStderr;
+
+    const out_t = try std.Thread.spawn(.{}, pumpExecFd, .{ stdout_f.handle, cb, false });
+    const err_t = try std.Thread.spawn(.{}, pumpExecFd, .{ stderr_f.handle, cb, true });
+
+    const term = try child.wait(runtime.io);
+    out_t.join();
+    err_t.join();
+
+    return switch (term) {
+        .exited => |c| @intCast(c),
+        else => 255,
     };
 }
 
-fn readFetchStats(allocator: std.mem.Allocator, path: []const u8) struct {
-    chunks_fetched: u64,
-    bytes_fetched: u64,
-} {
-    const data = posix_util.readFileAlloc(allocator, path, 4096) catch return .{ .chunks_fetched = 0, .bytes_fetched = 0 };
-    defer allocator.free(data);
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{ .ignore_unknown_fields = true }) catch
-        return .{ .chunks_fetched = 0, .bytes_fetched = 0 };
-    defer parsed.deinit();
-    const obj = parsed.value.object;
-    var chunks: u64 = 0;
-    var bytes: u64 = 0;
-    if (obj.get("chunks_fetched")) |v| {
-        if (v == .integer) chunks = @intCast(v.integer);
+fn pumpExecFd(fd: std.posix.fd_t, cb: *grpc_shim.ExecCallbacks, stderr: bool) void {
+    var buf: [4096]u8 = undefined;
+    while (true) {
+        const n = std.posix.read(fd, &buf) catch break;
+        if (n == 0) break;
+        const data = buf[0..@intCast(n)];
+        if (stderr) {
+            _ = cb.on_stderr(cb.ctx, data.ptr, data.len);
+        } else {
+            _ = cb.on_stdout(cb.ctx, data.ptr, data.len);
+        }
     }
-    if (obj.get("bytes_fetched")) |v| {
-        if (v == .integer) bytes = @intCast(v.integer);
+}
+
+pub fn killContext(ctx_id: []const u8, sig: i32) !void {
+    const reg = registry_global.get();
+    const vctx = reg.get(ctx_id) orelse return error.NotFound;
+    if (!vctx.running()) return error.NotRunning;
+
+    const signal = if (sig == 0) 15 else sig;
+    const cmd = try std.fmt.allocPrint(std.heap.page_allocator, "/usr/sbin/runc kill {s} {d} 2>/dev/null || runc kill {s} {d}", .{ ctx_id, signal, ctx_id, signal });
+    defer std.heap.page_allocator.free(cmd);
+    const cmd_z = try std.heap.page_allocator.allocSentinel(u8, cmd.len, 0);
+    defer std.heap.page_allocator.free(cmd_z);
+    @memcpy(cmd_z, cmd);
+    if (posix_util.shell(cmd_z) != 0) return error.KillFailed;
+
+    if (signal != 15) return;
+    _ = posix_util.shell("sleep 10");
+    if (vctx.running()) {
+        const cmd2 = try std.fmt.allocPrint(std.heap.page_allocator, "/usr/sbin/runc kill {s} 9 2>/dev/null || runc kill {s} 9", .{ ctx_id, ctx_id });
+        defer std.heap.page_allocator.free(cmd2);
+        const cmd2_z = try std.heap.page_allocator.allocSentinel(u8, cmd2.len, 0);
+        defer std.heap.page_allocator.free(cmd2_z);
+        @memcpy(cmd2_z, cmd2);
+        _ = posix_util.shell(cmd2_z);
     }
-    return .{ .chunks_fetched = chunks, .bytes_fetched = bytes };
 }

@@ -223,6 +223,51 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const sync_util_mod = b.createModule(.{
+        .root_source_file = b.path("src/sync_util.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
+    const ring_mod = b.createModule(.{
+        .root_source_file = b.path("src/ring.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "sync_util", .module = sync_util_mod },
+        },
+    });
+
+    const events_mod = b.createModule(.{
+        .root_source_file = b.path("src/events.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "sync_util", .module = sync_util_mod },
+        },
+    });
+
+    const contexts_mod = b.createModule(.{
+        .root_source_file = b.path("src/contexts.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "ring", .module = ring_mod },
+            .{ .name = "events", .module = events_mod },
+            .{ .name = "sync_util", .module = sync_util_mod },
+        },
+    });
+
+    const registry_global_mod = b.createModule(.{
+        .root_source_file = b.path("src/registry_global.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "contexts", .module = contexts_mod },
+        },
+    });
+
     const launch_mod = b.createModule(.{
         .root_source_file = b.path("src/launch.zig"),
         .target = target,
@@ -236,7 +281,23 @@ pub fn build(b: *std.Build) void {
             .{ .name = "grpc_shim", .module = grpc_shim_mod },
             .{ .name = "posix_util", .module = posix_util_mod },
             .{ .name = "runtime", .module = runtime_mod },
+            .{ .name = "contexts", .module = contexts_mod },
+            .{ .name = "registry_global", .module = registry_global_mod },
             .{ .name = "registry_creds", .module = registry_creds_mod },
+        },
+    });
+
+    const lifecycle_mod = b.createModule(.{
+        .root_source_file = b.path("src/lifecycle.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "events", .module = events_mod },
+            .{ .name = "ring", .module = ring_mod },
+            .{ .name = "launch", .module = launch_mod },
+            .{ .name = "grpc_shim", .module = grpc_shim_mod },
+            .{ .name = "registry_global", .module = registry_global_mod },
         },
     });
 
@@ -249,6 +310,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "launch", .module = launch_mod },
             .{ .name = "grpc_shim", .module = grpc_shim_mod },
             .{ .name = "runtime", .module = runtime_mod },
+            .{ .name = "registry_global", .module = registry_global_mod },
+            .{ .name = "lifecycle", .module = lifecycle_mod },
             .{ .name = "registry_creds", .module = registry_creds_mod },
             .{ .name = "voila_registry", .module = voila_registry_mod },
         },
