@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 
 	"voila/internal/chunkstore"
 	"voila/internal/mount"
@@ -21,7 +22,13 @@ import (
 //
 // On non-Linux platforms this hook is provided by mount_stub.go and returns
 // errLinuxOnly.
-func mountAndServe(out io.Writer, store chunkstore.ChunkStore, rootChunk chunkstore.ChunkID, ref, mountpoint string, allowOther bool) error {
+func mountAndServe(out io.Writer, voilaRoot string, store chunkstore.ChunkStore, rootChunk chunkstore.ChunkID, ref, mountpoint string, allowOther bool) error {
+	backend, why := resolveMountFuseBackend(os.Getenv("VOILA_MOUNT_FUSE"), findZigFuseBinary)
+	fmt.Fprintf(out, "mount fuse backend: %s (%s)\n", backend, why)
+	if backend == fuseBackendZig {
+		return mountAndServeZig(out, voilaRoot, ref, mountpoint)
+	}
+
 	ctx := context.Background()
 	tree, err := mount.Load(ctx, store, rootChunk)
 	if err != nil {

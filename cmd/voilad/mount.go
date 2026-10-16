@@ -118,7 +118,7 @@ func runMount(cfg Config, out interface{ Write([]byte) (int, error) }, root, que
 		}
 	}
 
-	if err := mountAndServe(out, chunkStore, rootChunk, im.GetImageRef(), mountpoint, allowOther); err != nil {
+	if err := mountAndServe(out, root, chunkStore, rootChunk, im.GetImageRef(), mountpoint, allowOther); err != nil {
 		return err
 	}
 	return nil
