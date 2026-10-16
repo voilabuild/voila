@@ -14,49 +14,49 @@ pub const FuseVfs = union(enum) {
         }
     }
 
-    pub fn inoFromPath(self: *const FuseVfs, path: []const u8) ?u64 {
+    pub fn inoFromPath(self: *FuseVfs, path: []const u8) ?u64 {
         return switch (self.*) {
             .fixture => |*v| v.inoFromPath(path),
             .voila => |*v| v.inoFromPath(path),
         };
     }
 
-    pub fn lookup(self: *const FuseVfs, parent: u64, name: []const u8) ?u64 {
+    pub fn lookup(self: *FuseVfs, parent: u64, name: []const u8) ?u64 {
         return switch (self.*) {
             .fixture => |*v| v.lookup(parent, name),
             .voila => |*v| v.lookup(parent, name),
         };
     }
 
-    pub fn attr(self: *const FuseVfs, ino: u64) ?fuse_abi.Attr {
+    pub fn attr(self: *FuseVfs, ino: u64) ?fuse_abi.Attr {
         return switch (self.*) {
             .fixture => |*v| v.attr(ino),
             .voila => |*v| v.attr(ino),
         };
     }
 
-    pub fn readlink(self: *const FuseVfs, ino: u64) ?[]const u8 {
+    pub fn readlink(self: *FuseVfs, ino: u64) ?[]const u8 {
         return switch (self.*) {
             .fixture => |*v| v.readlink(ino),
             .voila => |*v| v.readlink(ino),
         };
     }
 
-    pub fn isDir(self: *const FuseVfs, ino: u64) bool {
+    pub fn isDir(self: *FuseVfs, ino: u64) bool {
         return switch (self.*) {
             .fixture => ino == @import("constants.zig").root_ino,
             .voila => |*v| v.isDir(ino),
         };
     }
 
-    pub fn isFile(self: *const FuseVfs, ino: u64) bool {
+    pub fn isFile(self: *FuseVfs, ino: u64) bool {
         return switch (self.*) {
             .fixture => ino == @import("constants.zig").file_ino,
             .voila => |*v| v.isFile(ino),
         };
     }
 
-    pub fn readdirEntry(self: *const FuseVfs, dir_ino: u64, index: usize) ?struct { name: []const u8, ino: u64, typ: u32 } {
+    pub fn readdirEntry(self: *FuseVfs, dir_ino: u64, index: usize) ?struct { name: []const u8, ino: u64, typ: u32 } {
         return switch (self.*) {
             .fixture => |*v| {
                 if (dir_ino != @import("constants.zig").root_ino) return null;

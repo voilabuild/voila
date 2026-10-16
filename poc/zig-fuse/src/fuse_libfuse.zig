@@ -16,7 +16,7 @@ fn negErr(e: std.posix.E) c_int {
     return -@as(c_int, @intCast(@intFromEnum(e)));
 }
 
-fn fillStatFromAttr(vfs: *const fuse_vfs.FuseVfs, ino: u64, stbuf: [*c]c.struct_stat) bool {
+fn fillStatFromAttr(vfs: *fuse_vfs.FuseVfs, ino: u64, stbuf: [*c]c.struct_stat) bool {
     const attr = vfs.attr(ino) orelse return false;
     const st: *c.struct_stat = @ptrCast(stbuf);
     st.* = std.mem.zeroes(c.struct_stat);
@@ -161,7 +161,7 @@ pub fn mountSession(allocator: std.mem.Allocator, mountpoint: []const u8, vfs: *
     };
     if (c.fuse_opt_add_arg(&args, @ptrCast(prog_z.ptr)) != 0) return error.FuseArgsFailed;
     if (c.fuse_opt_add_arg(&args, "-o") != 0) return error.FuseArgsFailed;
-    if (c.fuse_opt_add_arg(&args, "ro") != 0) return error.FuseArgsFailed;
+    if (c.fuse_opt_add_arg(&args, "ro,allow_other") != 0) return error.FuseArgsFailed;
 
     const fuse_ops = ops();
     const f = c.fuse_new(&args, &fuse_ops, @sizeOf(c.struct_fuse_operations), @ptrCast(vfs));

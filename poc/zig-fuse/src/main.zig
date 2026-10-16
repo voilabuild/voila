@@ -57,8 +57,8 @@ pub fn main(init: std.process.Init) !void {
         const mountpoint = args.next() orelse return error.NeedMountpoint;
         const voila_root_abs = try resolveAbs(init.gpa, voila_root);
         defer init.gpa.free(voila_root_abs);
-        const index = try voila_loader.loadIndex(init.gpa, voila_root_abs, image);
-        var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = try voila_vfs_mod.VoilaVfs.initFromIndex(init.gpa, index) };
+        const tree = try voila_loader.loadTreeRoot(init.gpa, voila_root_abs, image);
+        var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(init.gpa, tree) };
         defer fuse_vfs.deinit();
         try fuse_linux.mountAndServe(io, init.gpa, &fuse_vfs, mountpoint);
         return;
@@ -197,7 +197,6 @@ fn proveStore(io: std.Io, init: std.process.Init, voila_root: []const u8, image:
     }
 
     try proveStoreDistroExtras(init.gpa, mount_dir);
-    try fusermountU(init.gpa, mount_dir);
     std.debug.print("prove-store: native index, mount, readdir, sample read — ok\n", .{});
 }
 
@@ -206,20 +205,18 @@ fn proveStoreDistroExtras(allocator: std.mem.Allocator, mount_dir: []const u8) !
     defer allocator.free(os_release);
     if (posix_util.access(os_release)) {
         var hdr: [64]u8 = undefined;
-        preadFile(os_release, &hdr, 0) catch return;
+        preadFile(os_release, &hdr, 0) catch return error.OsReleaseReadFailed;
         if (!std.mem.startsWith(u8, hdr[0..], "NAME=")) return error.OsReleaseWrong;
         std.debug.print("etc/os-release: {s}...\n", .{hdr[0..@min(hdr.len, 32)]});
     }
 
-    const link_candidates = [_][]const u8{ "bin", "lib", "lib64", "sbin" };
-    for (link_candidates) |name| {
-        const link_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ mount_dir, name });
-        defer allocator.free(link_path);
-        if (!posix_util.access(link_path)) continue;
-        const target = readlinkAlloc(allocator, link_path) catch continue;
+    const link_path = try std.fmt.allocPrint(allocator, "{s}/bin/arch", .{mount_dir});
+    defer allocator.free(link_path);
+    if (posix_util.access(link_path)) {
+        const target = readlinkAlloc(allocator, link_path) catch return error.BusyboxLinkReadFailed;
         defer allocator.free(target);
-        std.debug.print("readlink {s} -> {s}\n", .{ name, target });
-        break;
+        if (!std.mem.eql(u8, target, "/bin/busybox")) return error.BusyboxLinkWrong;
+        std.debug.print("readlink bin/arch -> {s}\n", .{target});
     }
 }
 

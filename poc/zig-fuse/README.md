@@ -63,7 +63,11 @@ sudo ./zig-out/bin/zig-fuse prove-store /tmp/voila-store alpine:latest
 sudo ./zig-out/bin/zig-fuse serve-store /tmp/voila-store alpine:latest /tmp/mnt
 ```
 
-`prove-store` loads the index in-process (no Go export), mounts, checks root listing, optional distro paths (`/etc/os-release`, a root symlink when present), and compares FUSE reads to the in-process VFS for nested files such as `/bench/large.bin` when present.
+`prove-store` loads the index in-process (no Go export), mounts, checks root listing, optional distro paths (`/etc/os-release`, busybox symlink `bin/arch` when present), and compares FUSE reads to the in-process VFS for nested files such as `/bench/large.bin` when present.
+
+Real-image parity (Alpine-class store, diff vs Go userspace, exec, fair small-file bench): see `scripts/prove-real-image.sh` and `compare/` (`zig_fuse_compare` build tag). Bench requires `-zig-fuse-bin` and root: Go cold runs in a fresh process after `drop_caches`; Zig cold starts a new `serve-store` (empty chunk cache) after `drop_caches`.
+
+PostgreSQL smoke (`postgres:16-alpine` rootfs on FUSE, PGDATA on tmpfs): `scripts/postgres-fuse-smoke.sh` (root; host `user_allow_other` in `fuse.conf`).
 
 Legacy JSON path (debug export only):
 
