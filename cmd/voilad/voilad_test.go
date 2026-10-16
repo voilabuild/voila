@@ -33,6 +33,25 @@ import (
 // positional args and returns a clear usage error when the count is wrong.
 // This is cross-platform: it does not touch the FUSE daemon; it only
 // exercises the flag-set / arg-count validation.
+func TestResolveMountFuseBackend(t *testing.T) {
+	got, _ := resolveMountFuseBackend("go", func() (string, bool) { return "/zig-fuse", true })
+	if got != fuseBackendGo {
+		t.Fatalf("want go, got %s", got)
+	}
+	got, why := resolveMountFuseBackend("auto", func() (string, bool) { return "/usr/bin/zig-fuse", true })
+	if got != fuseBackendZig {
+		t.Fatalf("auto with binary: want zig, got %s (%s)", got, why)
+	}
+	got, _ = resolveMountFuseBackend("auto", func() (string, bool) { return "", false })
+	if got != fuseBackendGo {
+		t.Fatalf("auto without binary: want go, got %s", got)
+	}
+	got, why = resolveMountFuseBackend("zig", func() (string, bool) { return "", false })
+	if got != fuseBackendGo || !strings.Contains(why, "not found") {
+		t.Fatalf("zig missing binary: got %s %s", got, why)
+	}
+}
+
 func TestDriftdMount_BadArgCount(t *testing.T) {
 	cfg := Config{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
 	for _, args := range [][]string{{}, {"only-one-positional"}} {

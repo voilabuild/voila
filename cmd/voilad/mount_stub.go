@@ -17,6 +17,6 @@ import (
 // clear message on macOS / other non-Linux dev hosts. This hook is never
 // reached in practice — main returns "voilad requires linux" before this —
 // but it keeps the build green on every platform.
-func mountAndServe(out io.Writer, store chunkstore.ChunkStore, rootChunk chunkstore.ChunkID, ref, mountpoint string, allowOther bool) error {
+func mountAndServe(out io.Writer, voilaRoot string, store chunkstore.ChunkStore, rootChunk chunkstore.ChunkID, ref, mountpoint string, allowOther bool) error {
 	return errLinuxOnly
 }
