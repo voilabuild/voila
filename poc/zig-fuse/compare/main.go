@@ -19,7 +19,6 @@ import (
 	"sort"
 	"strings"
 	"syscall"
-	"time"
 
 	"voila/internal/chunkstore"
 	"voila/internal/imagestore"
@@ -31,9 +30,23 @@ func main() {
 	root := flag.String("root", "", "voila store root")
 	image := flag.String("image", "", "image ref in images.db")
 	mountDir := flag.String("mount", "", "Zig FUSE mountpoint (read-only)")
-	bench := flag.Bool("bench", false, "time small-file walk+read (Go userspace vs mount tree)")
+	bench := flag.Bool("bench", false, "fair small-file bench (requires -zig-fuse-bin, root)")
+	zigFuseBin := flag.String("zig-fuse-bin", "", "zig-fuse binary path (restarted for zig cold)")
+	benchWorker := flag.String("bench-worker", "", "internal: go")
 	maxFile := flag.Int64("max-file", 65536, "include regular files up to this size in diff/bench")
 	flag.Parse()
+
+	if *benchWorker == "go" {
+		if *root == "" || *image == "" {
+			fmt.Fprintln(os.Stderr, "bench-worker needs -root and -image")
+			os.Exit(2)
+		}
+		if err := runGoBenchWorker(*root, *image, *maxFile); err != nil {
+			fmt.Fprintf(os.Stderr, "bench-worker: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *root == "" || *image == "" {
 		fmt.Fprintln(os.Stderr, "need -root and -image")
 		os.Exit(2)
@@ -71,7 +84,7 @@ func main() {
 	tree.PrefetchManifests(ctx, 32)
 
 	if *bench {
-		if err := runBench(ctx, store, tree, *mountDir, *maxFile); err != nil {
+		if err := runFairBench(ctx, *root, *image, *mountDir, *zigFuseBin, *maxFile); err != nil {
 			fmt.Fprintf(os.Stderr, "bench: %v\n", err)
 			os.Exit(1)
 		}
@@ -293,97 +306,3 @@ func fileSHA256Path(path string, size int64) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func runBench(ctx context.Context, store chunkstore.ChunkStore, tree *mount.Tree, mountDir string, maxFile int64) error {
-	items, err := collectPaths(ctx, tree, tree.Root(), "")
-	if err != nil {
-		return err
-	}
-	var files []walkItem
-	for _, it := range items {
-		if it.kind != mount.KindFile {
-			continue
-		}
-		info, err := tree.Get(ctx, it.ino)
-		if err != nil {
-			return err
-		}
-		if int64(info.File.GetSize()) > maxFile {
-			continue
-		}
-		files = append(files, it)
-	}
-	sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
-
-	dropCaches := func() {
-		syscall.Sync()
-		if err := os.WriteFile("/proc/sys/vm/drop_caches", []byte("3\n"), 0); err != nil {
-			fmt.Fprintf(os.Stderr, "note: drop_caches skipped (%v)\n", err)
-		}
-	}
-
-	goOnce := func() (time.Duration, int64, error) {
-		var bytes int64
-		start := time.Now()
-		for _, it := range files {
-			info, err := tree.Get(ctx, it.ino)
-			if err != nil {
-				return 0, 0, err
-			}
-			size := int64(info.File.GetSize())
-			buf := make([]byte, size)
-			n, err := mount.ReadAt(ctx, store, info.File, buf, 0)
-			if err != nil && !(err == io.EOF && int64(n) == size) {
-				return 0, 0, err
-			}
-			bytes += int64(n)
-		}
-		return time.Since(start), bytes, nil
-	}
-
-	zigOnce := func() (time.Duration, int64, error) {
-		var bytes int64
-		start := time.Now()
-		for _, it := range files {
-			info, err := tree.Get(ctx, it.ino)
-			if err != nil {
-				return 0, 0, err
-			}
-			host := filepath.Join(mountDir, filepath.FromSlash(strings.TrimPrefix(it.path, "/")))
-			buf, err := os.ReadFile(host)
-			if err != nil {
-				return 0, 0, err
-			}
-			if int64(len(buf)) != int64(info.File.GetSize()) {
-				return 0, 0, fmt.Errorf("%s: size %d != %d", it.path, len(buf), info.File.GetSize())
-			}
-			bytes += int64(len(buf))
-		}
-		return time.Since(start), bytes, nil
-	}
-
-	dropCaches()
-	goCold, goBytes, err := goOnce()
-	if err != nil {
-		return err
-	}
-	dropCaches()
-	zigCold, _, err := zigOnce()
-	if err != nil {
-		return err
-	}
-	dropCaches()
-	goWarm, _, err := goOnce()
-	if err != nil {
-		return err
-	}
-	dropCaches()
-	zigWarm, _, err := zigOnce()
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("bench files=%d bytes=%d max_file=%d\n", len(files), goBytes, maxFile)
-	fmt.Printf("go_userspace cold=%s warm=%s\n", goCold, goWarm)
-	fmt.Printf("zig_fuse     cold=%s warm=%s\n", zigCold, zigWarm)
-	return nil
-}

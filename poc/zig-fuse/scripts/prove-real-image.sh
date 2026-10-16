@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prove Zig FUSE on a real voila store image: diff vs Go, exec, bench.
+# Prove Zig FUSE on a real voila store image: diff vs Go, exec, fair bench.
 set -euo pipefail
 
 VOILA_ROOT="${VOILA_ROOT:-/tmp/voila-real-image-proof}"
@@ -8,13 +8,8 @@ MNT="${MNT:-/tmp/zig-fuse-real-image-mnt}"
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 ZIG_FUSE="$REPO_ROOT/poc/zig-fuse"
 ZIG_BIN="${ZIG_BIN:-zig}"
-VOILA="${VOILA:-$REPO_ROOT/../voila}"
 
-if [[ -x "$REPO_ROOT/cmd/voila" ]] || [[ -f "$REPO_ROOT/go.mod" ]]; then
-  VOILA_BIN="${VOILA_BIN:-$(cd "$REPO_ROOT" && go build -o /tmp/voila-proof ./cmd/voila && echo /tmp/voila-proof)}"
-else
-  VOILA_BIN="${VOILA_BIN:-voila}"
-fi
+VOILA_BIN="${VOILA_BIN:-$(cd "$REPO_ROOT" && go build -o /tmp/voila-proof ./cmd/voila && echo /tmp/voila-proof)}"
 
 cleanup() {
   if mountpoint -q "$MNT" 2>/dev/null; then
@@ -34,28 +29,29 @@ fi
 
 cd "$ZIG_FUSE"
 "$ZIG_BIN" build
+ZIG_FUSE_BIN="$ZIG_FUSE/zig-out/bin/zig-fuse"
+COMPARE_BIN="${COMPARE_BIN:-/tmp/zig-fuse-compare}"
+(cd "$REPO_ROOT" && go build -tags zig_fuse_compare -o "$COMPARE_BIN" ./poc/zig-fuse/compare)
+
+echo "=== prove-store ==="
+sudo "$ZIG_FUSE_BIN" prove-store "$VOILA_ROOT" "$IMAGE_REF"
+
+echo "=== fair bench (go: new process; zig: new serve-store per cold) ==="
+sudo "$COMPARE_BIN" -bench -root "$VOILA_ROOT" -image "$IMAGE_REF" -mount "$MNT" \
+  -zig-fuse-bin "$ZIG_FUSE_BIN"
+
 sudo rm -rf "$MNT"
 sudo mkdir -p "$MNT"
-
-sudo "$ZIG_FUSE/zig-out/bin/zig-fuse" serve-store "$VOILA_ROOT" "$IMAGE_REF" "$MNT" &
+sudo "$ZIG_FUSE_BIN" serve-store "$VOILA_ROOT" "$IMAGE_REF" "$MNT" &
 SERVE_PID=$!
 for _ in $(seq 1 100); do
-  if sudo ls "$MNT/etc/os-release" &>/dev/null; then break; fi
+  if sudo test -f "$MNT/etc/os-release"; then break; fi
   sleep 0.1
 done
 
-echo "=== prove-store ==="
-sudo "$ZIG_FUSE/zig-out/bin/zig-fuse" prove-store "$VOILA_ROOT" "$IMAGE_REF"
-
 echo "=== diff (Go userspace vs Zig FUSE) ==="
-cd "$REPO_ROOT"
-go run -tags zig_fuse_compare ./poc/zig-fuse/compare \
-  -root "$VOILA_ROOT" -image "$IMAGE_REF" -mount "$MNT"
+sudo "$COMPARE_BIN" -root "$VOILA_ROOT" -image "$IMAGE_REF" -mount "$MNT"
 
 echo "=== exec /bin/true from mount ==="
 EXEC_OUT=$(sudo chroot "$MNT" /bin/true; echo "exit=$?")
 echo "chroot $MNT /bin/true -> $EXEC_OUT"
-
-echo "=== bench (drop_caches between cold runs when permitted) ==="
-go run -tags zig_fuse_compare ./poc/zig-fuse/compare \
-  -root "$VOILA_ROOT" -image "$IMAGE_REF" -mount "$MNT" -bench

@@ -65,7 +65,7 @@ sudo ./zig-out/bin/zig-fuse serve-store /tmp/voila-store alpine:latest /tmp/mnt
 
 `prove-store` loads the index in-process (no Go export), mounts, checks root listing, optional distro paths (`/etc/os-release`, busybox symlink `bin/arch` when present), and compares FUSE reads to the in-process VFS for nested files such as `/bench/large.bin` when present.
 
-Real-image parity (Alpine-class store, diff vs Go userspace, exec, small-file bench): see `scripts/prove-real-image.sh` and `compare/` (`zig_fuse_compare` build tag).
+Real-image parity (Alpine-class store, diff vs Go userspace, exec, fair small-file bench): see `scripts/prove-real-image.sh` and `compare/` (`zig_fuse_compare` build tag). Bench requires `-zig-fuse-bin` and root: Go cold runs in a fresh process after `drop_caches`; Zig cold starts a new `serve-store` (empty chunk cache) after `drop_caches`.
 
 Legacy JSON path (debug export only):
 
