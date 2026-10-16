@@ -161,7 +161,7 @@ pub fn mountSession(allocator: std.mem.Allocator, mountpoint: []const u8, vfs: *
     };
     if (c.fuse_opt_add_arg(&args, @ptrCast(prog_z.ptr)) != 0) return error.FuseArgsFailed;
     if (c.fuse_opt_add_arg(&args, "-o") != 0) return error.FuseArgsFailed;
-    if (c.fuse_opt_add_arg(&args, "ro") != 0) return error.FuseArgsFailed;
+    if (c.fuse_opt_add_arg(&args, "ro,allow_other") != 0) return error.FuseArgsFailed;
 
     const fuse_ops = ops();
     const f = c.fuse_new(&args, &fuse_ops, @sizeOf(c.struct_fuse_operations), @ptrCast(vfs));
