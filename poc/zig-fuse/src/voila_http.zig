@@ -1,36 +1,38 @@
 const std = @import("std");
+const curl_c = @import("curl_c");
+
+const http_timeout_seconds: c_long = 120;
 
 /// GET url with optional Authorization: Bearer header. Returns owned body.
-/// Uses curl subprocess so registry fetch works from the voilad gRPC thread.
+/// Uses libcurl (blocking) so registry fetch works from the voilad gRPC thread.
 pub fn httpGet(
     io: std.Io,
     allocator: std.mem.Allocator,
     url: []const u8,
     bearer_token: []const u8,
 ) ![]u8 {
-    var argv: std.ArrayList([]const u8) = .empty;
-    defer argv.deinit(allocator);
-    try argv.appendSlice(allocator, &.{ "curl", "-fsSL", "--max-time", "120" });
-    var auth_hdr: ?[]const u8 = null;
-    if (bearer_token.len != 0) {
-        auth_hdr = try std.fmt.allocPrint(allocator, "Authorization: Bearer {s}", .{bearer_token});
-        try argv.append(allocator, "-H");
-        try argv.append(allocator, auth_hdr.?);
-    }
-    defer if (auth_hdr) |h| allocator.free(h);
-    try argv.append(allocator, url);
+    _ = io;
+    const url_z = try allocator.allocSentinel(u8, url.len, 0);
+    defer allocator.free(url_z);
+    @memcpy(url_z, url);
 
-    const res = try std.process.run(allocator, io, .{
-        .argv = argv.items,
-        .stdout_limit = .unlimited,
-        .stderr_limit = .unlimited,
-    });
-    defer allocator.free(res.stderr);
-    switch (res.term) {
-        .exited => |code| if (code != 0) return error.HttpStatus,
-        else => return error.HttpStatus,
+    var token_ptr: [*:0]const u8 = "";
+    var token_buf: ?[:0]u8 = null;
+    if (bearer_token.len != 0) {
+        token_buf = try allocator.allocSentinel(u8, bearer_token.len, 0);
+        @memcpy(token_buf.?, bearer_token);
+        token_ptr = token_buf.?.ptr;
     }
-    return res.stdout;
+    defer if (token_buf) |tb| allocator.free(tb);
+
+    var out_ptr: [*c]u8 = null;
+    var out_len: usize = 0;
+    const rc = curl_c.voila_curl_http_get(url_z.ptr, token_ptr, http_timeout_seconds, &out_ptr, &out_len);
+    if (rc != 0 or out_len == 0 or out_ptr == null) return error.HttpStatus;
+
+    const owned = try allocator.dupe(u8, out_ptr[0..out_len]);
+    curl_c.voila_curl_free(out_ptr);
+    return owned;
 }
 
 /// Go url.QueryEscape for registry image paths.

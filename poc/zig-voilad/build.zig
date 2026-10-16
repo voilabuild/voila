@@ -50,6 +50,21 @@ fn linkStaticBlake3(mod: *std.Build.Module, blake3_lib: *std.Build.Step.Compile)
     mod.linkLibrary(blake3_lib);
 }
 
+fn addCurlBindings(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    header: std.Build.LazyPath,
+) *std.Build.Module {
+    const translate = b.addTranslateC(.{
+        .root_source_file = header,
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    return translate.createModule();
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -88,6 +103,8 @@ pub fn build(b: *std.Build) void {
     const sqlite_mod = sqlite_translate.createModule();
     sqlite_mod.linkSystemLibrary("sqlite3", .{});
 
+    const curl_mod = addCurlBindings(b, target, optimize, b.path(fuse ++ "/src/curl_shim.h"));
+
     const hex_mod = b.createModule(.{
         .root_source_file = b.path(fuse ++ "/src/hex_util.zig"),
         .target = target,
@@ -105,6 +122,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .imports = &.{
+            .{ .name = "curl_c", .module = curl_mod },
+        },
     });
 
     const voila_registry_mod = b.createModule(.{
