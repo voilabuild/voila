@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package voila.v1;
+
+// Minimal Worker surface for Zig voilad (Run only). Wire-compatible with
+// internal/proto/worker.proto RunInput/RunOutput messages.
+message RunSpec {
+  string image = 1;
+  repeated string args = 2;
+  int64 memory_limit_bytes = 3;
+  int32 cpu_quota_percent = 4;
+  bool attach_stdin = 5;
+}
+
+message RunInput {
+  oneof input {
+    RunSpec spec = 1;
+    bytes stdin = 2;
+    bool stdin_eof = 3;
+  }
+}
+
+message FetchStats {
+  uint64 chunks_fetched = 1;
+  uint64 bytes_fetched = 2;
+  uint64 image_chunks = 3;
+  uint64 image_bytes = 4;
+}
+
+message RunOutput {
+  oneof output {
+    string context_id = 1;
+    bytes stdout = 2;
+    bytes stderr = 3;
+    int32 exit_code = 4;
+    FetchStats stats = 5;
+  }
+}
+
+service Worker {
+  rpc Run(stream RunInput) returns (stream RunOutput);
+}
