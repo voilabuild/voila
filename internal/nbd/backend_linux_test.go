@@ -35,8 +35,16 @@ func TestAcquire_ReadyWithoutSleep(t *testing.T) {
 		t.Fatalf("Acquire: %v", err)
 	}
 	defer reg.Release("ready-test")
-	if _, err := os.ReadFile("/sys/block/" + dev.Path()[len("/dev/"):] + "/pid"); err != nil {
+	block := dev.Path()[len("/dev/"):]
+	if _, err := os.ReadFile("/sys/block/" + block + "/pid"); err != nil {
 		t.Fatalf("device not connected: %v", err)
+	}
+	got, err := readDeviceSizeSysfs(dev.Path())
+	if err != nil {
+		t.Fatalf("read size: %v", err)
+	}
+	if got < uint64(result.DeviceSize) {
+		t.Fatalf("device size %d < export %d", got, result.DeviceSize)
 	}
 	// The old path slept 150ms unconditionally. Ready-wait should land well under that.
 	if elapsed > 80*time.Millisecond {

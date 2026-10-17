@@ -3,6 +3,7 @@ const zio = @import("zio");
 const backend = @import("backend.zig");
 const nbd_linux = @import("nbd_linux.zig");
 const posix_util = @import("posix_util.zig");
+const capacity_wait = @import("capacity_wait.zig");
 
 pub const std_options_debug_io = zio.debug_io;
 
@@ -67,10 +68,7 @@ fn rootMountProve(io: std.Io, init: std.process.Init, fixture_dir: []const u8, n
         }
     }.run, .{ io, &device, nbd_path, &serve_err });
 
-    for (0..3000) |_| {
-        if (posix_util.access("/sys/block/nbd0/pid")) break;
-        try io.sleep(std.Io.Duration.fromMilliseconds(1), .awake);
-    }
+    try capacity_wait.waitDeviceCapacity(io, nbd_path, device.device_size, 3000, capacity_wait.readSysfsDeviceSizeBytes);
 
     const mount_cmd = try std.fmt.allocPrint(init.gpa, "mount -t erofs -o ro {s} {s}", .{ nbd_path, mount_dir });
     defer init.gpa.free(mount_cmd);

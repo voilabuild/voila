@@ -330,6 +330,19 @@ func createDevice(ctx context.Context, result *erofsadapter.BuildResult, store c
 		return nil, err
 	}
 
+	// Capacity is applied asynchronously after NBD_DO_IT; mounting before size
+	// is visible yields EINVAL (erofs: cannot find valid superblock).
+	devPathCopy := devPath
+	if err := waitDeviceCapacity(waitCtx, exportSize, func() (uint64, error) {
+		return readDeviceSizeBytes(devPathCopy)
+	}); err != nil {
+		ioctl(devFile.Fd(), nbdDisconnect, 0)
+		ioctl(devFile.Fd(), nbdClearSock, 0)
+		_ = listener.Close()
+		_ = devFile.Close()
+		return nil, err
+	}
+
 	return &Device{
 		path:    devPath,
 		devFile: devFile,

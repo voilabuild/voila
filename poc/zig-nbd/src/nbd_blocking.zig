@@ -1,6 +1,7 @@
 const std = @import("std");
 const constants = @import("constants.zig");
 const backend = @import("backend.zig");
+const capacity_wait = @import("capacity_wait.zig");
 
 pub fn attachAndServe(io: std.Io, dev: *backend.Device, nbd_path: []const u8) !void {
     const addr = try std.Io.net.IpAddress.parseIp4("127.0.0.1", 0);
@@ -56,6 +57,9 @@ pub fn attachAndServe(io: std.Io, dev: *backend.Device, nbd_path: []const u8) !v
             ioctl(fd, constants.nbd_do_it, 0) catch {};
         }
     }.run, .{@as(i32, @intCast(nbd_fd))});
+
+    try capacity_wait.waitDeviceCapacity(io, nbd_path, dev.device_size, 2000, capacity_wait.readSysfsDeviceSizeBytes);
+
     do_it.join();
     ioctl(@intCast(nbd_fd), constants.nbd_disconnect, 0) catch {};
     ioctl(@intCast(nbd_fd), constants.nbd_clear_sock, 0) catch {};
