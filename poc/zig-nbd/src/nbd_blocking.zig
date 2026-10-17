@@ -2,8 +2,27 @@ const std = @import("std");
 const constants = @import("constants.zig");
 const backend = @import("backend.zig");
 const capacity_wait = @import("capacity_wait.zig");
+const posix_util = @import("posix_util.zig");
 
 pub fn disconnect(nbd_path: []const u8) void {
+    disconnectIoctl(nbd_path);
+    if (nbd_path.len + 16 < 96) {
+        var cmd: [96]u8 = undefined;
+        const prefix = "nbd-client -d ";
+        @memcpy(cmd[0..prefix.len], prefix);
+        @memcpy(cmd[prefix.len .. prefix.len + nbd_path.len], nbd_path);
+        cmd[prefix.len + nbd_path.len] = 0;
+        _ = posix_util.shell(cmd[0 .. prefix.len + nbd_path.len :0]);
+    }
+    for (0..200) |_| {
+        if (!capacity_wait.nbdSessionActive(nbd_path)) break;
+        disconnectIoctl(nbd_path);
+        var ts = std.os.linux.timespec{ .sec = 0, .nsec = 5_000_000 };
+        _ = std.os.linux.nanosleep(&ts, null);
+    }
+}
+
+fn disconnectIoctl(nbd_path: []const u8) void {
     var nbd_z: [64]u8 = undefined;
     if (nbd_path.len >= nbd_z.len) return;
     @memcpy(nbd_z[0..nbd_path.len], nbd_path);
@@ -46,13 +65,17 @@ pub fn attachAndServe(io: std.Io, dev: *backend.Device, nbd_path: []const u8, co
     setBlocking(server_fd);
     setBlocking(client_fd);
 
+    var handshake_done = std.atomic.Value(bool).init(false);
     const serve_thread = try std.Thread.spawn(.{}, struct {
-        fn run(io_inner: std.Io, fd: i32, device: *backend.Device) void {
-            serveConnectionFd(io_inner, fd, device) catch {};
+        fn run(io_inner: std.Io, fd: i32, device: *backend.Device, done: *std.atomic.Value(bool)) void {
+            serveConnectionFd(io_inner, fd, device, done) catch {};
         }
-    }.run, .{ io, server_fd, dev });
+    }.run, .{ io, server_fd, dev, &handshake_done });
 
     try clientNegotiateFd(client_fd);
+    handshake_done.store(true, .release);
+    var yield_ts = std.os.linux.timespec{ .sec = 0, .nsec = 10_000_000 };
+    _ = std.os.linux.nanosleep(&yield_ts, null);
 
     const sock_dup = std.c.dup(@intCast(client_fd));
     if (sock_dup < 0) return error.DupFailed;
@@ -74,13 +97,31 @@ pub fn attachAndServe(io: std.Io, dev: *backend.Device, nbd_path: []const u8, co
     try ioctl(nbd_fd, constants.nbd_set_size_blocks, num_blocks);
     try ioctl(nbd_fd, constants.nbd_set_flags, constants.nbd_flag_has_flags | constants.nbd_flag_read_only);
 
+    const DoItCtx = struct {
+        err: ?anyerror = null,
+        finished: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    };
+    var do_it_ctx = DoItCtx{};
     const do_it = try std.Thread.spawn(.{}, struct {
-        fn run(fd: i32) void {
-            ioctl(fd, constants.nbd_do_it, 0) catch {};
+        fn run(fd: i32, ctx: *DoItCtx) void {
+            ioctl(fd, constants.nbd_do_it, 0) catch |e| {
+                ctx.err = e;
+            };
+            ctx.finished.store(true, .release);
         }
-    }.run, .{nbd_fd});
+    }.run, .{ nbd_fd, &do_it_ctx });
 
-    try capacity_wait.waitDeviceCapacityWithPolls(nbd_path, dev.device_size, 10_000, capacity_wait.readSysfsDeviceSizeBytes);
+    for (0..50) |_| {
+        if (do_it_ctx.finished.load(.acquire)) {
+            if (do_it_ctx.err != null) return do_it_ctx.err.?;
+            return error.NbdDoItEnded;
+        }
+        var ts = std.os.linux.timespec{ .sec = 0, .nsec = 1_000_000 };
+        _ = std.os.linux.nanosleep(&ts, null);
+    }
+
+    try capacity_wait.waitNbdConnected(nbd_path, dev.device_size, 15_000);
+    try capacity_wait.waitDeviceCapacityWithPolls(nbd_path, dev.device_size, 15_000, capacity_wait.readDeviceSizeWhenReadable);
     if (connected) |flag| flag.store(true, .release);
 
     do_it.join();
@@ -89,7 +130,7 @@ pub fn attachAndServe(io: std.Io, dev: *backend.Device, nbd_path: []const u8, co
     serve_thread.join();
 }
 
-fn serveConnectionFd(io: std.Io, fd: i32, dev: *backend.Device) !void {
+fn serveConnectionFd(_: std.Io, fd: i32, dev: *backend.Device, handshake_done: *std.atomic.Value(bool)) !void {
     var hdr: [18]u8 = undefined;
     std.mem.writeInt(u64, hdr[0..8], constants.negotiation_magic_oldstyle, .big);
     std.mem.writeInt(u64, hdr[8..16], constants.negotiation_magic_option, .big);
@@ -99,6 +140,11 @@ fn serveConnectionFd(io: std.Io, fd: i32, dev: *backend.Device) !void {
     var client_flags: [4]u8 = undefined;
     try fdReadExact(fd, &client_flags);
     try serverNegotiateFd(fd, dev.device_size);
+
+    while (!handshake_done.load(.acquire)) {
+        var ts = std.os.linux.timespec{ .sec = 0, .nsec = 100_000 };
+        _ = std.os.linux.nanosleep(&ts, null);
+    }
 
     var req_buf = try std.heap.page_allocator.alloc(u8, 2 * backend.ChunkSize);
     defer std.heap.page_allocator.free(req_buf);
@@ -115,12 +161,13 @@ fn serveConnectionFd(io: std.Io, fd: i32, dev: *backend.Device) !void {
             constants.nbd_cmd_read => {
                 if (length > req_buf.len) return error.ReadTooLarge;
                 var reply: [16]u8 = undefined;
+                @memset(&reply, 0);
                 std.mem.writeInt(u32, reply[0..4], constants.transmission_magic_reply, .big);
                 @memcpy(reply[8..16], handle);
                 try fdWriteAll(fd, &reply);
                 const slice = req_buf[0..length];
-                dev.preloadSlotsForRange(io, offset, length) catch {};
-                dev.readAt(io, slice, offset) catch {};
+                try dev.preloadSlotsForRangeSync(offset, length);
+                dev.readAtSync(slice, offset);
                 try fdWriteAll(fd, slice);
             },
             constants.nbd_cmd_write => {
@@ -152,6 +199,9 @@ fn serverNegotiateFd(fd: i32, export_size: u64) !void {
             var info_count: [2]u8 = undefined;
             try fdReadExact(fd, &info_count);
             try sendExportInfoFd(fd, opt_id, export_size);
+            try sendNameInfoFd(fd, opt_id, "default");
+            try sendDescriptionInfoFd(fd, opt_id, "");
+            try sendBlockSizeInfoFd(fd, opt_id);
             try sendAckFd(fd, opt_id);
             return;
         }
@@ -191,6 +241,30 @@ fn sendExportInfoFd(fd: i32, opt_id: u32, size: u64) !void {
     var info: [12]u8 = undefined;
     std.mem.writeInt(u16, info[0..2], constants.negotiation_type_info_export, .big);
     std.mem.writeInt(u64, info[2..10], size, .big);
+    std.mem.writeInt(u16, info[10..12], 1 | 256, .big); // HAS_FLAGS | CAN_MULTI_CONN
+    try sendReplyInfoFd(fd, opt_id, &info);
+}
+
+fn sendNameInfoFd(fd: i32, opt_id: u32, name: []const u8) !void {
+    var payload: [2 + 64]u8 = undefined;
+    std.mem.writeInt(u16, payload[0..2], constants.negotiation_type_info_name, .big);
+    @memcpy(payload[2 .. 2 + name.len], name);
+    try sendReplyInfoFd(fd, opt_id, payload[0 .. 2 + name.len]);
+}
+
+fn sendDescriptionInfoFd(fd: i32, opt_id: u32, desc: []const u8) !void {
+    var payload: [2 + 256]u8 = undefined;
+    std.mem.writeInt(u16, payload[0..2], constants.negotiation_type_info_description, .big);
+    if (desc.len > 0) @memcpy(payload[2 .. 2 + desc.len], desc);
+    try sendReplyInfoFd(fd, opt_id, payload[0 .. 2 + desc.len]);
+}
+
+fn sendBlockSizeInfoFd(fd: i32, opt_id: u32) !void {
+    var info: [14]u8 = undefined;
+    std.mem.writeInt(u16, info[0..2], constants.negotiation_type_info_blocksize, .big);
+    std.mem.writeInt(u32, info[2..6], 1, .big);
+    std.mem.writeInt(u32, info[6..10], @intCast(constants.block_size), .big);
+    std.mem.writeInt(u32, info[10..14], 32 * 1024 * 1024, .big);
     try sendReplyInfoFd(fd, opt_id, &info);
 }
 

@@ -48,6 +48,12 @@ pub const Device = struct {
     }
 
     pub fn ensureSlotLoaded(self: *Device, io: std.Io, slot: usize) !void {
+        _ = io;
+        return self.ensureSlotLoadedSync(slot);
+    }
+
+    /// Load one chunk from disk without zio (safe from the NBD serve thread).
+    pub fn ensureSlotLoadedSync(self: *Device, slot: usize) !void {
         if (slot >= self.slot_chunks.len) return;
         if (self.slot_chunks[slot].len != 0) return;
         const name = self.slot_names[slot];
@@ -56,7 +62,7 @@ pub const Device = struct {
         const path = try std.fmt.allocPrint(self.allocator, "{s}/chunks/{s}", .{ self.fixture_dir, name });
         defer self.allocator.free(path);
 
-        const data = try readFileAllocIo(io, self.allocator, path);
+        const data = try readFileAlloc(self.allocator, path);
         if (data.len != ChunkSize) {
             self.allocator.free(data);
             return error.BadChunkSize;
@@ -111,12 +117,22 @@ pub const Device = struct {
         if (off >= self.device_size) return;
         const end = @min(off + len, self.device_size);
         if (off < self.data_offset and end > self.data_offset) {
-            const d0 = self.data_offset;
             const d1 = end - self.data_offset;
             try self.preloadDataSlots(io, 0, d1);
-            _ = d0;
         } else if (off >= self.data_offset) {
             try self.preloadDataSlots(io, off - self.data_offset, end - self.data_offset);
+        }
+    }
+
+    /// Sequential slot preload for the blocking NBD transmission loop.
+    pub fn preloadSlotsForRangeSync(self: *Device, off: u64, len: u64) !void {
+        if (off >= self.device_size) return;
+        const end = @min(off + len, self.device_size);
+        if (off < self.data_offset and end > self.data_offset) {
+            const d1 = end - self.data_offset;
+            try self.preloadDataSlotsSync(0, d1);
+        } else if (off >= self.data_offset) {
+            try self.preloadDataSlotsSync(off - self.data_offset, end - self.data_offset);
         }
     }
 
@@ -128,6 +144,16 @@ pub const Device = struct {
             return;
         }
         try loadSlotsConcurrent(io, self, slot_first, slot_last);
+    }
+
+    fn preloadDataSlotsSync(self: *Device, data_off_start: u64, data_off_end: u64) !void {
+        if (data_off_end <= data_off_start) return;
+        const slot_first: usize = @intCast(data_off_start / ChunkSize);
+        const slot_last: usize = @intCast((data_off_end - 1) / ChunkSize);
+        var slot = slot_first;
+        while (slot <= slot_last) : (slot += 1) {
+            try self.ensureSlotLoadedSync(slot);
+        }
     }
 };
 

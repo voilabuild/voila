@@ -54,6 +54,8 @@ fn prove(io: std.Io, init: std.process.Init, fixture_dir: []const u8) !void {
 
 fn rootMountProve(_: std.Io, init: std.process.Init, fixture_dir: []const u8, nbd_path: []const u8) !void {
     const mount_dir = "/tmp/zig-nbd-erofs";
+    umountDir(init.gpa, mount_dir);
+    nbd_linux.disconnect(nbd_path);
     try posix_util.makePath(mount_dir);
 
     var serve_err: ?anyerror = null;
@@ -76,6 +78,7 @@ fn rootMountProve(_: std.Io, init: std.process.Init, fixture_dir: []const u8, nb
             };
         }
     }.run, .{ init.gpa, fixture_dir, nbd_path, &serve_err, &connected });
+    defer thread.join();
 
     for (0..20_000) |_| {
         if (connected.load(.acquire)) break;
@@ -106,8 +109,8 @@ fn rootMountProve(_: std.Io, init: std.process.Init, fixture_dir: []const u8, nb
     if (data[0] != 0xAA or data[backend.ChunkSize - 1] != 0xAA or data[backend.ChunkSize] != 0xCC) {
         return error.BoundaryBytesWrong;
     }
+    umountDir(init.gpa, mount_dir);
     nbd_linux.disconnect(nbd_path);
-    thread.join();
     if (serve_err != null) return serve_err.?;
 }
 
@@ -129,7 +132,7 @@ fn ensureFixture(init: std.process.Init, dir: []const u8) !void {
 }
 
 fn umountDir(allocator: std.mem.Allocator, mount_dir: []const u8) void {
-    const umount_cmd = std.fmt.allocPrint(allocator, "umount {s}", .{mount_dir}) catch return;
+    const umount_cmd = std.fmt.allocPrint(allocator, "umount -l {s}", .{mount_dir}) catch return;
     defer allocator.free(umount_cmd);
     const umount_z = allocator.allocSentinel(u8, umount_cmd.len, 0) catch return;
     defer allocator.free(umount_z);

@@ -99,6 +99,22 @@ pub fn capacitySatisfied(want_bytes: u64, got_bytes: u64) bool {
     return want_bytes == 0 or got_bytes >= want_bytes;
 }
 
+/// True when the kernel is not running NBD_DO_IT on this device (no pid file).
+pub fn nbdSessionActive(nbd_path: []const u8) bool {
+    return nbdPIDPresent(nbd_path);
+}
+
+pub fn waitNbdConnected(nbd_path: []const u8, want_bytes: u64, max_polls: u32) !void {
+    for (0..max_polls) |_| {
+        if (nbdPIDPresent(nbd_path)) return;
+        const got = readDeviceSizeWhenReadable(nbd_path) catch 0;
+        if (capacitySatisfied(want_bytes, got)) return;
+        var ts = std.os.linux.timespec{ .sec = 0, .nsec = 1_000_000 };
+        _ = std.os.linux.nanosleep(&ts, null);
+    }
+    return error.NbdConnectTimeout;
+}
+
 pub fn waitDeviceCapacityWithPolls(
     nbd_path: []const u8,
     want_bytes: u64,
