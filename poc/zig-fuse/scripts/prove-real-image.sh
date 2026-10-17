@@ -8,6 +8,10 @@ MNT="${MNT:-/tmp/zig-fuse-real-image-mnt}"
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 ZIG_FUSE="$REPO_ROOT/poc/zig-fuse"
 ZIG_BIN="${ZIG_BIN:-zig}"
+if ! command -v "$ZIG_BIN" >/dev/null 2>&1; then
+  echo "zig not found on PATH (run mise install from the repo root)" >&2
+  exit 1
+fi
 
 VOILA_BIN="${VOILA_BIN:-$(cd "$REPO_ROOT" && go build -o /tmp/voila-proof ./cmd/voila && echo /tmp/voila-proof)}"
 
