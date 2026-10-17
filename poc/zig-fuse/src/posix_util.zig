@@ -43,6 +43,7 @@ pub fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8, limit: usiz
     if (fd < 0) {
         const open_err: std.posix.E = @enumFromInt(std.c._errno().*);
         if (open_err == .SUCCESS) return error.Unexpected;
+        if (open_err == .NOENT) return error.FileNotFound;
         return std.posix.unexpectedErrno(open_err);
     }
     defer _ = std.c.close(fd);

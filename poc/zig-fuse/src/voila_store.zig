@@ -44,6 +44,110 @@ pub fn loadChunkRaw(
     return raw;
 }
 
+pub fn verifyChunkIdPublic(chunk_hex: []const u8, raw: []const u8) !void {
+    return verifyChunkId(chunk_hex, raw);
+}
+
+pub fn decompressZstdPublic(allocator: std.mem.Allocator, compressed: []const u8) ![]u8 {
+    return decompressZstd(allocator, compressed);
+}
+
+/// Write raw chunk bytes to local store (chunkstore.LocalStore.Put semantics).
+pub fn putChunkRaw(allocator: std.mem.Allocator, voila_root: []const u8, chunk_hex: []const u8, raw: []const u8) !void {
+    verifyChunkId(chunk_hex, raw) catch return error.ChunkIntegrity;
+    const enc = encodeStored(allocator, raw);
+    defer allocator.free(enc.data);
+    const stored = enc.data;
+    const algo = enc.algo;
+
+    const path = try chunkBlobPath(allocator, voila_root, chunk_hex);
+    defer allocator.free(path);
+    const dir = std.fs.path.dirname(path) orelse return error.FileOpenFailed;
+    const mkdir_cmd = try std.fmt.allocPrint(allocator, "mkdir -p {s}", .{dir});
+    defer allocator.free(mkdir_cmd);
+    const mkdir_z = try allocator.allocSentinel(u8, mkdir_cmd.len, 0);
+    defer allocator.free(mkdir_z);
+    @memcpy(mkdir_z, mkdir_cmd);
+    _ = posix_util.shell(mkdir_z);
+
+    const path_z = try allocator.allocSentinel(u8, path.len, 0);
+    defer allocator.free(path_z);
+    @memcpy(path_z, path);
+    const fd = std.c.open(path_z, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o644));
+    if (fd < 0) return error.FileOpenFailed;
+    defer _ = std.c.close(fd);
+    var off: usize = 0;
+    while (off < stored.len) {
+        const n = std.c.write(fd, stored[off..].ptr, stored.len - off);
+        if (n <= 0) return error.FileWriteFailed;
+        off += @intCast(n);
+    }
+
+    try upsertChunkIndex(allocator, voila_root, chunk_hex, raw.len, stored.len, algo);
+}
+
+const Encoded = struct { data: []const u8, algo: i32 };
+
+fn encodeStored(allocator: std.mem.Allocator, buf: []const u8) Encoded {
+    const copy = allocator.dupe(u8, buf) catch return .{ .data = buf, .algo = AlgoRaw };
+    return .{ .data = copy, .algo = AlgoRaw };
+}
+
+fn upsertChunkIndex(
+    allocator: std.mem.Allocator,
+    voila_root: []const u8,
+    chunk_hex: []const u8,
+    logical_len: usize,
+    stored_len: usize,
+    algo: i32,
+) !void {
+    const sqlite = @import("sqlite_c");
+    var id: [32]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&id, chunk_hex);
+
+    const db_path = try std.fmt.allocPrint(allocator, "{s}/index.db", .{voila_root});
+    defer allocator.free(db_path);
+    const db_path_z = try allocator.allocSentinel(u8, db_path.len, 0);
+    defer allocator.free(db_path_z);
+    @memcpy(db_path_z, db_path);
+
+    var db: ?*sqlite.sqlite3 = null;
+    if (sqlite.sqlite3_open(db_path_z, &db) != sqlite.SQLITE_OK) return error.SqliteOpen;
+    const db_ptr = db orelse return error.SqliteOpen;
+    defer _ = sqlite.sqlite3_close(db_ptr);
+
+    const schema =
+        \\CREATE TABLE IF NOT EXISTS chunks (
+        \\  id BLOB PRIMARY KEY,
+        \\  logical_len INTEGER NOT NULL,
+        \\  stored_len INTEGER NOT NULL,
+        \\  comp_algo INTEGER NOT NULL,
+        \\  created_ns INTEGER NOT NULL,
+        \\  last_access_ns INTEGER NOT NULL
+        \\);
+    ;
+    _ = sqlite.sqlite3_exec(db_ptr, schema, null, null, null);
+
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    const now: i64 = @as(i64, ts.sec) * 1_000_000_000 + @as(i64, ts.nsec);
+    const sql =
+        \\INSERT INTO chunks (id, logical_len, stored_len, comp_algo, created_ns, last_access_ns)
+        \\VALUES (?, ?, ?, ?, ?, ?)
+        \\ON CONFLICT(id) DO NOTHING
+    ;
+    var stmt: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db_ptr, sql, -1, &stmt, null) != sqlite.SQLITE_OK) return error.SqlitePrepare;
+    defer _ = sqlite.sqlite3_finalize(stmt);
+    _ = sqlite.sqlite3_bind_blob(stmt, 1, &id, 32, sqlite.SQLITE_TRANSIENT);
+    _ = sqlite.sqlite3_bind_int64(stmt, 2, @intCast(logical_len));
+    _ = sqlite.sqlite3_bind_int64(stmt, 3, @intCast(stored_len));
+    _ = sqlite.sqlite3_bind_int64(stmt, 4, algo);
+    _ = sqlite.sqlite3_bind_int64(stmt, 5, now);
+    _ = sqlite.sqlite3_bind_int64(stmt, 6, now);
+    _ = sqlite.sqlite3_step(stmt);
+}
+
 /// Matches chunkstore.LocalStore.Get: BLAKE3-256 of raw (uncompressed) bytes
 /// must equal the content-addressed chunk id (64-char lowercase hex).
 fn verifyChunkId(chunk_hex: []const u8, raw: []const u8) !void {

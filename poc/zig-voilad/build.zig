@@ -50,6 +50,21 @@ fn linkStaticBlake3(mod: *std.Build.Module, blake3_lib: *std.Build.Step.Compile)
     mod.linkLibrary(blake3_lib);
 }
 
+fn addCurlBindings(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    header: std.Build.LazyPath,
+) *std.Build.Module {
+    const translate = b.addTranslateC(.{
+        .root_source_file = header,
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    return translate.createModule();
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -88,6 +103,8 @@ pub fn build(b: *std.Build) void {
     const sqlite_mod = sqlite_translate.createModule();
     sqlite_mod.linkSystemLibrary("sqlite3", .{});
 
+    const curl_mod = addCurlBindings(b, target, optimize, b.path(fuse ++ "/src/curl_shim.h"));
+
     const hex_mod = b.createModule(.{
         .root_source_file = b.path(fuse ++ "/src/hex_util.zig"),
         .target = target,
@@ -99,6 +116,62 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    const voila_http_mod = b.createModule(.{
+        .root_source_file = b.path(fuse ++ "/src/voila_http.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "curl_c", .module = curl_mod },
+        },
+    });
+
+    const voila_registry_mod = b.createModule(.{
+        .root_source_file = b.path(fuse ++ "/src/voila_registry_hub.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
+    const voila_refkey_mod = b.createModule(.{
+        .root_source_file = b.path(fuse ++ "/src/voila_refkey.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "hex_util", .module = hex_mod },
+        },
+    });
+
+    const voila_manifest_json_mod = b.createModule(.{
+        .root_source_file = b.path(fuse ++ "/src/voila_manifest_json.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const posix_util_mod = b.createModule(.{
+        .root_source_file = b.path(fuse ++ "/src/posix_util.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
+    const voila_image_pull_mod = b.createModule(.{
+        .root_source_file = b.path(fuse ++ "/src/voila_image_pull.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "sqlite_c", .module = sqlite_mod },
+            .{ .name = "voila_http", .module = voila_http_mod },
+            .{ .name = "voila_manifest_json", .module = voila_manifest_json_mod },
+            .{ .name = "voila_refkey", .module = voila_refkey_mod },
+            .{ .name = "voila_registry", .module = voila_registry_mod },
+            .{ .name = "voila_ocireg", .module = ocireg_mod },
+            .{ .name = "posix_util", .module = posix_util_mod },
+        },
+    });
+    voila_image_pull_mod.linkSystemLibrary("sqlite3", .{});
 
     const voila_resolve_mod = b.createModule(.{
         .root_source_file = b.path("src/voila_resolve.zig"),
@@ -113,18 +186,32 @@ pub fn build(b: *std.Build) void {
     });
     voila_resolve_mod.linkSystemLibrary("sqlite3", .{});
 
+    const image_totals_mod = b.createModule(.{
+        .root_source_file = b.path("src/image_totals.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "sqlite_c", .module = sqlite_mod },
+        },
+    });
+    image_totals_mod.linkSystemLibrary("sqlite3", .{});
+
+    const registry_creds_mod = b.createModule(.{
+        .root_source_file = b.path("src/registry_creds.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "posix_util", .module = posix_util_mod },
+        },
+    });
+
     const compile_grpc = b.addSystemCommand(&.{ "bash", "scripts/compile_grpc.sh" });
     compile_grpc.setCwd(b.path("."));
 
     const grpc_shim_mod = b.createModule(.{
         .root_source_file = b.path("src/grpc_shim.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-
-    const posix_util_mod = b.createModule(.{
-        .root_source_file = b.path(fuse ++ "/src/posix_util.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -143,9 +230,13 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{
             .{ .name = "voila_resolve", .module = voila_resolve_mod },
+            .{ .name = "voila_image_pull", .module = voila_image_pull_mod },
+            .{ .name = "voila_registry", .module = voila_registry_mod },
+            .{ .name = "image_totals", .module = image_totals_mod },
             .{ .name = "grpc_shim", .module = grpc_shim_mod },
             .{ .name = "posix_util", .module = posix_util_mod },
             .{ .name = "runtime", .module = runtime_mod },
+            .{ .name = "registry_creds", .module = registry_creds_mod },
         },
     });
 
@@ -158,6 +249,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "launch", .module = launch_mod },
             .{ .name = "grpc_shim", .module = grpc_shim_mod },
             .{ .name = "runtime", .module = runtime_mod },
+            .{ .name = "registry_creds", .module = registry_creds_mod },
+            .{ .name = "voila_registry", .module = voila_registry_mod },
         },
     });
     root_mod.link_libcpp = false;

@@ -21,6 +21,7 @@
 
 static volatile sig_atomic_t g_stop;
 static int (*g_handle_run)(const VoiladRunRequest *, VoiladRunCallbacks *);
+static int (*g_handle_set_registry)(const char *registry_url, const char *token);
 
 typedef struct RunStreamCtx {
     grpc_call *call;
@@ -145,6 +146,24 @@ static int on_stderr(void *vctx, const uint8_t *data, size_t len) {
     return 0;
 }
 
+static int on_stats(void *vctx, uint64_t chunks_fetched, uint64_t bytes_fetched, uint64_t image_chunks,
+                    uint64_t image_bytes) {
+    RunStreamCtx *ctx = (RunStreamCtx *)vctx;
+    Voila__V1__RunOutput out = VOILA__V1__RUN_OUTPUT__INIT;
+    out.output_case = VOILA__V1__RUN_OUTPUT__OUTPUT_STATS;
+    Voila__V1__FetchStats st = VOILA__V1__FETCH_STATS__INIT;
+    st.chunks_fetched = chunks_fetched;
+    st.bytes_fetched = bytes_fetched;
+    st.image_chunks = image_chunks;
+    st.image_bytes = image_bytes;
+    out.stats = &st;
+    if (send_run_output(ctx, &out) != 0) {
+        ctx->client_gone = 1;
+        return -1;
+    }
+    return 0;
+}
+
 static int on_exit(void *vctx, int32_t code) {
     RunStreamCtx *ctx = (RunStreamCtx *)vctx;
     Voila__V1__RunOutput out = VOILA__V1__RUN_OUTPUT__INIT;
@@ -207,6 +226,7 @@ static void handle_run_call(grpc_call *call, grpc_completion_queue *cq) {
         .on_context_id = on_context_id,
         .on_stdout = on_stdout,
         .on_stderr = on_stderr,
+        .on_stats = on_stats,
         .on_exit = on_exit,
     };
 
@@ -232,17 +252,106 @@ static void handle_run_call(grpc_call *call, grpc_completion_queue *cq) {
     finish_call(call, cq, st);
 }
 
+static Voila__V1__SetRegistryRequest *recv_set_registry_input(grpc_call *call, grpc_completion_queue *cq) {
+    grpc_byte_buffer *bb = NULL;
+    grpc_op op;
+    memset(&op, 0, sizeof(op));
+    op.op = GRPC_OP_RECV_MESSAGE;
+    op.data.recv_message.recv_message = &bb;
+    if (!run_batch(call, cq, &op, 1)) {
+        return NULL;
+    }
+    if (!bb) {
+        return NULL;
+    }
+
+    grpc_byte_buffer_reader reader;
+    grpc_byte_buffer_reader_init(&reader, bb);
+    grpc_slice slice = grpc_byte_buffer_reader_readall(&reader);
+    grpc_byte_buffer_reader_destroy(&reader);
+    grpc_byte_buffer_destroy(bb);
+
+    Voila__V1__SetRegistryRequest *in = voila__v1__set_registry_request__unpack(
+        NULL, GRPC_SLICE_LENGTH(slice), (const uint8_t *)GRPC_SLICE_START_PTR(slice));
+    grpc_slice_unref(slice);
+    return in;
+}
+
+static int send_set_registry_output(grpc_call *call, grpc_completion_queue *cq) {
+    Voila__V1__SetRegistryResponse out = VOILA__V1__SET_REGISTRY_RESPONSE__INIT;
+    size_t len = voila__v1__set_registry_response__get_packed_size(&out);
+    uint8_t *buf = (uint8_t *)malloc(len);
+    if (!buf) {
+        return -1;
+    }
+    voila__v1__set_registry_response__pack(&out, buf);
+    grpc_slice slice = grpc_slice_from_copied_buffer((const char *)buf, len);
+    free(buf);
+    grpc_byte_buffer *bb = grpc_raw_byte_buffer_create(&slice, 1);
+    grpc_slice_unref(slice);
+    if (!bb) {
+        return -1;
+    }
+
+    grpc_op op;
+    memset(&op, 0, sizeof(op));
+    op.op = GRPC_OP_SEND_MESSAGE;
+    op.data.send_message.send_message = bb;
+    int ok = run_batch(call, cq, &op, 1);
+    grpc_byte_buffer_destroy(bb);
+    return ok ? 0 : -1;
+}
+
+static void handle_set_registry_call(grpc_call *call, grpc_completion_queue *cq) {
+    grpc_op op;
+    memset(&op, 0, sizeof(op));
+    op.op = GRPC_OP_SEND_INITIAL_METADATA;
+    op.data.send_initial_metadata.count = 0;
+    op.data.send_initial_metadata.metadata = NULL;
+    if (!run_batch(call, cq, &op, 1)) {
+        finish_call(call, cq, GRPC_STATUS_INTERNAL);
+        return;
+    }
+
+    Voila__V1__SetRegistryRequest *req = recv_set_registry_input(call, cq);
+    if (!req) {
+        finish_call(call, cq, GRPC_STATUS_INVALID_ARGUMENT);
+        return;
+    }
+
+    grpc_status_code st = GRPC_STATUS_OK;
+    if (!g_handle_set_registry) {
+        st = GRPC_STATUS_UNIMPLEMENTED;
+    } else {
+        const char *url = req->registry_url ? req->registry_url : "";
+        const char *token = req->token ? req->token : "";
+        if (g_handle_set_registry(url, token) != 0) {
+            st = GRPC_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    voila__v1__set_registry_request__free_unpacked(req, NULL);
+
+    if (st == GRPC_STATUS_OK) {
+        if (send_set_registry_output(call, cq) != 0) {
+            st = GRPC_STATUS_INTERNAL;
+        }
+    }
+    finish_call(call, cq, st);
+}
+
 static void on_signal(int sig) {
     (void)sig;
     g_stop = 1;
 }
 
 int voilad_grpc_serve_unix(const char *socket_path, const char *voila_root,
-                           int (*handle_run)(const VoiladRunRequest *, VoiladRunCallbacks *)) {
+                           int (*handle_run)(const VoiladRunRequest *, VoiladRunCallbacks *),
+                           int (*handle_set_registry)(const char *registry_url, const char *token)) {
     if (!socket_path || !voila_root || !handle_run) {
         return 1;
     }
     g_handle_run = handle_run;
+    g_handle_set_registry = handle_set_registry;
 
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
@@ -306,6 +415,8 @@ int voilad_grpc_serve_unix(const char *socket_path, const char *voila_root,
                     const char *method = grpc_slice_to_c_string(details.method);
                     if (method && strcmp(method, "/voila.v1.Worker/Run") == 0) {
                         handle_run_call(call, cq_call);
+                    } else if (method && strcmp(method, "/voila.v1.Worker/SetRegistry") == 0) {
+                        handle_set_registry_call(call, cq_call);
                     } else {
                         finish_call(call, cq_call, GRPC_STATUS_UNIMPLEMENTED);
                     }

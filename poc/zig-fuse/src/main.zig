@@ -7,6 +7,9 @@ const fuse_linux = @import("fuse_linux.zig");
 const posix_util = @import("posix_util.zig");
 const constants = @import("constants.zig");
 const voila_loader = @import("voila_loader.zig");
+const voila_registry = @import("voila_registry.zig");
+const voila_registry_creds = @import("voila_registry_creds.zig");
+const voila_fetch_stats = @import("voila_fetch_stats.zig");
 
 pub const std_options_debug_io = zio.debug_io;
 
@@ -55,8 +58,22 @@ pub fn main(init: std.process.Init) !void {
         const voila_root = args.next() orelse return error.NeedVoilaRoot;
         const image = args.next() orelse return error.NeedImage;
         const mountpoint = args.next() orelse return error.NeedMountpoint;
+        const stats_path_arg = args.next();
         const voila_root_abs = try resolveAbs(init.gpa, voila_root);
         defer init.gpa.free(voila_root_abs);
+        voila_registry.setIo(io, init.gpa);
+        try voila_registry_creds.loadFromCredsFile(init.gpa, voila_root_abs);
+        try voila_registry.loadFromEnv(init.gpa);
+        voila_fetch_stats.init(init.gpa, stats_path_arg);
+        defer voila_fetch_stats.writeStatsFile();
+        const chunks_arg = args.next();
+        const bytes_arg = args.next();
+        if (chunks_arg) |c| {
+            const chunks = std.fmt.parseInt(u64, c, 10) catch 0;
+            var bytes: u64 = 0;
+            if (bytes_arg) |b| bytes = std.fmt.parseInt(u64, b, 10) catch 0;
+            voila_fetch_stats.setImageTotals(chunks, bytes);
+        }
         const tree = try voila_loader.loadTreeRoot(init.gpa, voila_root_abs, image);
         var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(init.gpa, tree) };
         defer fuse_vfs.deinit();

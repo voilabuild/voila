@@ -2,6 +2,9 @@ const std = @import("std");
 const launch = @import("launch");
 const grpc_shim = @import("grpc_shim");
 const runtime = @import("runtime");
+const registry_creds = @import("registry_creds");
+const voila_registry = @import("voila_registry");
+
 var g_voila_root: []const u8 = "";
 var g_zig_fuse: []const u8 = "";
 
@@ -18,6 +21,15 @@ export fn voilad_handle_run(req: *const grpc_shim.RunRequest, cb: *grpc_shim.Run
     }
     const code = launch.runContainer(allocator, g_voila_root, g_zig_fuse, image, args_list.items, cb) catch return -1;
     return if (code < 0) -1 else 0;
+}
+
+export fn voilad_handle_set_registry(url: [*:0]const u8, token: [*:0]const u8) callconv(.c) i32 {
+    const allocator = std.heap.c_allocator;
+    const registry_url = std.mem.span(url);
+    const tok = std.mem.span(token);
+    voila_registry.configure(allocator, registry_url, tok) catch return -1;
+    registry_creds.write(allocator, g_voila_root, registry_url, tok) catch return -1;
+    return 0;
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -44,6 +56,12 @@ pub fn main(init: std.process.Init) !void {
     g_voila_root = voila_root;
     g_zig_fuse = zig_fuse orelse "../zig-fuse/zig-out/bin/zig-fuse";
 
+    voila_registry.setIo(init.io, allocator);
+    const creds = registry_creds.load(allocator, voila_root) catch registry_creds.RegistryCreds{ .registry = "", .token = "" };
+    if (creds.registry.len != 0) {
+        voila_registry.configure(allocator, creds.registry, creds.token) catch {};
+    }
+
     const sock_z_probe = try allocator.allocSentinel(u8, sock.len, 0);
     defer allocator.free(sock_z_probe);
     @memcpy(sock_z_probe, sock);
@@ -58,6 +76,6 @@ pub fn main(init: std.process.Init) !void {
     @memcpy(sock_z, sock);
 
     std.debug.print("zig-voilad listening on {s} root={s}\n", .{ sock, voila_root });
-    const rc = grpc_shim.voilad_grpc_serve_unix(sock_z, root_z, voilad_handle_run);
+    const rc = grpc_shim.voilad_grpc_serve_unix(sock_z, root_z, voilad_handle_run, voilad_handle_set_registry);
     if (rc != 0) std.process.exit(1);
 }

@@ -72,6 +72,37 @@ fn linkStaticBlake3(mod: *std.Build.Module, blake3_lib: *std.Build.Step.Compile)
     mod.linkLibrary(blake3_lib);
 }
 
+fn addCurlShim(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) struct { mod: *std.Build.Module, lib: *std.Build.Step.Compile } {
+    const lib = b.addLibrary(.{
+        .name = "voila_curl_shim",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    lib.root_module.addCSourceFiles(.{
+        .root = b.path("src"),
+        .files = &.{"curl_shim.c"},
+    });
+    lib.root_module.linkSystemLibrary("curl", .{});
+
+    const translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/curl_shim.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const mod = translate.createModule();
+    mod.linkLibrary(lib);
+    return .{ .mod = mod, .lib = lib };
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -124,6 +155,8 @@ pub fn build(b: *std.Build) void {
     const fuse3_mod = fuse3_translate.createModule();
     fuse3_mod.linkSystemLibrary("fuse3", .{});
 
+    const curl = addCurlShim(b, target, optimize);
+
     const root_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -135,11 +168,14 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zstd", .module = zstd_mod },
             .{ .name = "blake3_c", .module = blake3_mod },
             .{ .name = "sqlite_c", .module = sqlite_mod },
+            .{ .name = "curl_c", .module = curl.mod },
         },
     });
     root_mod.linkSystemLibrary("fuse3", .{});
     root_mod.linkSystemLibrary("pthread", .{});
     root_mod.linkSystemLibrary("sqlite3", .{});
+    root_mod.linkSystemLibrary("curl", .{});
+    root_mod.linkLibrary(curl.lib);
     linkStaticZstd(b, target, optimize, root_mod);
     linkStaticBlake3(root_mod, blake3_lib);
 

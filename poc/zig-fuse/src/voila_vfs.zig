@@ -3,6 +3,8 @@ const fuse_abi = @import("fuse_abi.zig");
 const voila_index = @import("voila_index.zig");
 const voila_tree = @import("voila_tree.zig");
 const voila_store = @import("voila_store.zig");
+const voila_chunk_load = @import("voila_chunk_load.zig");
+const hub = @import("voila_registry_hub.zig");
 const voila_resolve = @import("voila_resolve.zig");
 const voila_chunk_index = @import("voila_chunk_index.zig");
 const voila_manifest_proto = @import("voila_manifest_proto.zig");
@@ -336,7 +338,7 @@ pub const VoilaVfs = struct {
 
     fn getChunk(self: *VoilaVfs, hex: []const u8, algo: i32) ![]const u8 {
         if (self.chunk_cache.get(hex)) |c| return c;
-        const owned = try voila_store.loadChunkRaw(self.allocator, self.voilaRoot(), hex, algo);
+        const owned = try voila_chunk_load.loadChunkRaw(hub.g_io, self.allocator, self.voilaRoot(), hex, algo);
         const key = try self.allocator.dupe(u8, hex);
         try self.chunk_cache.put(key, owned);
         return owned;

@@ -1,6 +1,8 @@
 const std = @import("std");
 const voila_manifest_proto = @import("voila_manifest_proto.zig");
 const voila_store = @import("voila_store.zig");
+const voila_chunk_load = @import("voila_chunk_load.zig");
+const hub = @import("voila_registry_hub.zig");
 const voila_resolve = @import("voila_resolve.zig");
 const voila_chunk_index = @import("voila_chunk_index.zig");
 const voila_index = @import("voila_index.zig");
@@ -128,7 +130,7 @@ pub const Tree = struct {
         defer self.allocator.free(hex);
         if (self.manifest_hex_loaded.contains(hex)) return;
         const algo = voila_chunk_index.compAlgoForChunk(self.voila_root, chunk_id) catch voila_store.AlgoRaw;
-        const raw = try voila_store.loadChunkRaw(self.allocator, self.voila_root, hex, algo);
+        const raw = try voila_chunk_load.loadChunkRaw(hub.g_io, self.allocator, self.voila_root, hex, algo);
         defer self.allocator.free(raw);
         var m = try voila_manifest_proto.decodeManifest(self.allocator, raw);
         defer m.deinit();
