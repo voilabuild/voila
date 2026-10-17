@@ -49,6 +49,16 @@ func TestWaitDeviceCapacity_Timeout(t *testing.T) {
 	}
 }
 
+func TestExportSizeReady_Sectors(t *testing.T) {
+	// sysfs size=8 → 4096 bytes must satisfy a 4096-byte export.
+	if !exportSizeReady(4096, 8*512) {
+		t.Fatal("expected 8 sectors to satisfy 4096-byte export")
+	}
+	if exportSizeReady(4096, 0) {
+		t.Fatal("zero size should not be ready")
+	}
+}
+
 func TestWaitDeviceCapacity_ReadErrorThenReady(t *testing.T) {
 	ctx := context.Background()
 	var calls int

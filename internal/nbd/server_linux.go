@@ -73,7 +73,9 @@ func (d *Device) Close() error {
 	ioctl(d.devFile.Fd(), nbdClearSock, 0)
 	<-d.done
 	_ = d.devFile.Close()
-	return nil
+	teardownCtx, cancel := context.WithTimeout(context.Background(), nbdTeardownTimeout)
+	defer cancel()
+	return waitNBDQuiescent(teardownCtx, d.path)
 }
 
 // Registry manages per-image NBD devices.
@@ -161,12 +163,12 @@ func createDevice(ctx context.Context, result *erofsadapter.BuildResult, store c
 		_ = conn.Close()
 	}()
 
-	waitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	setupCtx, cancel := context.WithTimeout(ctx, nbdSetupTimeout)
 	defer cancel()
 
 	// Listen() already admits connections; retry only if Accept hasn't
 	// been scheduled yet (ECONNREFUSED), instead of sleeping blindly.
-	conn, err := dialNBD(waitCtx, listener.Addr().String())
+	conn, err := dialNBD(setupCtx, listener.Addr().String())
 	if err != nil {
 		_ = listener.Close()
 		_ = devFile.Close()
@@ -322,7 +324,7 @@ func createDevice(ctx context.Context, result *erofsadapter.BuildResult, store c
 	}()
 
 	// /sys/block/nbdX/pid appears once the kernel is servicing the device.
-	if err := waitNBDConnected(waitCtx, devPath); err != nil {
+	if err := waitNBDConnected(setupCtx, devPath); err != nil {
 		ioctl(devFile.Fd(), nbdDisconnect, 0)
 		ioctl(devFile.Fd(), nbdClearSock, 0)
 		_ = listener.Close()
@@ -333,7 +335,7 @@ func createDevice(ctx context.Context, result *erofsadapter.BuildResult, store c
 	// Capacity is applied asynchronously after NBD_DO_IT; mounting before size
 	// is visible yields EINVAL (erofs: cannot find valid superblock).
 	devPathCopy := devPath
-	if err := waitDeviceCapacity(waitCtx, exportSize, func() (uint64, error) {
+	if err := waitDeviceCapacity(setupCtx, exportSize, func() (uint64, error) {
 		return readDeviceSizeBytes(devPathCopy)
 	}); err != nil {
 		ioctl(devFile.Fd(), nbdDisconnect, 0)
@@ -386,7 +388,7 @@ func waitNBDConnected(ctx context.Context, devPath string) error {
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("nbd: wait for %s: %w", devPath, ctx.Err())
-		case <-time.After(time.Millisecond):
+		case <-time.After(nbdPollInterval):
 		}
 	}
 }
@@ -402,6 +404,9 @@ func HasFreeDevice() bool {
 func findFreeNBD() (string, error) {
 	for i := 0; i < 16; i++ {
 		p := fmt.Sprintf("/dev/nbd%d", i)
+		if !deviceQuiescent(p) {
+			continue
+		}
 		f, err := os.OpenFile(p, os.O_RDWR, 0)
 		if err != nil {
 			continue
@@ -409,7 +414,7 @@ func findFreeNBD() (string, error) {
 		_ = f.Close()
 		return p, nil
 	}
-	return "", fmt.Errorf("all /dev/nbd* devices are in use")
+	return "", fmt.Errorf("all /dev/nbd* devices are in use or still disconnecting")
 }
 
 // ioctl makes a Linux ioctl syscall on fd.
