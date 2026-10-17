@@ -72,6 +72,40 @@ fn linkStaticBlake3(mod: *std.Build.Module, blake3_lib: *std.Build.Step.Compile)
     mod.linkLibrary(blake3_lib);
 }
 
+fn addFuse3Shim(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) struct { mod: *std.Build.Module, lib: *std.Build.Step.Compile } {
+    const lib = b.addLibrary(.{
+        .name = "voila_fuse3_shim",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    lib.root_module.addCSourceFiles(.{
+        .root = b.path("src"),
+        .files = &.{"fuse3_shim.c"},
+    });
+    lib.root_module.addIncludePath(b.path("src"));
+    lib.root_module.linkSystemLibrary("fuse3", .{});
+
+    const translate = b.addTranslateC(.{
+        .root_source_file = b.path("src/fuse3_shim.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    translate.addIncludePath(b.path("src"));
+    const mod = translate.createModule();
+    mod.linkLibrary(lib);
+    mod.linkSystemLibrary("fuse3", .{});
+    return .{ .mod = mod, .lib = lib };
+}
+
 fn addCurlShim(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -145,15 +179,7 @@ pub fn build(b: *std.Build) void {
     const sqlite_mod = sqlite_translate.createModule();
     sqlite_mod.linkSystemLibrary("sqlite3", .{});
 
-    const fuse3_translate = b.addTranslateC(.{
-        .root_source_file = b.path("src/fuse3_shim.h"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    fuse3_translate.addSystemIncludePath(.{ .cwd_relative = "/usr/include/fuse3" });
-    const fuse3_mod = fuse3_translate.createModule();
-    fuse3_mod.linkSystemLibrary("fuse3", .{});
+    const fuse3 = addFuse3Shim(b, target, optimize);
 
     const curl = addCurlShim(b, target, optimize);
 
@@ -164,7 +190,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{
             .{ .name = "zio", .module = zio.module("zio") },
-            .{ .name = "fuse3", .module = fuse3_mod },
+            .{ .name = "fuse3", .module = fuse3.mod },
             .{ .name = "zstd", .module = zstd_mod },
             .{ .name = "blake3_c", .module = blake3_mod },
             .{ .name = "sqlite_c", .module = sqlite_mod },
@@ -172,6 +198,7 @@ pub fn build(b: *std.Build) void {
         },
     });
     root_mod.linkSystemLibrary("fuse3", .{});
+    root_mod.linkLibrary(fuse3.lib);
     root_mod.linkSystemLibrary("pthread", .{});
     root_mod.linkSystemLibrary("sqlite3", .{});
     root_mod.linkSystemLibrary("curl", .{});
