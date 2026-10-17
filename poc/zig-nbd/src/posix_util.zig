@@ -12,6 +12,13 @@ fn toZ(allocator: std.mem.Allocator, path: []const u8) ![:0]const u8 {
     return out;
 }
 
+fn openReadOnly(path: [:0]const u8) !std.posix.fd_t {
+    const fd_raw = std.os.linux.open(path, .{ .ACCMODE = .RDONLY }, 0);
+    const fd_isize: isize = @bitCast(fd_raw);
+    if (fd_isize < 0) return std.posix.unexpectedErrno(std.os.linux.errno(fd_raw));
+    return @intCast(fd_isize);
+}
+
 pub fn access(path: []const u8) bool {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     if (path.len >= buf.len) return false;
@@ -24,21 +31,20 @@ pub fn access(path: []const u8) bool {
 pub fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8, limit: usize) ![]u8 {
     const path_z = try toZ(allocator, path);
     defer allocator.free(path_z);
-    const fd_rc = std.os.linux.open(path_z, .{ .ACCMODE = .RDONLY }, 0);
-    const open_err = std.posix.errno(fd_rc);
-    if (open_err != .SUCCESS) return std.posix.unexpectedErrno(open_err);
-    const fd: std.posix.fd_t = @intCast(fd_rc);
+    const fd = openReadOnly(path_z) catch |e| return e;
     defer _ = std.c.close(fd);
     var buf = try allocator.alloc(u8, 0);
     var total: usize = 0;
     var chunk: [65536]u8 = undefined;
     while (true) {
-        const n = std.posix.read(fd, chunk[0..]) catch |e| return e;
+        const n: isize = std.c.read(@intCast(fd), chunk[0..].ptr, chunk.len);
+        if (n < 0) return std.posix.unexpectedErrno(std.posix.errno(@as(usize, @bitCast(n))));
         if (n == 0) break;
-        total += n;
+        const got: usize = @intCast(n);
+        total += got;
         if (total > limit) return error.FileTooLarge;
         buf = try allocator.realloc(buf, total);
-        @memcpy(buf[total - n .. total], chunk[0..n]);
+        @memcpy(buf[total - got .. total], chunk[0..got]);
     }
     return buf;
 }
@@ -48,9 +54,13 @@ pub fn makePath(path: []const u8) !void {
     if (path.len >= buf.len) return error.NameTooLong;
     @memcpy(buf[0..path.len], path);
     buf[path.len] = 0;
-    const rc = std.os.linux.mkdir(buf[0..path.len :0], 0o755);
+    const path_z = buf[0..path.len :0];
+    if (access(path)) return;
+    const rc = std.os.linux.mkdir(path_z, 0o755);
     if (rc == 0) return;
     const err = std.posix.errno(rc);
     if (err == .EXIST) return;
+    if (access(path)) return;
+    if (err == .SUCCESS) return error.PathCreateFailed;
     return std.posix.unexpectedErrno(err);
 }

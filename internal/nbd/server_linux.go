@@ -385,6 +385,10 @@ func waitNBDConnected(ctx context.Context, devPath string) error {
 		if b, err := os.ReadFile(pidPath); err == nil && len(strings.TrimSpace(string(b))) > 0 {
 			return nil
 		}
+		// Some kernels omit /sys/block/nbdX/pid; a readable device means DO_IT is active.
+		if n, err := readDeviceSizeBytes(devPath); err == nil && n > 0 {
+			return nil
+		}
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("nbd: wait for %s: %w", devPath, ctx.Err())

@@ -26,7 +26,7 @@ pub fn main(init: std.process.Init) !void {
         const nbd = args.next() orelse "/dev/nbd0";
         var dev = try backend.Device.loadFromFixture(init.gpa, fixture_dir);
         defer dev.deinit();
-        try nbd_linux.attachAndServe(io, &dev, nbd);
+        try nbd_linux.attachAndServe(io, &dev, nbd, null);
         return;
     }
     std.debug.print("usage: zig-nbd prove [fixture-dir]\n       zig-nbd serve [fixture-dir] [/dev/nbdX]\n", .{});
@@ -52,23 +52,38 @@ fn prove(io: std.Io, init: std.process.Init, fixture_dir: []const u8) !void {
     try rootMountProve(io, init, fixture_dir, nbd_path);
 }
 
-fn rootMountProve(io: std.Io, init: std.process.Init, fixture_dir: []const u8, nbd_path: []const u8) !void {
+fn rootMountProve(_: std.Io, init: std.process.Init, fixture_dir: []const u8, nbd_path: []const u8) !void {
     const mount_dir = "/tmp/zig-nbd-erofs";
     try posix_util.makePath(mount_dir);
 
-    var device = try backend.Device.loadFromFixture(init.gpa, fixture_dir);
-    defer device.deinit();
-
     var serve_err: ?anyerror = null;
+    var connected = std.atomic.Value(bool).init(false);
     const thread = try std.Thread.spawn(.{}, struct {
-        fn run(io_inner: std.Io, dev: *backend.Device, nbd: []const u8, err: *?anyerror) void {
-            nbd_linux.attachAndServe(io_inner, dev, nbd) catch |e| {
+        fn run(gpa: std.mem.Allocator, fixture: []const u8, nbd: []const u8, err: *?anyerror, flag: *std.atomic.Value(bool)) void {
+            var rt = zio.Runtime.init(gpa, .{}) catch |e| {
+                err.* = e;
+                return;
+            };
+            defer rt.deinit();
+            const io_inner = rt.io();
+            var device = backend.Device.loadFromFixture(gpa, fixture) catch |e| {
+                err.* = e;
+                return;
+            };
+            defer device.deinit();
+            nbd_linux.attachAndServe(io_inner, &device, nbd, flag) catch |e| {
                 err.* = e;
             };
         }
-    }.run, .{ io, &device, nbd_path, &serve_err });
+    }.run, .{ init.gpa, fixture_dir, nbd_path, &serve_err, &connected });
 
-    try capacity_wait.waitDeviceCapacity(io, nbd_path, device.device_size, 3000, capacity_wait.readSysfsDeviceSizeBytes);
+    for (0..20_000) |_| {
+        if (connected.load(.acquire)) break;
+        if (serve_err != null) return serve_err.?;
+        var ts = std.os.linux.timespec{ .sec = 0, .nsec = 1_000_000 };
+        _ = std.os.linux.nanosleep(&ts, null);
+    }
+    if (!connected.load(.acquire)) return error.DeviceCapacityTimeout;
 
     const mount_cmd = try std.fmt.allocPrint(init.gpa, "mount -t erofs -o ro {s} {s}", .{ nbd_path, mount_dir });
     defer init.gpa.free(mount_cmd);
@@ -91,6 +106,7 @@ fn rootMountProve(io: std.Io, init: std.process.Init, fixture_dir: []const u8, n
     if (data[0] != 0xAA or data[backend.ChunkSize - 1] != 0xAA or data[backend.ChunkSize] != 0xCC) {
         return error.BoundaryBytesWrong;
     }
+    nbd_linux.disconnect(nbd_path);
     thread.join();
     if (serve_err != null) return serve_err.?;
 }

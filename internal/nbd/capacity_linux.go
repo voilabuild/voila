@@ -14,7 +14,9 @@ import (
 const blkGetSize64 = 0x80081272 // _IOR(0x12, 114, size_t)
 
 func readDeviceSizeBytes(devPath string) (uint64, error) {
-	if n, err := readDeviceSizeSysfs(devPath); err == nil {
+	// Sysfs size can lag behind BLKGETSIZE64 right after NBD_DO_IT (especially
+	// for small exports like 4096 bytes / 8 sectors). Treat sysfs==0 as unknown.
+	if n, err := readDeviceSizeSysfs(devPath); err == nil && n > 0 {
 		return n, nil
 	}
 	f, err := os.Open(devPath)

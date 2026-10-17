@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	nbdSetupTimeout    = 10 * time.Second
+	nbdSetupTimeout    = 15 * time.Second
 	nbdTeardownTimeout = 10 * time.Second
 )
 

@@ -7,22 +7,68 @@ pub const ReadSizeError = error{
     SysfsParse,
 };
 
+const blk_get_size64: u64 = 0x80081272;
+
+pub fn readDeviceSizeWhenReadable(nbd_path: []const u8) ReadSizeError!u64 {
+    const size = readSysfsDeviceSizeBytes(nbd_path) catch return error.SysfsMissing;
+    if (!deviceReadProbe(nbd_path)) return error.SysfsMissing;
+    return size;
+}
+
+fn deviceReadProbe(nbd_path: []const u8) bool {
+    var path_z: [64]u8 = undefined;
+    if (nbd_path.len >= path_z.len) return false;
+    @memcpy(path_z[0..nbd_path.len], nbd_path);
+    path_z[nbd_path.len] = 0;
+    const fd_raw = std.os.linux.open(path_z[0..nbd_path.len :0], .{ .ACCMODE = .RDONLY }, 0);
+    const fd_isize: isize = @bitCast(fd_raw);
+    if (fd_isize < 0) return false;
+    const fd: i32 = @intCast(fd_isize);
+    defer _ = std.c.close(fd);
+    var buf: [512]u8 = undefined;
+    const n = std.c.read(@intCast(fd), &buf, buf.len);
+    const n_isize: isize = @bitCast(n);
+    return n_isize > 0;
+}
+
 pub fn readSysfsDeviceSizeBytes(nbd_path: []const u8) ReadSizeError!u64 {
     const name = blockName(nbd_path);
     var path_buf: [128]u8 = undefined;
     const sysfs = std.fmt.bufPrint(&path_buf, "/sys/block/{s}/size", .{name}) catch return error.SysfsMissing;
     if (sysfs.len + 1 > path_buf.len) return error.SysfsMissing;
     path_buf[sysfs.len] = 0;
-    const fd_rc = std.os.linux.open(path_buf[0..sysfs.len :0], .{ .ACCMODE = .RDONLY }, 0);
-    const open_err = std.posix.errno(fd_rc);
-    if (open_err != .SUCCESS) return error.SysfsMissing;
-    const fd: std.posix.fd_t = @intCast(fd_rc);
+    const fd_raw = std.os.linux.open(path_buf[0..sysfs.len :0], .{ .ACCMODE = .RDONLY }, 0);
+    const fd_sysfs: isize = @bitCast(fd_raw);
+    if (fd_sysfs >= 0) {
+        const fd: i32 = @intCast(fd_sysfs);
+        defer _ = std.c.close(fd);
+        var raw: [32]u8 = undefined;
+        const n = std.c.read(@intCast(fd), &raw, raw.len);
+        if (n > 0) {
+            const trimmed = std.mem.trim(u8, raw[0..@intCast(n)], " \t\n\r");
+            if (std.fmt.parseInt(u64, trimmed, 10)) |sectors| {
+                if (sectors > 0) return sectors * 512;
+            } else |_| {}
+        }
+    }
+    return readBlkSize64(nbd_path);
+}
+
+fn readBlkSize64(nbd_path: []const u8) ReadSizeError!u64 {
+    var path_z: [64]u8 = undefined;
+    if (nbd_path.len >= path_z.len) return error.SysfsMissing;
+    @memcpy(path_z[0..nbd_path.len], nbd_path);
+    path_z[nbd_path.len] = 0;
+    const fd_raw = std.os.linux.open(path_z[0..nbd_path.len :0], .{ .ACCMODE = .RDONLY }, 0);
+    const fd_isize: isize = @bitCast(fd_raw);
+    if (fd_isize < 0) return error.SysfsMissing;
+    const fd: i32 = @intCast(fd_isize);
     defer _ = std.c.close(fd);
-    var raw: [32]u8 = undefined;
-    const n = std.posix.read(fd, &raw) catch return error.SysfsMissing;
-    const trimmed = std.mem.trim(u8, raw[0..n], " \t\n\r");
-    const sectors = std.fmt.parseInt(u64, trimmed, 10) catch return error.SysfsParse;
-    return sectors * 512;
+    var size: u64 = 0;
+    const rc_raw = std.os.linux.ioctl(fd, blk_get_size64, @intFromPtr(&size));
+    const rc: isize = @bitCast(rc_raw);
+    if (rc < 0) return error.SysfsMissing;
+    return size;
 }
 
 fn blockName(dev_path: []const u8) []const u8 {
@@ -30,6 +76,23 @@ fn blockName(dev_path: []const u8) []const u8 {
         return dev_path[i + 1 ..];
     }
     return dev_path;
+}
+
+pub fn nbdPIDPresent(nbd_path: []const u8) bool {
+    const name = blockName(nbd_path);
+    var path_buf: [128]u8 = undefined;
+    const pid_path = std.fmt.bufPrint(&path_buf, "/sys/block/{s}/pid", .{name}) catch return false;
+    if (pid_path.len + 1 > path_buf.len) return false;
+    path_buf[pid_path.len] = 0;
+    const fd_raw = std.os.linux.open(path_buf[0..pid_path.len :0], .{ .ACCMODE = .RDONLY }, 0);
+    const fd_isize: isize = @bitCast(fd_raw);
+    if (fd_isize < 0) return false;
+    const fd: i32 = @intCast(fd_isize);
+    defer _ = std.c.close(fd);
+    var raw: [16]u8 = undefined;
+    const n = std.c.read(@intCast(fd), &raw, raw.len);
+    if (n <= 0) return false;
+    return std.mem.trim(u8, raw[0..@intCast(n)], " \t\n\r").len > 0;
 }
 
 pub fn capacitySatisfied(want_bytes: u64, got_bytes: u64) bool {
@@ -46,6 +109,8 @@ pub fn waitDeviceCapacityWithPolls(
     for (0..max_polls) |_| {
         const got = read_size(nbd_path) catch 0;
         if (capacitySatisfied(want_bytes, got)) return;
+        var ts = std.os.linux.timespec{ .sec = 0, .nsec = 1_000_000 };
+        _ = std.os.linux.nanosleep(&ts, null);
     }
     return error.DeviceCapacityTimeout;
 }
