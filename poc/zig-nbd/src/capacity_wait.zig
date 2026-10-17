@@ -11,10 +11,15 @@ pub fn readSysfsDeviceSizeBytes(nbd_path: []const u8) ReadSizeError!u64 {
     const name = blockName(nbd_path);
     var path_buf: [128]u8 = undefined;
     const sysfs = std.fmt.bufPrint(&path_buf, "/sys/block/{s}/size", .{name}) catch return error.SysfsMissing;
-    const data = std.fs.openFileAbsolute(sysfs, .{}) catch return error.SysfsMissing;
-    defer data.close();
+    if (sysfs.len + 1 > path_buf.len) return error.SysfsMissing;
+    path_buf[sysfs.len] = 0;
+    const fd_rc = std.os.linux.open(path_buf[0..sysfs.len :0], .{ .ACCMODE = .RDONLY }, 0);
+    const open_err = std.posix.errno(fd_rc);
+    if (open_err != .SUCCESS) return error.SysfsMissing;
+    const fd: std.posix.fd_t = @intCast(fd_rc);
+    defer _ = std.c.close(fd);
     var raw: [32]u8 = undefined;
-    const n = data.read(&raw) catch return error.SysfsMissing;
+    const n = std.posix.read(fd, &raw) catch return error.SysfsMissing;
     const trimmed = std.mem.trim(u8, raw[0..n], " \t\n\r");
     const sectors = std.fmt.parseInt(u64, trimmed, 10) catch return error.SysfsParse;
     return sectors * 512;
@@ -53,11 +58,16 @@ pub fn waitDeviceCapacity(
     read_size: ReadSizeFn,
 ) !void {
     if (want_bytes == 0) return;
-    const deadline = io.monotonicNow() + std.Io.Duration.fromMilliseconds(timeout_ms);
-    while (io.monotonicNow() < deadline) {
+    const clock = std.Io.Clock.awake;
+    const timeout = std.Io.Clock.Duration{
+        .raw = std.Io.Duration.fromMilliseconds(timeout_ms),
+        .clock = clock,
+    };
+    const deadline = std.Io.Clock.Timestamp.fromNow(io, timeout);
+    while (std.Io.Clock.Timestamp.compare(std.Io.Clock.Timestamp.now(io, clock), .lt, deadline)) {
         const got = read_size(nbd_path) catch 0;
         if (capacitySatisfied(want_bytes, got)) return;
-        try io.sleep(std.Io.Duration.fromMilliseconds(1), .awake);
+        try std.Io.sleep(io, std.Io.Duration.fromMilliseconds(1), clock);
     }
     return error.DeviceCapacityTimeout;
 }
