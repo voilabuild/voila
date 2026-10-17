@@ -10,7 +10,9 @@ step() { echo; echo "=== $* ==="; }
 fail() { echo "FAIL: $*"; exit 1; }
 
 : "${VOILA_REGISTRY_TOKEN:?VOILA_REGISTRY_TOKEN required}"
-REGISTRY="${VOILA_REGISTRY:-https://drift-registry-production.up.railway.app/registry}"
+# Default matches CLI/install; override VOILA_REGISTRY for pre-DNS CI, e.g.
+# https://drift-registry-production.up.railway.app/registry
+REGISTRY="${VOILA_REGISTRY:-https://registry.voila.build/registry}"
 ORG="${VOILA_ORG:-saucisse}"
 TAG="e2e-$(date +%s)"
 REMOTE_REF="${ORG}/alpine:${TAG}"

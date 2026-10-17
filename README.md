@@ -40,9 +40,9 @@ voila run alpine:3.20 -- /bin/echo hi
 
 ### Hosted registry
 
-The install script points at a free registry by default
-(`https://drift-registry-production.up.railway.app`). Public pulls need no
-account; chunks stream on first read. Sign up there to push under your org
+The install script points at the hosted registry by default
+(`https://registry.voila.build`). Public pulls need no account; chunks stream
+on first read. Sign up there to push under your org
 (`<org>/alpine:3.20`). Push needs an API key (`--token` on install, or
 `VOILA_REGISTRY_TOKEN`).
 

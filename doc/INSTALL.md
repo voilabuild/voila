@@ -1,8 +1,21 @@
 # Install voila
 
 This guide covers installing the `voila` binaries and connecting them to the
-hosted registry at `https://drift-registry-production.up.railway.app`, which
-requires an account and an API key.
+hosted cloud registry at `https://registry.voila.build`, which requires an
+account and an API key.
+
+The **`voila-registry` binary** in this repo is a **local**, single-root HTTP
+server for dev (`VOILA_ROOT`, no Postgres). The **hosted** multi-tenant
+registry (web UI, orgs, API keys) runs at **registry.voila.build** — that is
+what `VOILA_REGISTRY`, `voila login`, and `install.sh` target by default.
+
+Until DNS for `registry.voila.build` is live, point at the Railway deployment
+instead:
+
+```bash
+export VOILA_REGISTRY=https://drift-registry-production.up.railway.app/registry
+# or: voila login https://drift-registry-production.up.railway.app/registry
+```
 
 If you only want the binaries (no remote registry), the **Install the binaries**
 section is all you need — the registry + auth sections are only required to
@@ -80,7 +93,7 @@ voila-registry -version
 The hosted registry has a web UI where you sign up with an **org path** — the
 namespace your image refs live under (`<org>/<image>:<tag>`).
 
-1. Open <https://drift-registry-production.up.railway.app/signup>.
+1. Open <https://registry.voila.build/signup>.
 2. Enter an **email**, a **password**, and an **org path** (e.g. your username
    or team name). The org path is your namespace — you can only push to orgs
    you own.
@@ -90,7 +103,7 @@ namespace your image refs live under (`<org>/<image>:<tag>`).
 
 ## 3. Create an API key
 
-1. Log in at <https://drift-registry-production.up.railway.app/login>.
+1. Log in at <https://registry.voila.build/login>.
 2. Open the **Keys** page (nav bar).
 3. Create a key and copy it — it looks like `dreg_...`. This is the bearer
    token the CLI sends as `Authorization: Bearer dreg_...`.
@@ -104,7 +117,7 @@ The recommended path is `voila login` (saves URL + API key to
 
 ```bash
 voila login
-# Registry URL [https://drift-registry-production.up.railway.app/registry]:
+# Registry URL [https://registry.voila.build/registry]:
 # API key: (hidden)
 ```
 
@@ -123,7 +136,7 @@ Alternatively, set environment variables (they override the login file):
   wire protocol under the `/registry` path prefix (the management UI lives at
   the root), so use the full base:
   ```bash
-  export VOILA_REGISTRY=https://drift-registry-production.up.railway.app/registry
+  export VOILA_REGISTRY=https://registry.voila.build/registry
   ```
 - `VOILA_REGISTRY_TOKEN` — your API key. Keep it in the environment, not the
   shell history:
@@ -151,7 +164,7 @@ For a systemd install, set only the registry URL (no token):
 
 ```bash
 sudo tee -a /etc/default/voilad >/dev/null <<'EOF'
-VOILA_REGISTRY=https://drift-registry-production.up.railway.app/registry
+VOILA_REGISTRY=https://registry.voila.build/registry
 EOF
 sudo systemctl restart voilad
 ```
