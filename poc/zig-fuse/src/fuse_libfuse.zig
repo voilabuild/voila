@@ -159,16 +159,19 @@ pub fn mountSession(allocator: std.mem.Allocator, mountpoint: []const u8, vfs: *
         .argv = null,
         .allocated = 0,
     };
-    if (c.fuse_opt_add_arg(&args, @ptrCast(prog_z.ptr)) != 0) return error.FuseArgsFailed;
+    const prog_ptr: [*c]const u8 = @ptrCast(prog_z.ptr);
+    if (c.fuse_opt_add_arg(&args, prog_ptr) != 0) return error.FuseArgsFailed;
     if (c.fuse_opt_add_arg(&args, "-o") != 0) return error.FuseArgsFailed;
     if (c.fuse_opt_add_arg(&args, "ro,allow_other") != 0) return error.FuseArgsFailed;
 
     const fuse_ops = ops();
-    const f = c.fuse_new(&args, &fuse_ops, @sizeOf(c.struct_fuse_operations), @ptrCast(vfs));
+    const private_data: ?*anyopaque = @ptrCast(vfs);
+    const f = c.voila_fuse_new(&args, &fuse_ops, @sizeOf(c.struct_fuse_operations), private_data);
     c.fuse_opt_free_args(&args);
     if (f == null) return error.FuseNewFailed;
 
-    if (c.fuse_mount(f, @ptrCast(mnt_z.ptr)) != 0) {
+    const mnt_ptr: [*c]const u8 = @ptrCast(mnt_z.ptr);
+    if (c.fuse_mount(f, mnt_ptr) != 0) {
         c.fuse_destroy(f);
         return error.FuseMountFailed;
     }
