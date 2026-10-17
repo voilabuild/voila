@@ -2,6 +2,8 @@ const std = @import("std");
 const launch = @import("launch");
 const grpc_shim = @import("grpc_shim");
 const runtime = @import("runtime");
+const registry_global = @import("registry_global");
+const lifecycle = @import("lifecycle");
 const registry_creds = @import("registry_creds");
 const voila_registry = @import("voila_registry");
 
@@ -23,6 +25,15 @@ export fn voilad_handle_run(req: *const grpc_shim.RunRequest, cb: *grpc_shim.Run
     return if (code < 0) -1 else 0;
 }
 
+export fn voilad_handle_exec(
+    ctx_id: [*:0]const u8,
+    args: [*][*:0]const u8,
+    args_len: usize,
+    cb: *grpc_shim.ExecCallbacks,
+) callconv(.c) i32 {
+    return lifecycle.handleExec(ctx_id, args, args_len, cb);
+}
+
 export fn voilad_handle_set_registry(url: [*:0]const u8, token: [*:0]const u8) callconv(.c) i32 {
     const allocator = std.heap.c_allocator;
     const registry_url = std.mem.span(url);
@@ -36,8 +47,10 @@ pub fn main(init: std.process.Init) !void {
     runtime.io = init.io;
     const allocator = init.gpa;
 
+    registry_global.init();
+
     var args = std.process.Args.Iterator.init(init.minimal.args);
-    _ = args.next(); // program name
+    _ = args.next();
 
     var root: ?[]const u8 = null;
     var socket: ?[]const u8 = null;
@@ -75,7 +88,14 @@ pub fn main(init: std.process.Init) !void {
     defer allocator.free(sock_z);
     @memcpy(sock_z, sock);
 
+    const hooks = grpc_shim.WorkerHooks{
+        .handle_run = voilad_handle_run,
+        .handle_exec = voilad_handle_exec,
+        .handle_set_registry = voilad_handle_set_registry,
+    };
+
     std.debug.print("zig-voilad listening on {s} root={s}\n", .{ sock, voila_root });
-    const rc = grpc_shim.voilad_grpc_serve_unix(sock_z, root_z, voilad_handle_run, voilad_handle_set_registry);
+    const rc = grpc_shim.voilad_grpc_serve_unix(sock_z, root_z, &hooks);
+    registry_global.deinit();
     if (rc != 0) std.process.exit(1);
 }
