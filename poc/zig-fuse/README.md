@@ -31,7 +31,7 @@ Without root or `/dev/fuse`, `prove` skips the mount and still runs `zig build t
 
 ## Commands
 
-From the voila repo root (Zig 0.17 on `PATH`):
+From the voila repo root (`mise install` provisions Zig 0.17.0 on `PATH`):
 
 ```bash
 cd poc/zig-fuse

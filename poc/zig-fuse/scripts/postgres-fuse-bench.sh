@@ -15,8 +15,9 @@ IMAGE_REF="${IMAGE_REF:-registry-1.docker.io/library/postgres:16-alpine}"
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 ZIG_FUSE="$REPO_ROOT/poc/zig-fuse"
 ZIG_BIN="${ZIG_BIN:-zig}"
-if ! command -v "$ZIG_BIN" >/dev/null 2>&1 && [ -x /tmp/zig-x86_64-linux-0.17.0/zig ]; then
-  ZIG_BIN=/tmp/zig-x86_64-linux-0.17.0/zig
+if ! command -v "$ZIG_BIN" >/dev/null 2>&1; then
+  echo "zig not found on PATH (run mise install from the repo root)" >&2
+  exit 1
 fi
 VOILA_BIN="${VOILA_BIN:-/tmp/voila}"
 VOILAD_BIN="${VOILAD_BIN:-/tmp/voilad}"

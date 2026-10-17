@@ -3,7 +3,9 @@
 # are locked in mise.lock). See doc/DEV_SETUP.md for the full Mac/Linux setup.
 
 [tools]
-go = "1.26.2"
+go = "1.26.3"
+# Zig PoCs (poc/zig-fuse, poc/zig-voilad) require 0.17.0 (see build.zig.zon).
+zig = "0.17.0"
 # Codegen tools used by `make proto` (buf.gen.yaml runs these as local plugins).
 # Installed via mise's `go:` backend so a single `mise install` provisions the
 # whole toolchain reproducibly — no separate `go install` step required.

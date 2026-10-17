@@ -27,7 +27,8 @@ mise install
 
 | Tool | Version | Purpose |
 |---|---|---|
-| `go` | 1.26.2 (matches `go.mod`) | build, vet, test |
+| `go` | 1.26.3 (matches `go.mod`) | build, vet, test |
+| `zig` | 0.17.0 | `poc/zig-fuse`, `poc/zig-voilad` (`zig build`) |
 | `buf` | 1.71.0 | `make proto` (buf.gen.yaml) |
 | `protoc-gen-go` | 1.36.11 | protobuf Go codegen |
 | `protoc-gen-go-grpc` | 1.6.2 | protobuf gRPC codegen |
@@ -94,7 +95,9 @@ make proto       # regenerate *.pb.go from internal/proto (buf generate)
 For a Linux host (laptop, VM, CI runner) with root and runc. EROFS+NBD is the
 default mount backend when the kernel supports it; FUSE is the fallback.
 
-### 2.1 System runtime deps (apt — not managed by mise)
+### 2.1 System deps (apt — not managed by mise)
+
+**Runtime** (voila run / mount):
 
 ```bash
 apt-get update
@@ -108,6 +111,39 @@ grep -q '^user_allow_other' /etc/fuse.conf || echo 'user_allow_other' >> /etc/fu
 | `fuse3` | FUSE fallback mount path (`/dev/fuse`) when EROFS+NBD is unavailable |
 | `skopeo` | daemonless image pulls for e2e fixtures |
 
+**Zig PoC build** (`poc/zig-fuse`, `poc/zig-voilad` — dev headers/libs mise does not ship):
+
+```bash
+apt-get install -y --no-install-recommends \
+  pkg-config \
+  libfuse3-dev \
+  libsqlite3-dev \
+  libcurl4-openssl-dev \
+  libgrpc-dev \
+  libprotobuf-c-dev \
+  protobuf-compiler \
+  protobuf-c-compiler
+```
+
+| Apt package | Why |
+|---|---|
+| `pkg-config` | discover `fuse3`, `grpc`, `libprotobuf-c`, `sqlite3`, `libcurl` at link time |
+| `libfuse3-dev` | libfuse3 headers + `-lfuse3` (`zig-fuse` FUSE backend) |
+| `libsqlite3-dev` | native `images.db` resolution in the Zig store loader |
+| `libcurl4-openssl-dev` | registry HTTP fetch (`curl_shim.c`) |
+| `libgrpc-dev` | gRPC C core for `zig-voilad` worker socket (`pkg-config grpc`) |
+| `libprotobuf-c-dev` | protobuf-c runtime for generated `worker_run.pb-c.c` |
+| `protobuf-compiler` | `protoc` invoked by `poc/zig-voilad/scripts/compile_grpc.sh` |
+| `protobuf-c-compiler` | `protoc-gen-c` for `--c_out` in the same script |
+
+After `mise install`, from the repo root:
+
+```bash
+zig version    # 0.17.0
+cd poc/zig-fuse && zig build
+cd ../zig-voilad && zig build
+```
+
 ### 2.2 Install mise
 
 ```bash
@@ -120,13 +156,14 @@ eval "$($HOME/.local/bin/mise activate bash)"
 ### 2.3 Provision the toolchain from the lock file
 
 ```bash
-mise install     # go 1.26.2 + buf + protoc-gen-go + protoc-gen-go-grpc
+mise install     # go + zig + buf + protoc-gen-go + protoc-gen-go-grpc
 ```
 
 ### 2.4 Build & verify
 
 ```bash
-go version       # go1.26.2
+go version       # go1.26.3
+zig version      # 0.17.0
 buf --version    # 1.71.0
 make check        # build + go vet + go test ./...
 make proto       # regenerate *.pb.go (buf generate)
@@ -148,8 +185,10 @@ same pinned, checksum-verified toolchain.
 
 ## mise vs apt
 
-- **mise** owns language runtimes and Go-installed CLIs: `go`, `buf`,
+- **mise** owns language runtimes and Go-installed CLIs: `go`, `zig`, `buf`,
   `protoc-gen-go`, `protoc-gen-go-grpc`. These live under
   `~/.local/share/mise/installs/` and are activated per-directory.
-- **apt** owns OS-level runtime deps that aren't language runtimes: `runc`,
-  `fuse3`, `skopeo`. These stay on the system, not in mise.
+- **apt** owns OS-level runtime and native-library deps mise does not ship:
+  `runc`, `fuse3`, `skopeo`, plus the Zig PoC dev packages in §2.1 (`pkg-config`,
+  `libfuse3-dev`, gRPC/protobuf-c, `libcurl`/`sqlite3` headers). These stay on
+  the system, not in mise.
