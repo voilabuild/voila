@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Stale VOILA_REGISTRY forces SetRegistry RPC and bypasses <root>/registry.creds-only proofs.
+unset VOILA_REGISTRY VOILA_SOCKET VOILA_REGISTRY_TOKEN
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT/../.." && pwd)"
 VOILA_ROOT="${VOILA_ROOT:-/tmp/voila-zig-lifecycle}"
