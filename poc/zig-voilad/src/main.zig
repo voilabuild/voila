@@ -6,6 +6,8 @@ const registry_global = @import("registry_global");
 const lifecycle = @import("lifecycle");
 const registry_creds = @import("registry_creds");
 const voila_registry = @import("voila_registry");
+const mount_backend = @import("mount_backend");
+const erofs_mount = @import("erofs_mount");
 
 var g_voila_root: []const u8 = "";
 var g_zig_fuse: []const u8 = "";
@@ -48,6 +50,15 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
 
     registry_global.init();
+
+    var cmd_iter = std.process.Args.Iterator.init(init.minimal.args);
+    _ = cmd_iter.next();
+    if (cmd_iter.next()) |sub| {
+        if (std.mem.eql(u8, sub, "prove-erofs")) {
+            try erofs_mount.proveBoundaryFixture(allocator);
+            return;
+        }
+    }
 
     var args = std.process.Args.Iterator.init(init.minimal.args);
     _ = args.next();
@@ -94,7 +105,14 @@ pub fn main(init: std.process.Init) !void {
         .handle_set_registry = voilad_handle_set_registry,
     };
 
-    std.debug.print("zig-voilad listening on {s} root={s}\n", .{ sock, voila_root });
+    const mount_pick = mount_backend.resolve(null);
+    const backend_name = if (mount_pick.backend == .erofs) "erofs" else "fuse";
+    std.debug.print("zig-voilad listening on {s} root={s} mount={s} ({s})\n", .{
+        sock,
+        voila_root,
+        backend_name,
+        mount_pick.reason,
+    });
     const rc = grpc_shim.voilad_grpc_serve_unix(sock_z, root_z, &hooks);
     registry_global.deinit();
     if (rc != 0) std.process.exit(1);

@@ -25,6 +25,7 @@ pub fn build(b: *std.Build) void {
     const test_modules = [_]std.Build.LazyPath{
         b.path("src/backend.zig"),
         b.path("src/capacity_wait.zig"),
+        b.path("src/erofs_build.zig"),
     };
     const test_step = b.step("test", "Run unit tests");
     for (test_modules) |root| {
