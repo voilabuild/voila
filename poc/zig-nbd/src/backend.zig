@@ -1,5 +1,7 @@
 const std = @import("std");
 const constants = @import("constants.zig");
+const voila_store = @import("voila_store.zig");
+const erofs_build = @import("erofs_build.zig");
 
 pub const ChunkSize = constants.chunk_size;
 
@@ -10,6 +12,7 @@ pub const Device = struct {
     slot_names: []const []const u8,
     slot_chunks: [][]const u8,
     fixture_dir: []const u8,
+    voila_root: []const u8,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Device) void {
@@ -19,6 +22,35 @@ pub const Device = struct {
         for (self.slot_chunks) |c| if (c.len != 0) self.allocator.free(c);
         self.allocator.free(self.slot_chunks);
         self.allocator.free(self.fixture_dir);
+        self.allocator.free(self.voila_root);
+    }
+
+    pub fn fromBuildResult(allocator: std.mem.Allocator, voila_root: []const u8, built: *const erofs_build.BuildResult) !Device {
+        const root_owned = try allocator.dupe(u8, voila_root);
+        errdefer allocator.free(root_owned);
+
+        const metadata = try allocator.dupe(u8, built.metadata);
+        errdefer allocator.free(metadata);
+
+        const slot_names = try allocator.alloc([]const u8, built.slot_hex.len);
+        errdefer allocator.free(slot_names);
+        for (built.slot_hex, 0..) |hex, i| {
+            slot_names[i] = try allocator.dupe(u8, hex);
+        }
+
+        const slot_chunks = try allocator.alloc([]const u8, slot_names.len);
+        @memset(slot_chunks, &.{});
+
+        return .{
+            .metadata = metadata,
+            .data_offset = built.data_offset,
+            .device_size = built.device_size,
+            .slot_names = slot_names,
+            .slot_chunks = slot_chunks,
+            .fixture_dir = try allocator.dupe(u8, ""),
+            .voila_root = root_owned,
+            .allocator = allocator,
+        };
     }
 
     pub fn loadFromFixture(allocator: std.mem.Allocator, fixture_dir: []const u8) !Device {
@@ -43,6 +75,7 @@ pub const Device = struct {
             .slot_names = slot_names,
             .slot_chunks = slot_chunks,
             .fixture_dir = dir_owned,
+            .voila_root = try allocator.dupe(u8, ""),
             .allocator = allocator,
         };
     }
@@ -59,14 +92,31 @@ pub const Device = struct {
         const name = self.slot_names[slot];
         if (name.len == 0) return;
 
-        const path = try std.fmt.allocPrint(self.allocator, "{s}/chunks/{s}", .{ self.fixture_dir, name });
-        defer self.allocator.free(path);
-
-        const data = try readFileAlloc(self.allocator, path);
-        if (data.len != ChunkSize) {
-            self.allocator.free(data);
-            return error.BadChunkSize;
-        }
+        const data = if (self.voila_root.len != 0 and name.len == 64) blk: {
+            const raw = try voila_store.loadChunkRaw(self.allocator, self.voila_root, name);
+            if (raw.len < ChunkSize) {
+                const padded = try self.allocator.alloc(u8, ChunkSize);
+                @memset(padded, 0);
+                @memcpy(padded[0..raw.len], raw);
+                self.allocator.free(raw);
+                break :blk padded;
+            }
+            if (raw.len > ChunkSize) {
+                const trimmed = try self.allocator.dupe(u8, raw[0..ChunkSize]);
+                self.allocator.free(raw);
+                break :blk trimmed;
+            }
+            break :blk raw;
+        } else blk: {
+            const path = try std.fmt.allocPrint(self.allocator, "{s}/chunks/{s}", .{ self.fixture_dir, name });
+            defer self.allocator.free(path);
+            const file_data = try readFileAlloc(self.allocator, path);
+            if (file_data.len != ChunkSize) {
+                self.allocator.free(file_data);
+                return error.BadChunkSize;
+            }
+            break :blk file_data;
+        };
         self.slot_chunks[slot] = data;
     }
 
@@ -241,6 +291,7 @@ test "readAt spans 1 MiB slot boundary" {
         .slot_names = &.{},
         .slot_chunks = slots,
         .fixture_dir = try allocator.dupe(u8, ""),
+        .voila_root = try allocator.dupe(u8, ""),
         .allocator = allocator,
     };
     defer dev.deinit();
@@ -278,6 +329,7 @@ test "readAt spans metadata and data" {
         .slot_names = &.{},
         .slot_chunks = slots,
         .fixture_dir = try allocator.dupe(u8, ""),
+        .voila_root = try allocator.dupe(u8, ""),
         .allocator = allocator,
     };
     defer dev.deinit();

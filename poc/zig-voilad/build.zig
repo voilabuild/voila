@@ -156,6 +156,13 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    const voilad_nbd_mod = b.createModule(.{
+        .root_source_file = b.path("../zig-nbd/src/voilad_bundle.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
     const voila_image_pull_mod = b.createModule(.{
         .root_source_file = b.path(fuse ++ "/src/voila_image_pull.zig"),
         .target = target,
@@ -223,6 +230,30 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const mount_backend_mod = b.createModule(.{
+        .root_source_file = b.path("src/mount_backend.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "posix_util", .module = posix_util_mod },
+            .{ .name = "voilad_nbd", .module = voilad_nbd_mod },
+        },
+    });
+
+    const erofs_mount_mod = b.createModule(.{
+        .root_source_file = b.path("src/erofs_mount.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "posix_util", .module = posix_util_mod },
+            .{ .name = "runtime", .module = runtime_mod },
+            .{ .name = "voilad_nbd", .module = voilad_nbd_mod },
+            .{ .name = "mount_backend", .module = mount_backend_mod },
+        },
+    });
+
     const sync_util_mod = b.createModule(.{
         .root_source_file = b.path("src/sync_util.zig"),
         .target = target,
@@ -284,6 +315,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "contexts", .module = contexts_mod },
             .{ .name = "registry_global", .module = registry_global_mod },
             .{ .name = "registry_creds", .module = registry_creds_mod },
+            .{ .name = "mount_backend", .module = mount_backend_mod },
+            .{ .name = "erofs_mount", .module = erofs_mount_mod },
         },
     });
 
@@ -314,6 +347,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "lifecycle", .module = lifecycle_mod },
             .{ .name = "registry_creds", .module = registry_creds_mod },
             .{ .name = "voila_registry", .module = voila_registry_mod },
+            .{ .name = "mount_backend", .module = mount_backend_mod },
+            .{ .name = "erofs_mount", .module = erofs_mount_mod },
         },
     });
     root_mod.link_libcpp = false;

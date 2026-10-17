@@ -9,6 +9,8 @@ const runtime = @import("runtime");
 const contexts = @import("contexts");
 const registry_global = @import("registry_global");
 const registry_creds = @import("registry_creds");
+const mount_backend = @import("mount_backend");
+const erofs_mount = @import("erofs_mount");
 
 fn runCmd(argv: []const []const u8) !void {
     var child = try std.process.spawn(runtime.io, .{ .argv = argv });
@@ -213,32 +215,56 @@ pub fn runContainer(
     const bytes_arg = try std.fmt.allocPrint(allocator, "{d}", .{totals.bytes});
     defer allocator.free(bytes_arg);
 
-    var fuse = try std.process.spawn(runtime.io, .{
-        .argv = &[_][]const u8{
-            zig_fuse_bin, "serve-store", voila_root, rec.ref, lower, stats_path, chunks_arg, bytes_arg,
-        },
-    });
+    const backend_pick = mount_backend.resolve(null);
+    var fuse: ?std.process.Child = null;
     var fuse_stopped = false;
-    const stopFuse = struct {
-        fn stop(f: *std.process.Child, done: *bool) void {
-            if (done.*) return;
-            done.* = true;
-            f.kill(runtime.io);
-            if (f.id != null) _ = f.wait(runtime.io) catch {};
+    var nbd_session: ?*erofs_mount.NbdSession = null;
+
+    const stopLower = struct {
+        fn stop(fuse_child: *?std.process.Child, fuse_done: *bool, nbd: *?*erofs_mount.NbdSession) void {
+            if (nbd.*) |s| {
+                s.stop();
+                nbd.* = null;
+            }
+            if (fuse_child.*) |*f| {
+                if (!fuse_done.*) {
+                    fuse_done.* = true;
+                    f.kill(runtime.io);
+                    if (f.id != null) _ = f.wait(runtime.io) catch {};
+                }
+                fuse_child.* = null;
+            }
         }
     }.stop;
-    defer stopFuse(&fuse, &fuse_stopped);
+    defer stopLower(&fuse, &fuse_stopped, &nbd_session);
+
+    if (backend_pick.backend == .erofs) {
+        nbd_session = erofs_mount.mountStoreRoot(
+            allocator,
+            voila_root,
+            rec.merged_root_manifest,
+            lower,
+            mount_backend.nbdDevicePath(),
+        ) catch return -1;
+    } else {
+        fuse = try std.process.spawn(runtime.io, .{
+            .argv = &[_][]const u8{
+                zig_fuse_bin, "serve-store", voila_root, rec.ref, lower, stats_path, chunks_arg, bytes_arg,
+            },
+        });
+    }
+
     const probe = try std.fmt.allocPrint(allocator, "{s}/etc/os-release", .{lower});
     defer allocator.free(probe);
-    var fuse_ready = false;
+    var lower_ready = false;
     for (0..200) |_| {
         if (posix_util.access(probe)) {
-            fuse_ready = true;
+            lower_ready = true;
             break;
         }
         _ = posix_util.shell("sleep 0.05");
     }
-    if (!fuse_ready) return -1;
+    if (!lower_ready) return -1;
 
     const overlay_opt = try std.fmt.allocPrint(allocator, "lowerdir={s},upperdir={s},workdir={s}", .{ lower, upper, work });
     defer allocator.free(overlay_opt);
@@ -318,7 +344,7 @@ pub fn runContainer(
     };
     _ = vctx.finish(code) catch {};
     vctx.clearLaunch();
-    stopFuse(&fuse, &fuse_stopped);
+    stopLower(&fuse, &fuse_stopped, &nbd_session);
     const fetch = readFetchStats(allocator, stats_path);
     _ = cb.on_stats(cb.ctx, fetch.chunks_fetched, fetch.bytes_fetched, totals.chunks, totals.bytes);
     _ = cb.on_exit(cb.ctx, code);
