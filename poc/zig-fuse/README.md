@@ -4,6 +4,17 @@
 
 This PoC does not use go-fuse, image ingest, the worker socket, xattrs, statfs, or the EROFS/NBD path. macOS / FSKit are out of scope.
 
+## Attached `run` (rootless, no voilad)
+
+CLI commands dispatch through `src/runtime/` (`local` = in-process FUSE; `remote` = stub). Attached run mounts as the current user, execs one command, unmounts:
+
+```bash
+zig build
+./zig-out/bin/zig-fuse run -root /path/to/store IMAGE_REF -- /usr/local/bin/python3 -c 'print("hello")'
+```
+
+`ps`, `logs`, and `kill` are wired to the same runtime interface and return not-implemented on local until detached run exists.
+
 ## What stayed in Go
 
 The fixture writer under `fixture/` (`go run -tags zig_fuse_fixture`) emits a directory the Zig side reads. No image ingest.
