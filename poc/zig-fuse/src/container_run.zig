@@ -157,7 +157,7 @@ fn execChild(
     cmd_argv: []const []const u8,
     tee_tty: bool,
 ) !u8 {
-    const host_argv0 = try hostPath(allocator, mount_dir, cmd_argv[0]);
+    const host_argv0 = try resolveHostArgv0(allocator, mount_dir, cmd_argv[0]);
     defer allocator.free(host_argv0);
     try waitPath(host_argv0, io);
     var argv_host: std.ArrayList([]const u8) = .empty;
@@ -166,20 +166,41 @@ fn execChild(
     for (cmd_argv[1..]) |arg| try argv_host.append(allocator, arg);
 
     const log_fd = openLogAppend(log_path);
+    defer {
+        if (log_fd >= 0) _ = std.c.close(log_fd);
+    }
+
+    const spawn_stdio: struct { stdout: std.process.SpawnOptions.StdIo, stderr: std.process.SpawnOptions.StdIo } = if (tee_tty) .{
+        .stdout = .pipe,
+        .stderr = .pipe,
+    } else blk: {
+        const log_out = std.Io.File{ .handle = log_fd, .flags = .{ .nonblocking = false } };
+        const err_fd = std.c.dup(log_fd);
+        if (err_fd < 0) return error.FileOpenFailed;
+        const log_err = std.Io.File{ .handle = err_fd, .flags = .{ .nonblocking = false } };
+        break :blk .{ .stdout = .{ .file = log_out }, .stderr = .{ .file = log_err } };
+    };
+
     var child = try std.process.spawn(io, .{
         .argv = argv_host.items,
         .stdin = .inherit,
-        .stdout = .pipe,
-        .stderr = .pipe,
+        .stdout = spawn_stdio.stdout,
+        .stderr = spawn_stdio.stderr,
     });
-    const stdout_fd = child.stdout.?.handle;
-    const stderr_fd = child.stderr.?.handle;
-    const stdout_thread = std.Thread.spawn(.{}, pumpStream, .{ stdout_fd, log_fd, tee_tty, std.c.STDOUT_FILENO }) catch null;
-    const stderr_thread = std.Thread.spawn(.{}, pumpStream, .{ stderr_fd, log_fd, tee_tty, std.c.STDERR_FILENO }) catch null;
+    defer if (!tee_tty) {
+        if (child.stderr) |f| _ = std.c.close(f.handle);
+    };
+
+    var stdout_thread: ?std.Thread = null;
+    var stderr_thread: ?std.Thread = null;
+    if (tee_tty) {
+        stdout_thread = std.Thread.spawn(.{}, pumpStream, .{ child.stdout.?.handle, log_fd, true, std.c.STDOUT_FILENO }) catch null;
+        stderr_thread = std.Thread.spawn(.{}, pumpStream, .{ child.stderr.?.handle, log_fd, true, std.c.STDERR_FILENO }) catch null;
+    }
+
     const term = try child.wait(io);
     if (stdout_thread) |t| t.join();
     if (stderr_thread) |t| t.join();
-    if (log_fd >= 0) _ = std.c.close(log_fd);
     return switch (term) {
         .exited => |code| code,
         else => 1,
@@ -189,12 +210,27 @@ fn execChild(
 fn pumpStream(src: std.posix.fd_t, log_fd: std.posix.fd_t, tee_tty: bool, tty_fd: std.posix.fd_t) void {
     var buf: [4096]u8 = undefined;
     while (true) {
-        const n = std.posix.read(src, &buf) catch break;
+        const n = std.c.read(src, &buf, buf.len);
         if (n == 0) break;
+        if (n < 0) {
+            if (std.c.errno(-1) == .AGAIN) {
+                sleepMs(1);
+                continue;
+            }
+            break;
+        }
         const slice = buf[0..@intCast(n)];
         if (log_fd >= 0) writeAllFd(log_fd, slice);
         if (tee_tty) writeAllFd(tty_fd, slice);
     }
+}
+
+fn sleepMs(ms: u64) void {
+    var ts: std.c.timespec = .{
+        .sec = @intCast(ms / 1000),
+        .nsec = @intCast((ms % 1000) * std.time.ns_per_ms),
+    };
+    while (std.c.nanosleep(&ts, &ts) == -1 and std.c.errno(-1) == .INTR) {}
 }
 
 fn writeAllFd(fd: std.posix.fd_t, data: []const u8) void {
@@ -234,6 +270,25 @@ fn ownedState(
         .log_path = try allocator.dupe(u8, log_path),
         .rm_on_exit = rm_on_exit,
     };
+}
+
+const default_path_dirs = [_][]const u8{
+    "/usr/local/sbin",
+    "/usr/local/bin",
+    "/usr/sbin",
+    "/usr/bin",
+    "/sbin",
+    "/bin",
+};
+
+fn resolveHostArgv0(allocator: std.mem.Allocator, mount_dir: []const u8, argv0: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, argv0, '/') != null) return hostPath(allocator, mount_dir, argv0);
+    for (default_path_dirs) |dir| {
+        const candidate = try std.fmt.allocPrint(allocator, "{s}{s}/{s}", .{ mount_dir, dir, argv0 });
+        if (posix_util.access(candidate)) return candidate;
+        allocator.free(candidate);
+    }
+    return hostPath(allocator, mount_dir, argv0);
 }
 
 fn hostPath(allocator: std.mem.Allocator, mount_dir: []const u8, argv0: []const u8) ![]const u8 {
