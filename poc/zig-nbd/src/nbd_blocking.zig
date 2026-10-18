@@ -37,6 +37,7 @@ fn disconnectIoctl(nbd_path: []const u8) void {
 }
 
 pub fn attachAndServe(io: std.Io, dev: *backend.Device, nbd_path: []const u8, connected: ?*std.atomic.Value(bool)) !void {
+    dev.serve_io = io;
     disconnect(nbd_path);
     const addr = try std.Io.net.IpAddress.parseIp4("127.0.0.1", 0);
     var server = try addr.listen(io, .{});

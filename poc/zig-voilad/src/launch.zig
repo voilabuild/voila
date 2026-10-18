@@ -11,6 +11,7 @@ const registry_global = @import("registry_global");
 const registry_creds = @import("registry_creds");
 const mount_backend = @import("mount_backend");
 const erofs_mount = @import("erofs_mount");
+const chunk_cache = @import("chunk_cache");
 
 fn runCmd(argv: []const []const u8) !void {
     var child = try std.process.spawn(runtime.io, .{ .argv = argv });
@@ -165,6 +166,7 @@ pub fn runContainer(
     args: []const []const u8,
     cb: *grpc_shim.RunCallbacks,
 ) !i32 {
+    chunk_cache.install();
     const rec = resolveWithAutoPull(allocator, voila_root, image) catch return -1;
     defer {
         allocator.free(rec.ref);

@@ -5,6 +5,9 @@ const erofs_build = @import("erofs_build.zig");
 
 pub const ChunkSize = constants.chunk_size;
 
+/// When set, store-backed slot loads use registry-aware local cache (zig-voilad).
+pub var load_chunk_cached: ?*const fn (io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, chunk_hex: []const u8) anyerror![]u8 = null;
+
 pub const Device = struct {
     metadata: []u8,
     data_offset: u64,
@@ -13,6 +16,7 @@ pub const Device = struct {
     slot_chunks: [][]const u8,
     fixture_dir: []const u8,
     voila_root: []const u8,
+    serve_io: ?std.Io,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Device) void {
@@ -49,6 +53,7 @@ pub const Device = struct {
             .slot_chunks = slot_chunks,
             .fixture_dir = try allocator.dupe(u8, ""),
             .voila_root = root_owned,
+            .serve_io = null,
             .allocator = allocator,
         };
     }
@@ -76,24 +81,27 @@ pub const Device = struct {
             .slot_chunks = slot_chunks,
             .fixture_dir = dir_owned,
             .voila_root = try allocator.dupe(u8, ""),
+            .serve_io = null,
             .allocator = allocator,
         };
     }
 
     pub fn ensureSlotLoaded(self: *Device, io: std.Io, slot: usize) !void {
-        _ = io;
-        return self.ensureSlotLoadedSync(slot);
+        return self.ensureSlotLoadedSync(io, slot);
     }
 
     /// Load one chunk from disk without zio (safe from the NBD serve thread).
-    pub fn ensureSlotLoadedSync(self: *Device, slot: usize) !void {
+    pub fn ensureSlotLoadedSync(self: *Device, io: std.Io, slot: usize) !void {
         if (slot >= self.slot_chunks.len) return;
         if (self.slot_chunks[slot].len != 0) return;
         const name = self.slot_names[slot];
         if (name.len == 0) return;
 
         const data = if (self.voila_root.len != 0 and name.len == 64) blk: {
-            const raw = try voila_store.loadChunkRaw(self.allocator, self.voila_root, name);
+            const raw = if (load_chunk_cached) |load| load(io, self.allocator, self.voila_root, name) catch
+                try voila_store.loadChunkRaw(self.allocator, self.voila_root, name)
+            else
+                try voila_store.loadChunkRaw(self.allocator, self.voila_root, name);
             if (raw.len < ChunkSize) {
                 const padded = try self.allocator.alloc(u8, ChunkSize);
                 @memset(padded, 0);
@@ -201,8 +209,9 @@ pub const Device = struct {
         const slot_first: usize = @intCast(data_off_start / ChunkSize);
         const slot_last: usize = @intCast((data_off_end - 1) / ChunkSize);
         var slot = slot_first;
+        const io = self.serve_io orelse return;
         while (slot <= slot_last) : (slot += 1) {
-            try self.ensureSlotLoadedSync(slot);
+            try self.ensureSlotLoadedSync(io, slot);
         }
     }
 };
@@ -292,6 +301,7 @@ test "readAt spans 1 MiB slot boundary" {
         .slot_chunks = slots,
         .fixture_dir = try allocator.dupe(u8, ""),
         .voila_root = try allocator.dupe(u8, ""),
+        .serve_io = null,
         .allocator = allocator,
     };
     defer dev.deinit();
@@ -330,6 +340,7 @@ test "readAt spans metadata and data" {
         .slot_chunks = slots,
         .fixture_dir = try allocator.dupe(u8, ""),
         .voila_root = try allocator.dupe(u8, ""),
+        .serve_io = null,
         .allocator = allocator,
     };
     defer dev.deinit();
