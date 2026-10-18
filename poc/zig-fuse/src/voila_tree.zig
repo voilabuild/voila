@@ -16,6 +16,13 @@ fn cloneFile(allocator: std.mem.Allocator, f: voila_manifest_proto.FileMsg) !voi
             .logical_len = b.logical_len,
         };
     }
+    var xattrs = std.StringHashMap([]const u8).init(allocator);
+    var xit = f.xattrs.iterator();
+    while (xit.next()) |e| {
+        const k = try allocator.dupe(u8, e.key_ptr.*);
+        const v = try allocator.dupe(u8, e.value_ptr.*);
+        try xattrs.put(k, v);
+    }
     return .{
         .inode = f.inode,
         .mode = f.mode,
@@ -25,6 +32,7 @@ fn cloneFile(allocator: std.mem.Allocator, f: voila_manifest_proto.FileMsg) !voi
         .mtime_ns = f.mtime_ns,
         .nlink = f.nlink,
         .blocks = blocks,
+        .xattrs = xattrs,
     };
 }
 
@@ -75,6 +83,12 @@ pub const Tree = struct {
         while (fit.next()) |e| {
             for (e.value_ptr.blocks) |*b| self.allocator.free(b.chunk_id);
             self.allocator.free(e.value_ptr.blocks);
+            var xit = e.value_ptr.xattrs.iterator();
+            while (xit.next()) |xe| {
+                self.allocator.free(xe.key_ptr.*);
+                self.allocator.free(xe.value_ptr.*);
+            }
+            e.value_ptr.xattrs.deinit();
         }
         self.file_by_inode.deinit();
         var sit = self.symlink_by_inode.iterator();

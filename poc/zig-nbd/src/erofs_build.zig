@@ -17,6 +17,8 @@ const InodeCompact = 32;
 const InodeExtended = 64;
 const DirentSize = 12;
 const ChunkIndexSize = 8;
+const XattrBodyHeader = 12;
+const XattrEntrySize = 4;
 
 const LayoutFlatPlain: u8 = 0;
 const LayoutFlatInline: u8 = 2;
@@ -71,6 +73,8 @@ const Entry = struct {
     sym_target: []const u8,
     rdev: u32,
     blocks: []const voila_manifest_proto.BlockMsg,
+    xattr_keys: []const []const u8,
+    xattr_vals: []const []const u8,
     children: []usize,
     parent_idx: usize,
     nid: u64 = 0,
@@ -78,6 +82,7 @@ const Entry = struct {
     compact: bool = false,
     layout: u8 = LayoutFlatPlain,
     trailing: usize = 0,
+    xattr_size: usize = 0,
     data_blk_addr: u32 = 0,
     file_slots: []u64,
 };
@@ -95,6 +100,59 @@ fn baseName(path: []const u8) []const u8 {
     if (std.mem.eql(u8, path, "/")) return "/";
     const idx = std.mem.lastIndexOfScalar(u8, path, '/') orelse return path;
     return path[idx + 1 ..];
+}
+
+const XattrPrefix = struct { index: u8, prefix: []const u8 };
+const xattr_prefixes = [_]XattrPrefix{
+    .{ .index = 1, .prefix = "user." },
+    .{ .index = 2, .prefix = "system.posix_acl_access." },
+    .{ .index = 3, .prefix = "system.posix_acl_default." },
+    .{ .index = 4, .prefix = "trusted." },
+    .{ .index = 5, .prefix = "lustre." },
+    .{ .index = 6, .prefix = "security." },
+};
+
+fn xattrSplit(name: []const u8) struct { index: u8, suffix: []const u8 } {
+    for (xattr_prefixes) |p| {
+        if (std.mem.startsWith(u8, name, p.prefix)) {
+            return .{ .index = p.index, .suffix = name[p.prefix.len..] };
+        }
+    }
+    return .{ .index = 0, .suffix = name };
+}
+
+fn xattrEntrySize(name: []const u8, value: []const u8) usize {
+    const split = xattrSplit(name);
+    var sz = XattrEntrySize + split.suffix.len + value.len;
+    if (sz % 4 != 0) sz = (sz + 3) & ~@as(usize, 3);
+    return sz;
+}
+
+fn calcXattrSize(e: *const Entry) usize {
+    if (e.xattr_keys.len == 0) return 0;
+    var entries_size: usize = 0;
+    for (e.xattr_keys, e.xattr_vals) |k, v| entries_size += xattrEntrySize(k, v);
+    return XattrBodyHeader + entries_size;
+}
+
+fn xattrCount(xattr_size: usize) u16 {
+    if (xattr_size == 0) return 0;
+    return @intCast((xattr_size - XattrBodyHeader) / XattrEntrySize + 1);
+}
+
+fn cloneXattrs(allocator: std.mem.Allocator, f: *const voila_manifest_proto.FileMsg) !struct { keys: []const []const u8, vals: []const []const u8 } {
+    if (f.xattrs.count() == 0) return .{ .keys = &.{}, .vals = &.{ } };
+    var keys: std.ArrayList([]const u8) = .empty;
+    var it = f.xattrs.keyIterator();
+    while (it.next()) |k| try keys.append(allocator, try allocator.dupe(u8, k.*));
+    const sorted_keys = try sortStrings(allocator, keys.items);
+    keys.deinit(allocator);
+    var vals: std.ArrayList([]const u8) = .empty;
+    for (sorted_keys) |k| {
+        const v = f.xattrs.get(k) orelse "";
+        try vals.append(allocator, try allocator.dupe(u8, v));
+    }
+    return .{ .keys = sorted_keys, .vals = try vals.toOwnedSlice(allocator) };
 }
 
 fn sortStrings(allocator: std.mem.Allocator, names: []const []const u8) ![]const []const u8 {
@@ -165,6 +223,8 @@ fn walkTree(
     var sym_target: []const u8 = "";
     var rdev: u32 = 0;
     var blocks: []const voila_manifest_proto.BlockMsg = &.{};
+    var xattr_keys: []const []const u8 = &.{};
+    var xattr_vals: []const []const u8 = &.{};
     var child_inos: std.ArrayList(u64) = .empty;
     defer child_inos.deinit(allocator);
 
@@ -189,6 +249,9 @@ fn walkTree(
         nlink = if (f.nlink > 0) f.nlink else 1;
         size = f.size;
         blocks = f.blocks;
+        const xa = try cloneXattrs(allocator, &f);
+        xattr_keys = xa.keys;
+        xattr_vals = xa.vals;
     } else if (tree.symlink_by_inode.get(ino)) |l| {
         kind = .symlink;
         mode = 0o120777;
@@ -227,6 +290,8 @@ fn walkTree(
         .sym_target = sym_target,
         .rdev = rdev,
         .blocks = blocks,
+        .xattr_keys = xattr_keys,
+        .xattr_vals = xattr_vals,
         .children = &.{},
         .parent_idx = parent_entry_idx,
         .file_slots = try file_slots.toOwnedSlice(allocator),
@@ -248,8 +313,9 @@ fn walkTree(
         const child_ino = tree.dir_by_inode.get(ino).?.entries.get(name) orelse continue;
         const child_path = try joinPath(allocator, path, name);
         defer allocator.free(child_path);
+        const child_entry_idx = entries.items.len;
         try walkTree(allocator, tree, child_ino, child_path, idx, entries, slot_map, slot_list);
-        try child_indices.append(allocator, entries.items.len - 1);
+        try child_indices.append(allocator, child_entry_idx);
     }
     entries.items[idx].children = try child_indices.toOwnedSlice(allocator);
 }
@@ -335,7 +401,8 @@ fn planLayout(allocator: std.mem.Allocator, entries: []Entry, build_time: u64, b
             mtime == build_time and mtime_ns == 0;
 
         const inode_size: usize = if (e.compact) InodeCompact else InodeExtended;
-        const header_size = inode_size;
+        e.xattr_size = calcXattrSize(e);
+        const header_size = inode_size + e.xattr_size;
 
         switch (e.kind) {
             .file => {
@@ -411,7 +478,7 @@ fn assignDataBlocks(allocator: std.mem.Allocator, entries: []Entry, sb_blocks: u
     var total_meta: usize = 0;
     for (entries) |e| {
         const inode_size: usize = if (e.compact) InodeCompact else InodeExtended;
-        var sz = inode_size + e.trailing;
+        var sz = inode_size + e.xattr_size + e.trailing;
         if (sz % 32 != 0) sz = (sz + 31) & ~@as(usize, 31);
         const end = @as(usize, @intCast(e.nid * 32)) + sz;
         if (end > total_meta) total_meta = end;
@@ -439,6 +506,24 @@ fn flatPlainDataSize(e: *const Entry) usize {
     }
 }
 
+fn direntForName(e: *const Entry, entries: []const Entry, name: []const u8) struct { nid: u64, ftype: u8 } {
+    if (std.mem.eql(u8, name, ".")) return .{ .nid = e.nid, .ftype = FileTypeDir };
+    if (std.mem.eql(u8, name, "..")) return .{ .nid = e.parent_nid, .ftype = FileTypeDir };
+    for (e.children) |ci| {
+        const c = entries[ci];
+        if (std.mem.eql(u8, c.name, name)) {
+            const ft: u8 = switch (c.kind) {
+                .dir => FileTypeDir,
+                .file => FileTypeReg,
+                .symlink => FileTypeSymlink,
+                .device => if ((c.mode & StatTypeChrdev) != 0) FileTypeChrdev else FileTypeBlkdev,
+            };
+            return .{ .nid = c.nid, .ftype = ft };
+        }
+    }
+    return .{ .nid = 0, .ftype = 0 };
+}
+
 fn writeDirents(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), e: *const Entry, entries: []const Entry, block_size: usize) !usize {
     const names = try direntNames(allocator, e, entries);
     defer allocator.free(names);
@@ -446,17 +531,9 @@ fn writeDirents(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), e: *const
     const Dirent = struct { name: []const u8, nid: u64, ftype: u8 };
     var all: std.ArrayList(Dirent) = .empty;
     defer all.deinit(allocator);
-    try all.append(allocator, .{ .name = ".", .nid = e.nid, .ftype = FileTypeDir });
-    try all.append(allocator, .{ .name = "..", .nid = e.parent_nid, .ftype = FileTypeDir });
-    for (e.children) |ci| {
-        const c = entries[ci];
-        const ft: u8 = switch (c.kind) {
-            .dir => FileTypeDir,
-            .file => FileTypeReg,
-            .symlink => FileTypeSymlink,
-            .device => if ((c.mode & StatTypeChrdev) != 0) FileTypeChrdev else FileTypeBlkdev,
-        };
-        try all.append(allocator, .{ .name = c.name, .nid = c.nid, .ftype = ft });
+    for (names) |name| {
+        const de = direntForName(e, entries, name);
+        try all.append(allocator, .{ .name = name, .nid = de.nid, .ftype = de.ftype });
     }
 
     var total: usize = 0;
@@ -557,6 +634,25 @@ fn writeChunkIndexes(
     }
 }
 
+fn writeXattrs(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), e: *const Entry) !void {
+    var xhdr: [XattrBodyHeader]u8 = undefined;
+    @memset(&xhdr, 0);
+    std.mem.writeInt(u32, xhdr[0..4], 0xffffffff, .little);
+    try buf.appendSlice(allocator, &xhdr);
+    for (e.xattr_keys, e.xattr_vals) |name, value| {
+        const split = xattrSplit(name);
+        var xent: [XattrEntrySize]u8 = undefined;
+        xent[0] = @intCast(split.suffix.len);
+        xent[1] = split.index;
+        std.mem.writeInt(u16, xent[2..4], @intCast(value.len), .little);
+        try buf.appendSlice(allocator, &xent);
+        try buf.appendSlice(allocator, split.suffix);
+        try buf.appendSlice(allocator, value);
+        const entry_len = XattrEntrySize + split.suffix.len + value.len;
+        if (entry_len % 4 != 0) try buf.appendNTimes(allocator, 0, 4 - (entry_len % 4));
+    }
+}
+
 fn writeInode(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), e: *const Entry, build_time: u64) !void {
     var inode_data: u32 = 0;
     var file_size = e.size;
@@ -583,6 +679,7 @@ fn writeInode(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), e: *const E
     @memset(&b, 0);
     if (e.compact) {
         std.mem.writeInt(u16, b[0..2], inodeFormat(e.layout, true), .little);
+        std.mem.writeInt(u16, b[2..4], xattrCount(e.xattr_size), .little);
         std.mem.writeInt(u16, b[4..6], e.mode, .little);
         std.mem.writeInt(u16, b[6..8], @intCast(e.nlink), .little);
         std.mem.writeInt(u32, b[8..12], @truncate(file_size), .little);
@@ -594,6 +691,7 @@ fn writeInode(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), e: *const E
         const mtime: u64 = if (e.mtime_ns == 0) build_time else @divFloor(e.mtime_ns, 1_000_000_000);
         const mtime_ns: u32 = if (e.mtime_ns == 0) 0 else @intCast(e.mtime_ns % 1_000_000_000);
         std.mem.writeInt(u16, b[0..2], inodeFormat(e.layout, false), .little);
+        std.mem.writeInt(u16, b[2..4], xattrCount(e.xattr_size), .little);
         std.mem.writeInt(u16, b[4..6], e.mode, .little);
         std.mem.writeInt(u64, b[8..16], file_size, .little);
         std.mem.writeInt(u32, b[16..20], inode_data, .little);
@@ -618,6 +716,10 @@ pub fn build(allocator: std.mem.Allocator, tree: *voila_tree.Tree) !BuildResult 
             allocator.free(e.path);
             allocator.free(e.children);
             allocator.free(e.file_slots);
+            for (e.xattr_keys) |k| allocator.free(k);
+            allocator.free(e.xattr_keys);
+            for (e.xattr_vals) |v| allocator.free(v);
+            allocator.free(e.xattr_vals);
         }
         entries.deinit(allocator);
     }
@@ -662,6 +764,10 @@ pub fn build(allocator: std.mem.Allocator, tree: *voila_tree.Tree) !BuildResult 
         }
         try writeInode(allocator, &meta_buf, e, build_time);
         meta_pos += if (e.compact) @as(usize, InodeCompact) else InodeExtended;
+        if (e.xattr_size > 0) {
+            try writeXattrs(allocator, &meta_buf, e);
+            meta_pos += e.xattr_size;
+        }
 
         switch (e.kind) {
             .file => {
@@ -763,7 +869,9 @@ fn patchChunkPass(meta: []u8, meta_base: usize, entries: []const Entry, slot_map
         if (iloc + InodeCompact > meta.len) continue;
         const i_format = std.mem.readInt(u16, meta[iloc..][0..2], .little);
         const inode_size: usize = if ((i_format & 1) != 0) InodeExtended else InodeCompact;
-        var chunk_start = iloc + inode_size;
+        const xattr_count = std.mem.readInt(u16, meta[iloc + 2 ..][0..2], .little);
+        const xattr_size: usize = if (xattr_count > 0) XattrBodyHeader + @as(usize, xattr_count - 1) * XattrEntrySize else 0;
+        var chunk_start = iloc + inode_size + xattr_size;
         const rem = chunk_start % 8;
         if (rem != 0) chunk_start += 8 - rem;
         const nchunks = e.trailing / ChunkIndexSize;

@@ -16,6 +16,7 @@ pub const FileMsg = struct {
     mtime_ns: u64,
     nlink: u32,
     blocks: []BlockMsg,
+    xattrs: std.StringHashMap([]const u8),
 };
 
 pub const DirMsg = struct {
@@ -63,6 +64,12 @@ pub const ManifestMsg = struct {
         while (fit.next()) |e| {
             for (e.value_ptr.blocks) |*b| self.allocator.free(b.chunk_id);
             self.allocator.free(e.value_ptr.blocks);
+            var xit = e.value_ptr.xattrs.iterator();
+            while (xit.next()) |xe| {
+                self.allocator.free(xe.key_ptr.*);
+                self.allocator.free(xe.value_ptr.*);
+            }
+            e.value_ptr.xattrs.deinit();
         }
         self.files.deinit();
         var sit = self.symlinks.iterator();
@@ -104,6 +111,7 @@ fn decodeFile(allocator: std.mem.Allocator, data: []const u8) !FileMsg {
         .mtime_ns = 0,
         .nlink = 0,
         .blocks = &.{},
+        .xattrs = std.StringHashMap([]const u8).init(allocator),
     };
     var blocks: std.ArrayList(BlockMsg) = .empty;
     while (off < data.len) {
@@ -116,6 +124,23 @@ fn decodeFile(allocator: std.mem.Allocator, data: []const u8) !FileMsg {
             5 => msg.size = try wire.readU64(data, &off),
             6 => msg.mtime_ns = try wire.readU64(data, &off),
             7 => msg.nlink = try wire.readU32(data, &off),
+            8 => {
+                const sub = try wire.readLenDelim(data, &off);
+                var eoff: usize = 0;
+                var key: []const u8 = "";
+                var val: []const u8 = "";
+                while (eoff < sub.len) {
+                    const et = try wire.readTag(sub, &eoff);
+                    switch (et.field) {
+                        1 => key = try wire.readString(sub, &eoff),
+                        2 => val = try wire.readLenDelim(sub, &eoff),
+                        else => try wire.skipField(sub, &eoff, et.wire),
+                    }
+                }
+                const owned_k = try allocator.dupe(u8, key);
+                const owned_v = try allocator.dupe(u8, val);
+                try msg.xattrs.put(owned_k, owned_v);
+            },
             9 => {
                 const sub = try wire.readLenDelim(data, &off);
                 try blocks.append(allocator, try decodeBlock(allocator, sub));

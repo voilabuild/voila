@@ -73,6 +73,7 @@ fn putFile(tree: *voila_tree.Tree, ino: u64, cid: []const u8, size: u64) !void {
         .mtime_ns = 0,
         .nlink = 1,
         .blocks = blocks,
+        .xattrs = std.StringHashMap([]const u8).init(tree.allocator),
     });
 }
 
@@ -91,5 +92,6 @@ fn putFileTwoBlocks(tree: *voila_tree.Tree, ino: u64, cid0: []const u8, cid1: []
         .mtime_ns = 0,
         .nlink = 1,
         .blocks = blocks,
+        .xattrs = std.StringHashMap([]const u8).init(tree.allocator),
     });
 }
