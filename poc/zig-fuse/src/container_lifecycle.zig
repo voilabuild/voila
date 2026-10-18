@@ -77,7 +77,7 @@ pub fn rm(allocator: std.mem.Allocator, voila_root: []const u8, context_id: []co
     const st = try container_store.readState(allocator, voila_root, id);
     defer container_store.freeState(allocator, st);
     terminateWorker(allocator, st.pid, st.mount_dir, std.c.SIG.KILL);
-    if (mountActive(st.mount_dir)) return error.MountStillActive;
+    if (mountStillListed(st.mount_dir)) return error.MountStillActive;
     container_store.removeContainer(allocator, voila_root, id);
 }
 
@@ -145,12 +145,18 @@ fn reapZombies() void {
 
 fn ensureUnmounted(allocator: std.mem.Allocator, mount_dir: []const u8) bool {
     if (mount_dir.len == 0) return true;
-    for (0..40) |_| {
-        if (!mountActive(mount_dir)) return true;
+    for (0..80) |_| {
+        if (!mountStillListed(mount_dir)) return true;
         fusermountU(allocator, mount_dir);
         sleepMs(50);
+        if (!mountStillListed(mount_dir)) return true;
+        fusermountLazyDetach(allocator, mount_dir);
+        sleepMs(50);
+        if (!mountStillListed(mount_dir)) return true;
+        umountPath(allocator, mount_dir);
+        sleepMs(50);
     }
-    return !mountActive(mount_dir);
+    return !mountStillListed(mount_dir);
 }
 
 fn sleepMs(ms: u64) void {
@@ -164,7 +170,7 @@ fn sleepMs(ms: u64) void {
 fn isRunning(st: container_store.State) bool {
     if (std.mem.eql(u8, st.status, "exited")) return false;
     if (st.pid > 0 and isPidAlive(st.pid)) return true;
-    if (st.mount_dir.len != 0 and mountActive(st.mount_dir)) return true;
+    if (st.mount_dir.len != 0 and mountStillListed(st.mount_dir)) return true;
     return std.mem.eql(u8, st.status, "created");
 }
 
@@ -173,13 +179,88 @@ fn isPidAlive(pid: i32) bool {
     return std.c.kill(pid, @enumFromInt(0)) == 0;
 }
 
-fn mountActive(mount_dir: []const u8) bool {
-    const cmd = std.fmt.allocPrint(std.heap.page_allocator, "mountpoint -q {s}", .{mount_dir}) catch return false;
+/// True while the path still appears in findmnt or /proc/self/mountinfo (including stale table rows).
+fn mountStillListed(mount_dir: []const u8) bool {
+    return findmntLists(mount_dir) or mountinfoLists(mount_dir) or procMountsLists(mount_dir);
+}
+
+fn findmntLists(mount_dir: []const u8) bool {
+    const cmd = std.fmt.allocPrint(std.heap.page_allocator, "findmnt -n -M {s}", .{mount_dir}) catch return false;
     defer std.heap.page_allocator.free(cmd);
     const cmd_z = std.heap.page_allocator.allocSentinel(u8, cmd.len, 0) catch return false;
     defer std.heap.page_allocator.free(cmd_z);
     @memcpy(cmd_z, cmd);
     return posix_util.shell(cmd_z) == 0;
+}
+
+fn procMountsLists(mount_dir: []const u8) bool {
+    const data = posix_util.readFileAlloc(std.heap.page_allocator, "/proc/mounts", 4 * 1024 * 1024) catch return false;
+    defer std.heap.page_allocator.free(data);
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const mp = procMountsMountPoint(line) orelse continue;
+        if (std.mem.eql(u8, mp, mount_dir)) return true;
+    }
+    return false;
+}
+
+fn procMountsMountPoint(line: []const u8) ?[]const u8 {
+    var field: usize = 0;
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i <= line.len) {
+        const at_end = i == line.len;
+        const is_sep = !at_end and line[i] == ' ';
+        if (at_end or is_sep) {
+            if (field == 1) return line[start..i];
+            field += 1;
+            if (at_end) return null;
+            i += 1;
+            while (i < line.len and line[i] == ' ') i += 1;
+            start = i;
+            continue;
+        }
+        i += 1;
+    }
+    return null;
+}
+
+fn mountinfoLists(mount_dir: []const u8) bool {
+    const data = posix_util.readFileAlloc(std.heap.page_allocator, "/proc/self/mountinfo", 8 * 1024 * 1024) catch return false;
+    defer std.heap.page_allocator.free(data);
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const mp = mountinfoMountPoint(line) orelse continue;
+        if (std.mem.eql(u8, mp, mount_dir)) return true;
+    }
+    return false;
+}
+
+fn mountinfoMountPoint(line: []const u8) ?[]const u8 {
+    var field: usize = 0;
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i <= line.len) {
+        const at_end = i == line.len;
+        const is_sep = !at_end and line[i] == ' ';
+        if (at_end or is_sep) {
+            if (field == 4) return line[start..i];
+            field += 1;
+            if (at_end) return null;
+            i += 1;
+            while (i < line.len and line[i] == ' ') i += 1;
+            start = i;
+            continue;
+        }
+        if (line[i] == '\\' and i + 3 < line.len) {
+            i += 4;
+            continue;
+        }
+        i += 1;
+    }
+    return null;
 }
 
 fn dumpLog(path: []const u8) !void {
@@ -233,7 +314,25 @@ fn fileLen(path: []const u8) !i64 {
 }
 
 fn fusermountU(allocator: std.mem.Allocator, mount_dir: []const u8) void {
-    const cmd = std.fmt.allocPrint(allocator, "fusermount3 -u {s} 2>/dev/null || umount {s} 2>/dev/null", .{ mount_dir, mount_dir }) catch return;
+    const cmd = std.fmt.allocPrint(allocator, "fusermount3 -u {s} 2>/dev/null", .{mount_dir}) catch return;
+    defer allocator.free(cmd);
+    const cmd_z = allocator.allocSentinel(u8, cmd.len, 0) catch return;
+    defer allocator.free(cmd_z);
+    @memcpy(cmd_z, cmd);
+    _ = posix_util.shell(cmd_z);
+}
+
+fn fusermountLazyDetach(allocator: std.mem.Allocator, mount_dir: []const u8) void {
+    const cmd = std.fmt.allocPrint(allocator, "fusermount3 -u -z {s} 2>/dev/null", .{mount_dir}) catch return;
+    defer allocator.free(cmd);
+    const cmd_z = allocator.allocSentinel(u8, cmd.len, 0) catch return;
+    defer allocator.free(cmd_z);
+    @memcpy(cmd_z, cmd);
+    _ = posix_util.shell(cmd_z);
+}
+
+fn umountPath(allocator: std.mem.Allocator, mount_dir: []const u8) void {
+    const cmd = std.fmt.allocPrint(allocator, "umount {s} 2>/dev/null", .{mount_dir}) catch return;
     defer allocator.free(cmd);
     const cmd_z = allocator.allocSentinel(u8, cmd.len, 0) catch return;
     defer allocator.free(cmd_z);
