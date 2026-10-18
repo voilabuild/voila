@@ -1,5 +1,5 @@
 const std = @import("std");
-const hex_util = @import("hex_util");
+const hex_util = @import("hex_util.zig");
 
 /// Matches imagestore.RefKey: sanitize ref + 8-hex sha256 suffix.
 pub fn refKey(allocator: std.mem.Allocator, ref: []const u8) ![]const u8 {

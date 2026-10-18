@@ -24,6 +24,8 @@ const vtable: iface.Runtime.VTable = .{
     .ps = stubPs,
     .logs = stubLogs,
     .kill = stubKill,
+    .pull = stubPull,
+    .images = stubImages,
     .deinit = deinitImpl,
 };
 
@@ -45,6 +47,16 @@ fn stubLogs(ptr: *anyopaque, _: std.Io, _: std.mem.Allocator, _: types.LogsOptio
 }
 
 fn stubKill(ptr: *anyopaque, _: std.Io, _: std.mem.Allocator, _: types.KillSpec) !void {
+    _ = ptr;
+    return iface.Error.NotImplemented;
+}
+
+fn stubPull(ptr: *anyopaque, _: std.Io, _: std.mem.Allocator, _: types.PullSpec) !void {
+    _ = ptr;
+    return iface.Error.NotImplemented;
+}
+
+fn stubImages(ptr: *anyopaque, _: std.Io, _: std.mem.Allocator) !void {
     _ = ptr;
     return iface.Error.NotImplemented;
 }

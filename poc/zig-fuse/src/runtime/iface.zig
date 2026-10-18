@@ -5,6 +5,8 @@ pub const RunSpec = types.RunSpec;
 pub const PsRow = types.PsRow;
 pub const LogsOptions = types.LogsOptions;
 pub const KillSpec = types.KillSpec;
+pub const PullSpec = types.PullSpec;
+pub const ImageInfo = types.ImageInfo;
 
 pub const Kind = enum { local, remote };
 
@@ -17,6 +19,8 @@ pub const Runtime = struct {
         ps: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator) anyerror!void,
         logs: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, opts: LogsOptions) anyerror!void,
         kill: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: KillSpec) anyerror!void,
+        pull: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: PullSpec) anyerror!void,
+        images: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator) anyerror!void,
         deinit: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator) void,
     };
 
@@ -36,6 +40,14 @@ pub const Runtime = struct {
         return self.vtable.kill(self.ptr, io, allocator, spec);
     }
 
+    pub fn pull(self: Runtime, io: std.Io, allocator: std.mem.Allocator, spec: PullSpec) !void {
+        return self.vtable.pull(self.ptr, io, allocator, spec);
+    }
+
+    pub fn images(self: Runtime, io: std.Io, allocator: std.mem.Allocator) !void {
+        return self.vtable.images(self.ptr, io, allocator);
+    }
+
     pub fn deinit(self: *Runtime, allocator: std.mem.Allocator) void {
         self.vtable.deinit(self.ptr, allocator);
     }
@@ -53,4 +65,5 @@ pub const Error = error{
     NeedImage,
     NeedCommand,
     NeedContextId,
+    NoRegistry,
 };

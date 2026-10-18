@@ -12,6 +12,8 @@ const voila_registry_creds = @import("voila_registry_creds.zig");
 const voila_fetch_stats = @import("voila_fetch_stats.zig");
 const voila_runtime = @import("runtime/open.zig");
 const voila_refkey = @import("voila_refkey.zig");
+const _voila_image_pull = @import("voila_image_pull.zig");
+const _registry_session = @import("registry_session.zig");
 
 pub const std_options_debug_io = zio.debug_io;
 
@@ -84,6 +86,23 @@ pub fn main(init: std.process.Init) !void {
             if (e == voila_runtime.Error.NotImplemented) std.process.exit(2);
             return e;
         };
+        return;
+    }
+    if (std.mem.eql(u8, sub, "pull")) {
+        const parsed = try parsePullArgs(init.gpa, &args);
+        defer init.gpa.free(parsed.runtime_cfg.store_root);
+        defer init.gpa.free(parsed.image);
+        var worker = try openRuntime(init.gpa, parsed.runtime_cfg);
+        defer worker.deinit(init.gpa);
+        try worker.pull(io, init.gpa, .{ .image = parsed.image });
+        return;
+    }
+    if (std.mem.eql(u8, sub, "images")) {
+        const cfg = try parseRuntimeOnlyArgs(init.gpa, &args);
+        defer init.gpa.free(cfg.store_root);
+        var worker = try openRuntime(init.gpa, cfg);
+        defer worker.deinit(init.gpa);
+        try worker.images(io, init.gpa);
         return;
     }
     if (std.mem.eql(u8, sub, "kill")) {
@@ -429,6 +448,37 @@ fn resolveStoreRoot(allocator: std.mem.Allocator, root: ?[]const u8) ![]const u8
         break :blk std.mem.span(p);
     };
     return resolveAbs(allocator, r);
+}
+
+const PullParsed = struct {
+    runtime_cfg: voila_runtime.Config,
+    image: []const u8,
+};
+
+fn parsePullArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !PullParsed {
+    var root: ?[]const u8 = null;
+    var kind = voila_runtime.kindFromEnv();
+    var image: ?[]const u8 = null;
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-root")) {
+            const r = args.next() orelse return error.NeedVoilaRoot;
+            root = try allocator.dupe(u8, r);
+        } else if (std.mem.eql(u8, arg, "-backend")) {
+            const b = args.next() orelse return error.BadRunArgs;
+            kind = parseBackendArg(b) orelse return error.BadRunArgs;
+        } else if (image == null) {
+            image = try allocator.dupe(u8, arg);
+        } else {
+            return error.BadRunArgs;
+        }
+    }
+    const img = image orelse return error.NeedImage;
+    const root_abs = try resolveStoreRoot(allocator, root);
+    if (root) |owned| allocator.free(owned);
+    return .{
+        .runtime_cfg = .{ .kind = kind, .store_root = root_abs },
+        .image = img,
+    };
 }
 
 const RunParsed = struct {

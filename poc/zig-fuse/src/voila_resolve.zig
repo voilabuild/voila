@@ -106,6 +106,20 @@ fn dupRecord(allocator: std.mem.Allocator, r: ImageRecord) !ImageRecord {
     };
 }
 
+pub fn listImagesInStore(allocator: std.mem.Allocator, voila_root: []const u8) ![]ImageRecord {
+    const db_path = try std.fmt.allocPrint(allocator, "{s}/images.db", .{voila_root});
+    defer allocator.free(db_path);
+    const db_path_z = try allocator.allocSentinel(u8, db_path.len, 0);
+    defer allocator.free(db_path_z);
+    @memcpy(db_path_z, db_path);
+
+    var db: ?*sqlite.sqlite3 = null;
+    if (sqlite.sqlite3_open(db_path_z, &db) != sqlite.SQLITE_OK) return Error.SqliteOpen;
+    const db_ptr = db orelse return Error.SqliteOpen;
+    defer _ = sqlite.sqlite3_close(db_ptr);
+    return listImages(allocator, db_ptr);
+}
+
 fn listImages(allocator: std.mem.Allocator, db: *sqlite.sqlite3) ![]ImageRecord {
     const sql = "SELECT ref, image_digest, merged_root_manifest_chunk FROM images";
     var stmt: ?*sqlite.sqlite3_stmt = null;
