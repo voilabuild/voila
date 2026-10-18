@@ -33,6 +33,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, spe
 }
 
 pub fn runWorker(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, container_id: []const u8) !u8 {
+    _ = std.c.setpgid(0, 0);
     var st = try container_store.readState(allocator, voila_root, container_id);
     defer container_store.freeState(allocator, st);
     const argv = try readCmdArgv(allocator, voila_root, container_id);
@@ -92,6 +93,7 @@ fn runDetached(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8,
             "-id",
             id_z,
         },
+        .pgid = 0,
     });
     if (worker.id) |wp| {
         st.pid = @intCast(wp);

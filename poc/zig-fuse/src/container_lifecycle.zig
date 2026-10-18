@@ -77,7 +77,7 @@ pub fn rm(allocator: std.mem.Allocator, voila_root: []const u8, context_id: []co
     const st = try container_store.readState(allocator, voila_root, id);
     defer container_store.freeState(allocator, st);
     terminateWorker(allocator, st.pid, st.mount_dir, std.c.SIG.KILL);
-    ensureUnmounted(allocator, st.mount_dir);
+    if (mountActive(st.mount_dir)) return error.MountStillActive;
     container_store.removeContainer(allocator, voila_root, id);
 }
 
@@ -96,20 +96,61 @@ pub fn ensureNameFree(allocator: std.mem.Allocator, voila_root: []const u8, name
 }
 
 fn terminateWorker(allocator: std.mem.Allocator, worker_pid: i32, mount_dir: []const u8, sig: std.c.SIG) void {
-    if (worker_pid > 0 and isPidAlive(worker_pid)) {
-        _ = std.c.kill(worker_pid, sig);
-        waitPid(worker_pid);
+    if (worker_pid > 0) {
+        signalProcessGroup(worker_pid, sig);
+        waitProcessGroup(worker_pid);
+        if (isPidAlive(worker_pid)) signalProcessGroup(worker_pid, std.c.SIG.KILL);
+        waitProcessGroup(worker_pid);
     }
-    ensureUnmounted(allocator, mount_dir);
+    _ = ensureUnmounted(allocator, mount_dir);
 }
 
-fn ensureUnmounted(allocator: std.mem.Allocator, mount_dir: []const u8) void {
-    if (mount_dir.len == 0) return;
+fn signalProcessGroup(leader_pid: i32, sig: std.c.SIG) void {
+    if (leader_pid <= 0) return;
+    const pgid = processGroupId(leader_pid);
+    if (pgid > 0) {
+        _ = std.c.kill(-pgid, sig);
+    } else {
+        _ = std.c.kill(leader_pid, sig);
+    }
+}
+
+fn processGroupId(pid: i32) i32 {
+    const pgid = getpgid(pid);
+    if (pgid < 0) return pid;
+    return pgid;
+}
+
+fn getpgid(pid: i32) i32 {
+    const rc = std.os.linux.getpgid(pid);
+    if (std.os.linux.errno(rc) != .SUCCESS) return -1;
+    return @intCast(rc);
+}
+
+fn waitProcessGroup(leader_pid: i32) void {
+    if (leader_pid <= 0) return;
+    for (0..400) |_| {
+        var status: i32 = 0;
+        const rc = std.c.waitpid(leader_pid, &status, std.c.W.NOHANG);
+        if (rc == leader_pid) break;
+        if (!isPidAlive(leader_pid)) break;
+        sleepMs(50);
+    }
+    reapZombies();
+}
+
+fn reapZombies() void {
+    while (std.c.waitpid(-1, null, std.c.W.NOHANG) > 0) {}
+}
+
+fn ensureUnmounted(allocator: std.mem.Allocator, mount_dir: []const u8) bool {
+    if (mount_dir.len == 0) return true;
     for (0..40) |_| {
-        if (!mountActive(mount_dir)) return;
+        if (!mountActive(mount_dir)) return true;
         fusermountU(allocator, mount_dir);
         sleepMs(50);
     }
+    return !mountActive(mount_dir);
 }
 
 fn sleepMs(ms: u64) void {
@@ -130,20 +171,6 @@ fn isRunning(st: container_store.State) bool {
 fn isPidAlive(pid: i32) bool {
     if (pid <= 0) return false;
     return std.c.kill(pid, @enumFromInt(0)) == 0;
-}
-
-fn waitPid(pid: i32) void {
-    if (pid <= 0) return;
-    for (0..200) |_| {
-        var status: i32 = 0;
-        const rc = std.c.waitpid(pid, &status, std.c.W.NOHANG);
-        if (rc == pid) return;
-        if (rc < 0) break;
-        if (!isPidAlive(pid)) return;
-        sleepMs(50);
-    }
-    if (isPidAlive(pid)) _ = std.c.kill(pid, std.c.SIG.KILL);
-    _ = std.c.waitpid(pid, null, 0);
 }
 
 fn mountActive(mount_dir: []const u8) bool {
@@ -222,4 +249,4 @@ fn trimCol(s: []const u8, max: usize) []const u8 {
     return if (s.len > max) s[0..max] else s;
 }
 
-pub const Error = error{NameInUse};
+pub const Error = error{ NameInUse, MountStillActive };
