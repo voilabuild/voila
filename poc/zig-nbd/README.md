@@ -4,10 +4,13 @@
 
 The Go daemon already enforces this in `internal/nbd/backend_linux.go` and `TestE2E_MultiChunkBoundary`. This PoC reimplements only the NBD read path in Zig.
 
-## What stayed in Go
+## EROFS metadata builder (Zig)
 
-- Building the EROFS metadata blob and slot layout (`erofsadapter.Build`), same tree as `TestE2E_MultiChunkBoundary`.
-- The fixture writer under `fixture/` (`go run -tags zig_nbd_fixture`).
+`zig-nbd build <store-root> <image-ref|root-manifest-hex>` loads the merged voila manifest tree from the local chunk store (same protobuf manifests as `mount.Load` + `PrefetchManifests`), emits a kernel-mountable metadata-only EROFS blob (`meta.bin` layout) and slot table. Use `--bench` for seven timed builds (cold page cache via `drop_caches` when permitted). Optional `-o meta.bin`.
+
+`zig-nbd prove-build` builds the synthetic boundary tree in-process, writes `meta.bin` / `slots.txt` / `chunks/`, then runs the same NBD+EROFS mount proof as `prove`.
+
+The Go fixture writer under `fixture/` (`go run -tags zig_nbd_fixture`) remains useful as a reference image generator.
 
 ## Fixture layout
 

@@ -16,6 +16,13 @@ fn cloneFile(allocator: std.mem.Allocator, f: voila_manifest_proto.FileMsg) !voi
             .logical_len = b.logical_len,
         };
     }
+    var xattrs = std.StringHashMap([]const u8).init(allocator);
+    var xit = f.xattrs.iterator();
+    while (xit.next()) |e| {
+        const k = try allocator.dupe(u8, e.key_ptr.*);
+        const v = try allocator.dupe(u8, e.value_ptr.*);
+        try xattrs.put(k, v);
+    }
     return .{
         .inode = f.inode,
         .mode = f.mode,
@@ -25,6 +32,7 @@ fn cloneFile(allocator: std.mem.Allocator, f: voila_manifest_proto.FileMsg) !voi
         .mtime_ns = f.mtime_ns,
         .nlink = f.nlink,
         .blocks = blocks,
+        .xattrs = xattrs,
     };
 }
 
@@ -49,6 +57,7 @@ pub const Tree = struct {
     voila_root: []const u8,
     allocator: std.mem.Allocator,
     manifest_hex_loaded: std.StringHashMap(void),
+    manifest_hex_failed: std.StringHashMap(void),
     dir_by_inode: std.AutoHashMap(u64, voila_manifest_proto.DirMsg),
     file_by_inode: std.AutoHashMap(u64, voila_manifest_proto.FileMsg),
     symlink_by_inode: std.AutoHashMap(u64, voila_manifest_proto.SymlinkMsg),
@@ -60,6 +69,9 @@ pub const Tree = struct {
         var mit = self.manifest_hex_loaded.keyIterator();
         while (mit.next()) |k| self.allocator.free(k.*);
         self.manifest_hex_loaded.deinit();
+        var mf = self.manifest_hex_failed.keyIterator();
+        while (mf.next()) |k| self.allocator.free(k.*);
+        self.manifest_hex_failed.deinit();
         var dit = self.dir_by_inode.iterator();
         while (dit.next()) |e| {
             var kit = e.value_ptr.entries.keyIterator();
@@ -71,6 +83,12 @@ pub const Tree = struct {
         while (fit.next()) |e| {
             for (e.value_ptr.blocks) |*b| self.allocator.free(b.chunk_id);
             self.allocator.free(e.value_ptr.blocks);
+            var xit = e.value_ptr.xattrs.iterator();
+            while (xit.next()) |xe| {
+                self.allocator.free(xe.key_ptr.*);
+                self.allocator.free(xe.value_ptr.*);
+            }
+            e.value_ptr.xattrs.deinit();
         }
         self.file_by_inode.deinit();
         var sit = self.symlink_by_inode.iterator();
@@ -125,16 +143,34 @@ pub const Tree = struct {
         }
     }
 
+    fn markManifestFailed(self: *Tree, hex: []const u8) void {
+        if (self.manifest_hex_loaded.contains(hex) or self.manifest_hex_failed.contains(hex)) return;
+        const key = self.allocator.dupe(u8, hex) catch return;
+        self.manifest_hex_failed.put(key, {}) catch {
+            self.allocator.free(key);
+        };
+    }
+
     fn loadManifestChunk(self: *Tree, chunk_id: []const u8) !void {
         const hex = try voila_resolve.chunkIdToHex(self.allocator, chunk_id);
         defer self.allocator.free(hex);
         if (self.manifest_hex_loaded.contains(hex)) return;
+        if (self.manifest_hex_failed.contains(hex)) return error.ManifestUnavailable;
         const algo = voila_chunk_index.compAlgoForChunk(self.voila_root, chunk_id) catch voila_store.AlgoRaw;
-        const raw = try voila_chunk_load.loadChunkRaw(hub.g_io, self.allocator, self.voila_root, hex, algo);
+        const raw = voila_chunk_load.loadChunkRaw(hub.g_io, self.allocator, self.voila_root, hex, algo) catch |e| {
+            self.markManifestFailed(hex);
+            return e;
+        };
         defer self.allocator.free(raw);
-        var m = try voila_manifest_proto.decodeManifest(self.allocator, raw);
+        var m = voila_manifest_proto.decodeManifest(self.allocator, raw) catch |e| {
+            self.markManifestFailed(hex);
+            return e;
+        };
         defer m.deinit();
-        try self.indexManifest(&m);
+        self.indexManifest(&m) catch |e| {
+            self.markManifestFailed(hex);
+            return e;
+        };
         const key = try self.allocator.dupe(u8, hex);
         try self.manifest_hex_loaded.put(key, {});
     }
@@ -164,6 +200,7 @@ pub const Tree = struct {
                 const hex = voila_resolve.chunkIdToHex(self.allocator, e.value_ptr.*) catch continue;
                 defer self.allocator.free(hex);
                 if (self.manifest_hex_loaded.contains(hex)) continue;
+                if (self.manifest_hex_failed.contains(hex)) continue;
                 var dup = false;
                 for (pending.items) |p| {
                     if (std.mem.eql(u8, p, e.value_ptr.*)) dup = true;
@@ -171,7 +208,9 @@ pub const Tree = struct {
                 if (!dup) pending.append(self.allocator, e.value_ptr.*) catch {};
             }
             if (pending.items.len == 0) break;
+            const loaded_before = self.manifest_hex_loaded.count();
             for (pending.items) |cid| self.loadManifestChunk(cid) catch {};
+            if (self.manifest_hex_loaded.count() == loaded_before) break;
         }
     }
 
@@ -280,6 +319,7 @@ pub const Error = error{
     BadRootChunk,
     NoRootDir,
     InodeNotFound,
+    ManifestUnavailable,
 };
 
 /// Root manifest only; external subtrees load on first touch (matches Go mount.Load).
@@ -288,6 +328,7 @@ pub fn openTree(allocator: std.mem.Allocator, voila_root: []const u8, root_chunk
         .voila_root = try allocator.dupe(u8, voila_root),
         .allocator = allocator,
         .manifest_hex_loaded = std.StringHashMap(void).init(allocator),
+        .manifest_hex_failed = std.StringHashMap(void).init(allocator),
         .dir_by_inode = std.AutoHashMap(u64, voila_manifest_proto.DirMsg).init(allocator),
         .file_by_inode = std.AutoHashMap(u64, voila_manifest_proto.FileMsg).init(allocator),
         .symlink_by_inode = std.AutoHashMap(u64, voila_manifest_proto.SymlinkMsg).init(allocator),
