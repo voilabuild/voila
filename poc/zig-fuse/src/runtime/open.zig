@@ -10,6 +10,7 @@ pub const RunSpec = iface.RunSpec;
 pub const LogsOptions = iface.LogsOptions;
 pub const KillSpec = iface.KillSpec;
 pub const PullSpec = iface.PullSpec;
+pub const ContextRef = iface.ContextRef;
 pub const Error = iface.Error;
 
 pub fn open(allocator: std.mem.Allocator, cfg: Config) !Runtime {

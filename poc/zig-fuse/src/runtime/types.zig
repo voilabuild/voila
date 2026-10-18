@@ -4,10 +4,14 @@ const std = @import("std");
 pub const RunSpec = struct {
     image: []const u8,
     argv: []const []const u8,
+    detach: bool = false,
+    name: []const u8 = "",
+    rm_on_exit: bool = false,
 };
 
 pub const PsRow = struct {
     id: []const u8,
+    name: []const u8,
     image: []const u8,
     status: []const u8,
     pid: i32,
@@ -29,4 +33,8 @@ pub const PullSpec = struct {
 
 pub const ImageInfo = struct {
     ref: []const u8,
+};
+
+pub const ContextRef = struct {
+    context_id: []const u8,
 };
