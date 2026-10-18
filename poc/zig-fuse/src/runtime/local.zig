@@ -1,7 +1,8 @@
 const std = @import("std");
 const iface = @import("iface.zig");
 const types = @import("types.zig");
-const run_attached = @import("../run_attached.zig");
+const container_run = @import("../container_run.zig");
+const container_lifecycle = @import("../container_lifecycle.zig");
 const registry_session = @import("../registry_session.zig");
 const voila_image_pull = @import("../voila_image_pull.zig");
 const voila_resolve = @import("../voila_resolve.zig");
@@ -22,9 +23,11 @@ pub fn open(allocator: std.mem.Allocator, store_root: []const u8) !iface.Runtime
 
 const vtable: iface.Runtime.VTable = .{
     .run = runImpl,
-    .ps = notImplPs,
-    .logs = notImplLogs,
-    .kill = notImplKill,
+    .ps = psImpl,
+    .logs = logsImpl,
+    .kill = killImpl,
+    .stop = stopImpl,
+    .rm = rmImpl,
     .pull = pullImpl,
     .images = imagesImpl,
     .deinit = deinitImpl,
@@ -32,24 +35,32 @@ const vtable: iface.Runtime.VTable = .{
 
 fn runImpl(ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: types.RunSpec) !u8 {
     const self: *Local = @ptrCast(@alignCast(ptr));
-    return run_attached.run(io, allocator, self.store_root, spec.image, spec.argv);
+    return container_run.run(io, allocator, self.store_root, spec);
 }
 
-fn notImplPs(ptr: *anyopaque, _: std.Io, _: std.mem.Allocator) !void {
-    _ = ptr;
-    std.debug.print("local runtime: ps requires detached containers (not implemented)\n", .{});
-    return iface.Error.NotImplemented;
+fn psImpl(ptr: *anyopaque, _: std.Io, allocator: std.mem.Allocator) !void {
+    const self: *Local = @ptrCast(@alignCast(ptr));
+    return container_lifecycle.ps(allocator, self.store_root);
 }
 
-fn notImplLogs(ptr: *anyopaque, _: std.Io, _: std.mem.Allocator, _: types.LogsOptions) !void {
-    _ = ptr;
-    std.debug.print("local runtime: logs requires detached containers (not implemented)\n", .{});
-    return iface.Error.NotImplemented;
+fn logsImpl(ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, opts: types.LogsOptions) !void {
+    const self: *Local = @ptrCast(@alignCast(ptr));
+    return container_lifecycle.logs(io, allocator, self.store_root, opts.context_id, opts.follow);
 }
 
-fn notImplKill(ptr: *anyopaque, _: std.Io, _: std.mem.Allocator, _: types.KillSpec) !void {
-    _ = ptr;
-    return iface.Error.NotImplemented;
+fn killImpl(ptr: *anyopaque, _: std.Io, allocator: std.mem.Allocator, spec: types.KillSpec) !void {
+    const self: *Local = @ptrCast(@alignCast(ptr));
+    return container_lifecycle.kill(allocator, self.store_root, spec.context_id, spec.signal);
+}
+
+fn stopImpl(ptr: *anyopaque, _: std.Io, allocator: std.mem.Allocator, ref: types.ContextRef) !void {
+    const self: *Local = @ptrCast(@alignCast(ptr));
+    return container_lifecycle.stop(allocator, self.store_root, ref.context_id);
+}
+
+fn rmImpl(ptr: *anyopaque, _: std.Io, allocator: std.mem.Allocator, ref: types.ContextRef) !void {
+    const self: *Local = @ptrCast(@alignCast(ptr));
+    return container_lifecycle.rm(allocator, self.store_root, ref.context_id);
 }
 
 fn pullImpl(ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: types.PullSpec) !void {

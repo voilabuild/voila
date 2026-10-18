@@ -14,6 +14,7 @@ const voila_runtime = @import("runtime/open.zig");
 const voila_refkey = @import("voila_refkey.zig");
 const _voila_image_pull = @import("voila_image_pull.zig");
 const _registry_session = @import("registry_session.zig");
+const container_run = @import("container_run.zig");
 
 pub const std_options_debug_io = zio.debug_io;
 
@@ -58,12 +59,25 @@ pub fn main(init: std.process.Init) !void {
         try fuse_linux.mountAndServe(io, init.gpa, &fuse_vfs, mountpoint);
         return;
     }
+    if (std.mem.eql(u8, sub, "container-worker")) {
+        const parsed = try parseWorkerArgs(init.gpa, &args);
+        defer init.gpa.free(parsed.store_root);
+        defer init.gpa.free(parsed.container_id);
+        const code = try container_run.runWorker(io, init.gpa, parsed.store_root, parsed.container_id);
+        std.process.exit(code);
+    }
     if (std.mem.eql(u8, sub, "run")) {
         const parsed = try parseRunArgs(init.gpa, &args);
         defer parsed.deinit(init.gpa);
         var worker = try openRuntime(init.gpa, parsed.runtime_cfg);
         defer worker.deinit(init.gpa);
-        const code = try worker.run(io, init.gpa, .{ .image = parsed.image, .argv = parsed.cmd });
+        const code = try worker.run(io, init.gpa, .{
+            .image = parsed.image,
+            .argv = parsed.cmd,
+            .detach = parsed.detach,
+            .name = parsed.name,
+            .rm_on_exit = parsed.rm_on_exit,
+        });
         std.process.exit(code);
     }
     if (std.mem.eql(u8, sub, "ps")) {
@@ -107,11 +121,32 @@ pub fn main(init: std.process.Init) !void {
     }
     if (std.mem.eql(u8, sub, "kill")) {
         const parsed = try parseKillArgs(init.gpa, &args);
-        defer init.gpa.free(parsed.runtime_cfg.store_root);
-        defer init.gpa.free(parsed.opts.context_id);
+        defer parsed.deinit(init.gpa);
         var worker = try openRuntime(init.gpa, parsed.runtime_cfg);
         defer worker.deinit(init.gpa);
         worker.kill(io, init.gpa, parsed.opts) catch |e| {
+            if (e == voila_runtime.Error.NotImplemented) std.process.exit(2);
+            return e;
+        };
+        return;
+    }
+    if (std.mem.eql(u8, sub, "stop")) {
+        const parsed = try parseContextArgs(init.gpa, &args);
+        defer parsed.deinit(init.gpa);
+        var worker = try openRuntime(init.gpa, parsed.runtime_cfg);
+        defer worker.deinit(init.gpa);
+        worker.stop(io, init.gpa, parsed.ref) catch |e| {
+            if (e == voila_runtime.Error.NotImplemented) std.process.exit(2);
+            return e;
+        };
+        return;
+    }
+    if (std.mem.eql(u8, sub, "rm")) {
+        const parsed = try parseContextArgs(init.gpa, &args);
+        defer parsed.deinit(init.gpa);
+        var worker = try openRuntime(init.gpa, parsed.runtime_cfg);
+        defer worker.deinit(init.gpa);
+        worker.rm(io, init.gpa, parsed.ref) catch |e| {
             if (e == voila_runtime.Error.NotImplemented) std.process.exit(2);
             return e;
         };
@@ -144,7 +179,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     std.debug.print(
-        "usage:\n  zig-fuse run [-root <dir>] [-backend local|remote] <image-ref> -- <cmd> [args...]\n  zig-fuse ps|logs|kill [-root <dir>] [-backend local|remote] ...\n  zig-fuse prove [fixture-dir]\n  zig-fuse prove-store <voila-root> <image>\n  zig-fuse serve-store <voila-root> <image-ref> <mountpoint>\n",
+        "usage:\n  zig-fuse run [-root <dir>] [-d] [--name NAME] [--rm] [-backend local|remote] <image-ref> -- <cmd> [args...]\n  zig-fuse ps|logs|stop|kill|rm [-root <dir>] [-backend local|remote] ...\n  zig-fuse prove [fixture-dir]\n  zig-fuse prove-store <voila-root> <image>\n  zig-fuse serve-store <voila-root> <image-ref> <mountpoint>\n",
         .{},
     );
 }
@@ -485,10 +520,14 @@ const RunParsed = struct {
     runtime_cfg: voila_runtime.Config,
     image: []const u8,
     cmd: []const []const u8,
+    detach: bool,
+    name: []const u8,
+    rm_on_exit: bool,
 
     fn deinit(self: RunParsed, allocator: std.mem.Allocator) void {
         allocator.free(self.runtime_cfg.store_root);
         allocator.free(self.image);
+        allocator.free(self.name);
         for (self.cmd) |a| allocator.free(a);
         allocator.free(self.cmd);
     }
@@ -500,6 +539,9 @@ fn parseRunArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) 
     var image: ?[]const u8 = null;
     var cmd_list: std.ArrayList([]const u8) = .empty;
     var after_sep = false;
+    var detach = false;
+    var name: ?[]const u8 = null;
+    var rm_on_exit = false;
     while (args.next()) |arg| {
         if (after_sep) {
             try cmd_list.append(allocator, try allocator.dupe(u8, arg));
@@ -517,6 +559,19 @@ fn parseRunArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) 
         if (std.mem.eql(u8, arg, "-backend")) {
             const b = args.next() orelse return error.BadRunArgs;
             kind = parseBackendArg(b) orelse return error.BadRunArgs;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--detach")) {
+            detach = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--name")) {
+            const n = args.next() orelse return error.BadRunArgs;
+            name = try allocator.dupe(u8, n);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--rm")) {
+            rm_on_exit = true;
             continue;
         }
         if (root == null and image == null and !voila_refkey.looksLikeRef(arg)) {
@@ -540,11 +595,38 @@ fn parseRunArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) 
 
     const root_abs = try resolveStoreRoot(allocator, root);
     if (root) |owned| allocator.free(owned);
+    const name_final = name orelse try allocator.dupe(u8, "");
 
     return .{
         .runtime_cfg = .{ .kind = kind, .store_root = root_abs },
         .image = image_final,
         .cmd = try cmd_list.toOwnedSlice(allocator),
+        .detach = detach,
+        .name = name_final,
+        .rm_on_exit = rm_on_exit,
+    };
+}
+
+const WorkerParsed = struct {
+    store_root: []const u8,
+    container_id: []const u8,
+};
+
+fn parseWorkerArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !WorkerParsed {
+    var root: ?[]const u8 = null;
+    var container_id: ?[]const u8 = null;
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-root")) {
+            root = args.next() orelse return error.NeedVoilaRoot;
+        } else if (std.mem.eql(u8, arg, "-id")) {
+            container_id = args.next() orelse return error.NeedContextId;
+        }
+    }
+    const r = root orelse return error.NeedVoilaRoot;
+    const id = container_id orelse return error.NeedContextId;
+    return .{
+        .store_root = try resolveAbs(allocator, r),
+        .container_id = try allocator.dupe(u8, id),
     };
 }
 
@@ -587,7 +669,7 @@ fn parseLogsArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator)
         } else if (std.mem.eql(u8, arg, "-backend")) {
             const b = args.next() orelse return error.BadRunArgs;
             kind = parseBackendArg(b) orelse return error.BadRunArgs;
-        } else if (std.mem.eql(u8, arg, "-follow")) {
+        } else if (std.mem.eql(u8, arg, "-follow") or std.mem.eql(u8, arg, "-f")) {
             follow = true;
         } else if (context_id == null) {
             context_id = try allocator.dupe(u8, arg);
@@ -605,7 +687,46 @@ fn parseLogsArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator)
 const KillParsed = struct {
     runtime_cfg: voila_runtime.Config,
     opts: voila_runtime.KillSpec,
+
+    fn deinit(self: KillParsed, allocator: std.mem.Allocator) void {
+        allocator.free(self.runtime_cfg.store_root);
+        allocator.free(self.opts.context_id);
+    }
 };
+
+const ContextParsed = struct {
+    runtime_cfg: voila_runtime.Config,
+    ref: voila_runtime.ContextRef,
+
+    fn deinit(self: ContextParsed, allocator: std.mem.Allocator) void {
+        allocator.free(self.runtime_cfg.store_root);
+        allocator.free(self.ref.context_id);
+    }
+};
+
+fn parseContextArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !ContextParsed {
+    var root: ?[]const u8 = null;
+    var kind = voila_runtime.kindFromEnv();
+    var context_id: ?[]const u8 = null;
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-root")) {
+            const r = args.next() orelse return error.NeedVoilaRoot;
+            root = try allocator.dupe(u8, r);
+        } else if (std.mem.eql(u8, arg, "-backend")) {
+            const b = args.next() orelse return error.BadRunArgs;
+            kind = parseBackendArg(b) orelse return error.BadRunArgs;
+        } else if (context_id == null) {
+            context_id = try allocator.dupe(u8, arg);
+        }
+    }
+    const cid = context_id orelse return error.NeedContextId;
+    const root_abs = try resolveStoreRoot(allocator, root);
+    if (root) |owned| allocator.free(owned);
+    return .{
+        .runtime_cfg = .{ .kind = kind, .store_root = root_abs },
+        .ref = .{ .context_id = cid },
+    };
+}
 
 fn parseKillArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !KillParsed {
     var root: ?[]const u8 = null;

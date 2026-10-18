@@ -7,6 +7,7 @@ pub const LogsOptions = types.LogsOptions;
 pub const KillSpec = types.KillSpec;
 pub const PullSpec = types.PullSpec;
 pub const ImageInfo = types.ImageInfo;
+pub const ContextRef = types.ContextRef;
 
 pub const Kind = enum { local, remote };
 
@@ -19,6 +20,8 @@ pub const Runtime = struct {
         ps: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator) anyerror!void,
         logs: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, opts: LogsOptions) anyerror!void,
         kill: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: KillSpec) anyerror!void,
+        stop: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, ref: ContextRef) anyerror!void,
+        rm: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, ref: ContextRef) anyerror!void,
         pull: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: PullSpec) anyerror!void,
         images: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator) anyerror!void,
         deinit: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator) void,
@@ -38,6 +41,14 @@ pub const Runtime = struct {
 
     pub fn kill(self: Runtime, io: std.Io, allocator: std.mem.Allocator, spec: KillSpec) !void {
         return self.vtable.kill(self.ptr, io, allocator, spec);
+    }
+
+    pub fn stop(self: Runtime, io: std.Io, allocator: std.mem.Allocator, ref: ContextRef) !void {
+        return self.vtable.stop(self.ptr, io, allocator, ref);
+    }
+
+    pub fn rm(self: Runtime, io: std.Io, allocator: std.mem.Allocator, ref: ContextRef) !void {
+        return self.vtable.rm(self.ptr, io, allocator, ref);
     }
 
     pub fn pull(self: Runtime, io: std.Io, allocator: std.mem.Allocator, spec: PullSpec) !void {
