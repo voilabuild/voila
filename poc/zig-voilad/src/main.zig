@@ -8,6 +8,9 @@ const registry_creds = @import("registry_creds");
 const voila_registry = @import("voila_registry");
 const mount_backend = @import("mount_backend");
 const erofs_mount = @import("erofs_mount");
+const chunk_cache = @import("chunk_cache");
+const bench_mount = @import("bench_mount");
+const accept_suite = @import("accept_suite");
 
 var g_voila_root: []const u8 = "";
 var g_zig_fuse: []const u8 = "";
@@ -49,6 +52,7 @@ pub fn main(init: std.process.Init) !void {
     runtime.io = init.io;
     const allocator = init.gpa;
 
+    chunk_cache.install();
     registry_global.init();
 
     var cmd_iter = std.process.Args.Iterator.init(init.minimal.args);
@@ -56,6 +60,63 @@ pub fn main(init: std.process.Init) !void {
     if (cmd_iter.next()) |sub| {
         if (std.mem.eql(u8, sub, "prove-erofs")) {
             try erofs_mount.proveBoundaryFixture(allocator);
+            return;
+        }
+        if (std.mem.eql(u8, sub, "accept-suite")) {
+            chunk_cache.install();
+            var accept_args = std.process.Args.Iterator.init(init.minimal.args);
+            _ = accept_args.next();
+            _ = accept_args.next();
+            var voila_root: []const u8 = "/var/lib/voila";
+            var image: ?[]const u8 = null;
+            var backend: []const u8 = "erofs";
+            var zig_fuse: []const u8 = "../zig-fuse/zig-out/bin/zig-fuse";
+            var cases_script: []const u8 = "poc/zig-voilad/tools/acceptance_cases.sh";
+            var golden_dir: []const u8 = "/tmp/voila-accept-golden";
+            while (accept_args.next()) |arg| {
+                if (std.mem.eql(u8, arg, "-root")) {
+                    voila_root = accept_args.next() orelse return error.InvalidArgs;
+                } else if (std.mem.eql(u8, arg, "-image")) {
+                    image = accept_args.next();
+                } else if (std.mem.eql(u8, arg, "-backend")) {
+                    backend = accept_args.next() orelse return error.InvalidArgs;
+                } else if (std.mem.eql(u8, arg, "-zig-fuse")) {
+                    zig_fuse = accept_args.next() orelse return error.InvalidArgs;
+                } else if (std.mem.eql(u8, arg, "-cases-script")) {
+                    cases_script = accept_args.next() orelse return error.InvalidArgs;
+                } else if (std.mem.eql(u8, arg, "-golden")) {
+                    golden_dir = accept_args.next() orelse return error.InvalidArgs;
+                }
+            }
+            if (image == null) return error.InvalidArgs;
+            try accept_suite.acceptSuite(allocator, voila_root, zig_fuse, image.?, backend, cases_script, golden_dir);
+            return;
+        }
+        if (std.mem.eql(u8, sub, "bench-once")) {
+            chunk_cache.install();
+            var bench_args = std.process.Args.Iterator.init(init.minimal.args);
+            _ = bench_args.next();
+            _ = bench_args.next();
+            var voila_root: []const u8 = "/var/lib/voila";
+            var image: ?[]const u8 = null;
+            var backend: []const u8 = "erofs";
+            var probe: []const u8 = "etc/os-release";
+            var zig_fuse: []const u8 = "../zig-fuse/zig-out/bin/zig-fuse";
+            while (bench_args.next()) |arg| {
+                if (std.mem.eql(u8, arg, "-root")) {
+                    voila_root = bench_args.next() orelse return error.InvalidArgs;
+                } else if (std.mem.eql(u8, arg, "-image")) {
+                    image = bench_args.next();
+                } else if (std.mem.eql(u8, arg, "-backend")) {
+                    backend = bench_args.next() orelse return error.InvalidArgs;
+                } else if (std.mem.eql(u8, arg, "-probe")) {
+                    probe = bench_args.next() orelse return error.InvalidArgs;
+                } else if (std.mem.eql(u8, arg, "-zig-fuse")) {
+                    zig_fuse = bench_args.next() orelse return error.InvalidArgs;
+                }
+            }
+            if (image == null) return error.InvalidArgs;
+            try bench_mount.benchOnce(allocator, voila_root, zig_fuse, image.?, backend, probe);
             return;
         }
     }

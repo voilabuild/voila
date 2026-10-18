@@ -82,6 +82,7 @@ const Entry = struct {
     compact: bool = false,
     layout: u8 = LayoutFlatPlain,
     trailing: usize = 0,
+    dirent_bytes: usize = 0,
     xattr_size: usize = 0,
     data_blk_addr: u32 = 0,
     file_slots: []u64,
@@ -414,6 +415,7 @@ fn planLayout(allocator: std.mem.Allocator, entries: []Entry, build_time: u64, b
             },
             .dir => {
                 const ds = try direntDataSize(allocator, e, entries);
+                e.dirent_bytes = ds;
                 const in_block = (current_off + header_size) % block_size;
                 if (ds > 0 and in_block + ds <= block_size) {
                     e.layout = LayoutFlatInline;
@@ -670,7 +672,7 @@ fn writeInode(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), e: *const E
         .device => inode_data = e.rdev,
     }
     if (e.kind == .dir) {
-        file_size = e.trailing;
+        file_size = e.dirent_bytes;
     } else if (e.kind == .symlink) {
         file_size = e.sym_target.len;
     }

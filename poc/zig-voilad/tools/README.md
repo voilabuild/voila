@@ -10,9 +10,11 @@ Benches use `sudo`, `drop_caches`, FUSE, and NBD. **Do not start multiple driver
 
 ## Scripts
 
+- `e2e_acceptance.sh` — four-backend **acceptance** suite (mount → hello/symlink/nested/multichunk/permissions → teardown). Uses `acceptance_cases.sh`, flock, and per-backend timeouts. Run Zig EROFS first; warm store recommended (`VOILA_ROOT=/tmp/voila-python313`).
 - `e2e_fourway.sh` — cold fetch (capped) + 7×4 paths.
 - `run_bench_quick.py` — warm store, 7×4 paths (set `VOILA_BENCH_SKIP_ZIG_EROFS=1` on large images if Zig EROFS is not yet rootfs-ready).
 - `e2e_mount_bench/` — Go timing helper for FUSE/EROFS.
+- `e2e_acceptance/` — Go mount driver for acceptance (FUSE/EROFS).
 
 Example (warm store, safe defaults):
 

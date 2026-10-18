@@ -42,6 +42,28 @@ fn createStaticBlake3(
             "blake3_portable.c",
         },
     });
+    switch (target.result.cpu.arch) {
+        .x86_64 => {
+            if (target.result.os.tag == .windows) {
+                lib.root_module.addAssemblyFile(blake3_dep.path("c/blake3_sse2_x86-64_windows_gnu.S"));
+                lib.root_module.addAssemblyFile(blake3_dep.path("c/blake3_sse41_x86-64_windows_gnu.S"));
+                lib.root_module.addAssemblyFile(blake3_dep.path("c/blake3_avx2_x86-64_windows_gnu.S"));
+                lib.root_module.addAssemblyFile(blake3_dep.path("c/blake3_avx512_x86-64_windows_gnu.S"));
+            } else {
+                lib.root_module.addAssemblyFile(blake3_dep.path("c/blake3_sse2_x86-64_unix.S"));
+                lib.root_module.addAssemblyFile(blake3_dep.path("c/blake3_sse41_x86-64_unix.S"));
+                lib.root_module.addAssemblyFile(blake3_dep.path("c/blake3_avx2_x86-64_unix.S"));
+                lib.root_module.addAssemblyFile(blake3_dep.path("c/blake3_avx512_x86-64_unix.S"));
+            }
+        },
+        .aarch64, .aarch64_be => {
+            lib.root_module.addCSourceFiles(.{
+                .root = c_root,
+                .files = &.{"blake3_neon.c"},
+            });
+        },
+        else => {},
+    }
     lib.root_module.addIncludePath(c_root);
     return lib;
 }
@@ -254,6 +276,57 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const chunk_cache_mod = b.createModule(.{
+        .root_source_file = b.path("src/chunk_cache.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "voilad_nbd", .module = voilad_nbd_mod },
+            .{ .name = "posix_util", .module = posix_util_mod },
+            .{ .name = "voila_http", .module = voila_http_mod },
+            .{ .name = "voila_registry", .module = voila_registry_mod },
+            .{ .name = "blake3_c", .module = blake3_mod },
+        },
+    });
+    linkStaticBlake3(chunk_cache_mod, blake3_lib);
+
+    const accept_suite_mod = b.createModule(.{
+        .root_source_file = b.path("src/accept_suite.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "posix_util", .module = posix_util_mod },
+            .{ .name = "runtime", .module = runtime_mod },
+            .{ .name = "voila_resolve", .module = voila_resolve_mod },
+            .{ .name = "mount_backend", .module = mount_backend_mod },
+            .{ .name = "erofs_mount", .module = erofs_mount_mod },
+            .{ .name = "chunk_cache", .module = chunk_cache_mod },
+            .{ .name = "registry_creds", .module = registry_creds_mod },
+            .{ .name = "voila_registry", .module = voila_registry_mod },
+            .{ .name = "voilad_nbd", .module = voilad_nbd_mod },
+        },
+    });
+
+    const bench_mount_mod = b.createModule(.{
+        .root_source_file = b.path("src/bench_mount.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "posix_util", .module = posix_util_mod },
+            .{ .name = "runtime", .module = runtime_mod },
+            .{ .name = "voila_resolve", .module = voila_resolve_mod },
+            .{ .name = "mount_backend", .module = mount_backend_mod },
+            .{ .name = "erofs_mount", .module = erofs_mount_mod },
+            .{ .name = "chunk_cache", .module = chunk_cache_mod },
+            .{ .name = "registry_creds", .module = registry_creds_mod },
+            .{ .name = "voila_registry", .module = voila_registry_mod },
+            .{ .name = "voilad_nbd", .module = voilad_nbd_mod },
+        },
+    });
+
     const sync_util_mod = b.createModule(.{
         .root_source_file = b.path("src/sync_util.zig"),
         .target = target,
@@ -317,6 +390,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "registry_creds", .module = registry_creds_mod },
             .{ .name = "mount_backend", .module = mount_backend_mod },
             .{ .name = "erofs_mount", .module = erofs_mount_mod },
+            .{ .name = "chunk_cache", .module = chunk_cache_mod },
         },
     });
 
@@ -349,9 +423,13 @@ pub fn build(b: *std.Build) void {
             .{ .name = "voila_registry", .module = voila_registry_mod },
             .{ .name = "mount_backend", .module = mount_backend_mod },
             .{ .name = "erofs_mount", .module = erofs_mount_mod },
+            .{ .name = "chunk_cache", .module = chunk_cache_mod },
+            .{ .name = "bench_mount", .module = bench_mount_mod },
+            .{ .name = "accept_suite", .module = accept_suite_mod },
         },
     });
     root_mod.link_libcpp = false;
+    linkStaticBlake3(root_mod, blake3_lib);
 
     const zig_obj = b.addObject(.{
         .name = "zig_voilad_zig",
