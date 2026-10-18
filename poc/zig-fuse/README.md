@@ -13,7 +13,7 @@ zig build
 ./zig-out/bin/zig-fuse run -root /path/to/store IMAGE_REF -- /usr/local/bin/python3 -c 'print("hello")'
 ```
 
-`ps`, `logs`, and `kill` are wired to the same runtime interface and return not-implemented on local until detached run exists.
+`pull` and `images` use the runtime against `registry.creds` (Drift: `https://drift-registry-production.up.railway.app/registry` + token). `ps`, `logs`, and `kill` return not-implemented on local until detached run exists.
 
 ## What stayed in Go
 

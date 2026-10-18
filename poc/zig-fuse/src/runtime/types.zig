@@ -22,3 +22,11 @@ pub const KillSpec = struct {
     context_id: []const u8,
     signal: i32 = 0,
 };
+
+pub const PullSpec = struct {
+    image: []const u8,
+};
+
+pub const ImageInfo = struct {
+    ref: []const u8,
+};
