@@ -38,7 +38,7 @@ drop_caches() {
 }
 
 parse_ms() {
-  sed -n 's/^rootfs_ready_ms=\([0-9.]*\).*/\1/p'
+  sed -n 's/.*rootfs_ready_ms=\([0-9.]*\).*/\1/p' | head -1
 }
 
 stats() {
@@ -81,10 +81,10 @@ bench_path() {
     drop_caches
     set +e
     case "$kind" in
-      zig-erofs) line="$(run_zig erofs 2>/dev/null)" ;;
-      zig-fuse) line="$(run_zig fuse 2>/dev/null)" ;;
-      go-fuse) line="$(run_go fuse 2>/dev/null)" ;;
-      go-erofs) line="$(run_go erofs 2>/dev/null)" ;;
+      zig-erofs) line="$(run_zig erofs 2>&1)" ;;
+      zig-fuse) line="$(run_zig fuse 2>&1)" ;;
+      go-fuse) line="$(run_go fuse 2>&1)" ;;
+      go-erofs) line="$(run_go erofs 2>&1)" ;;
       *) echo "unknown kind $kind" >&2; exit 1 ;;
     esac
     rc=$?
@@ -95,10 +95,11 @@ bench_path() {
     fi
     ms="$(echo "$line" | parse_ms)"
     if [[ -z "$ms" ]]; then
-      echo "run $i $name failed"
+      echo "run $i $name failed" >&2
+      echo "$line" | tail -5 >&2
     else
       times+=("$ms")
-      echo "run $i $name ms=$ms"
+      echo "run $i $name ms=$ms" >&2
     fi
   done
   if [[ ${#times[@]} -eq 0 ]]; then
@@ -144,7 +145,9 @@ echo "chunks_on_disk=$chunk_count"
 echo "=== four-way ($RUNS runs each, drop_caches per run) ==="
 RESULT_FILE="$(mktemp)"
 for p in zig-erofs zig-fuse go-fuse go-erofs; do
-  bench_path "$p" "$p" | tee -a "$RESULT_FILE"
+  line="$(bench_path "$p" "$p")"
+  echo "$line" >> "$RESULT_FILE"
+  echo "$line"
 done
 
 echo ""

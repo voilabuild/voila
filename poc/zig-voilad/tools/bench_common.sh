@@ -23,8 +23,9 @@ bench_cleanup_mounts() {
   umount -l /tmp/zig-voilad-bench-mnt 2>/dev/null || true
   umount -l /tmp/go-voilad-bench-mnt 2>/dev/null || true
   if command -v nbd-client >/dev/null 2>&1; then
-    for i in $(seq 0 15); do
-      nbd-client -d "/dev/nbd$i" 2>/dev/null || true
+    local nbd_i
+    for nbd_i in $(seq 0 15); do
+      nbd-client -d "/dev/nbd${nbd_i}" 2>/dev/null || true
     done
   fi
 }
