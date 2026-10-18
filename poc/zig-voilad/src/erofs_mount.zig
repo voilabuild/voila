@@ -38,6 +38,7 @@ pub fn mountStoreRoot(
     lower_dir: []const u8,
     nbd_path: []const u8,
 ) !*NbdSession {
+    voila_tree.prefetch_io = runtime.io;
     var tree = try voila_tree.openTreeEager(allocator, voila_root, merged_root_hex);
     defer tree.deinit();
 

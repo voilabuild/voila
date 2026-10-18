@@ -11,6 +11,7 @@ pub fn buildBoundaryFixture(allocator: std.mem.Allocator) !erofs_build.BuildResu
         .voila_root = try allocator.dupe(u8, ""),
         .allocator = allocator,
         .manifest_hex_loaded = std.StringHashMap(void).init(allocator),
+        .manifest_hex_failed = std.StringHashMap(void).init(allocator),
         .dir_by_inode = std.AutoHashMap(u64, voila_manifest_proto.DirMsg).init(allocator),
         .file_by_inode = std.AutoHashMap(u64, voila_manifest_proto.FileMsg).init(allocator),
         .symlink_by_inode = std.AutoHashMap(u64, voila_manifest_proto.SymlinkMsg).init(allocator),
