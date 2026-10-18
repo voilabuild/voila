@@ -142,7 +142,7 @@ pub const Session = struct {
     }
 };
 
-pub fn mountSession(allocator: std.mem.Allocator, mountpoint: []const u8, vfs: *fuse_vfs.FuseVfs) !Session {
+pub fn mountSession(allocator: std.mem.Allocator, mountpoint: []const u8, vfs: *fuse_vfs.FuseVfs, fuse_opts: []const u8) !Session {
     const mnt = try allocator.dupe(u8, mountpoint);
     errdefer allocator.free(mnt);
     const mnt_z = try allocator.allocSentinel(u8, mnt.len, 0);
@@ -162,7 +162,11 @@ pub fn mountSession(allocator: std.mem.Allocator, mountpoint: []const u8, vfs: *
     const prog_ptr: [*c]const u8 = @ptrCast(prog_z.ptr);
     if (c.fuse_opt_add_arg(&args, prog_ptr) != 0) return error.FuseArgsFailed;
     if (c.fuse_opt_add_arg(&args, "-o") != 0) return error.FuseArgsFailed;
-    if (c.fuse_opt_add_arg(&args, "ro,allow_other") != 0) return error.FuseArgsFailed;
+    const opts_z = try allocator.allocSentinel(u8, fuse_opts.len, 0);
+    defer allocator.free(opts_z);
+    @memcpy(opts_z, fuse_opts);
+    const opts_ptr: [*c]const u8 = @ptrCast(opts_z.ptr);
+    if (c.fuse_opt_add_arg(&args, opts_ptr) != 0) return error.FuseArgsFailed;
 
     const fuse_ops = ops();
     const private_data: ?*anyopaque = @ptrCast(vfs);
@@ -189,8 +193,8 @@ pub fn serveSession(session: *Session) !void {
     if (rc != 0) return error.FuseLoopFailed;
 }
 
-pub fn mountAndServe(allocator: std.mem.Allocator, vfs: *fuse_vfs.FuseVfs, mountpoint: []const u8) !void {
-    var session = try mountSession(allocator, mountpoint, vfs);
+pub fn mountAndServe(allocator: std.mem.Allocator, vfs: *fuse_vfs.FuseVfs, mountpoint: []const u8, fuse_opts: []const u8) !void {
+    var session = try mountSession(allocator, mountpoint, vfs, fuse_opts);
     defer session.deinit();
     try serveSession(&session);
 }
