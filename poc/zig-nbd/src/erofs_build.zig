@@ -796,11 +796,12 @@ pub fn build(allocator: std.mem.Allocator, tree: *voila_tree.Tree) !BuildResult 
             .device => {},
         }
         const inode_size: usize = if (e.compact) InodeCompact else InodeExtended;
-        const total = inode_size + e.trailing;
+        const total = inode_size + e.xattr_size + e.trailing;
         const padded = if (total % 32 != 0) (total + 31) & ~@as(usize, 31) else total;
-        if (padded > inode_size + e.trailing) {
-            try meta_buf.appendNTimes(allocator, 0, padded - inode_size - e.trailing);
-            meta_pos += padded - inode_size - e.trailing;
+        const inode_end = expected + padded;
+        if (meta_pos < inode_end) {
+            try meta_buf.appendNTimes(allocator, 0, inode_end - meta_pos);
+            meta_pos = inode_end;
         }
     }
     if (meta_buf.items.len % BlockSize != 0) {
