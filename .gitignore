@@ -23,3 +23,8 @@
 # Railway local config (kept in working tree for `railway up`, not committed)
 .railway/
 railway.json
+
+# Zig
+zig-pkg/
+.zig-cache/
+zig-out/
