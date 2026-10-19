@@ -124,9 +124,9 @@ fn upsertImagesDb(
     const ref_z = try allocator.allocSentinel(u8, store_ref.len, 0);
     defer allocator.free(ref_z);
     @memcpy(ref_z, store_ref);
-    _ = sqlite.sqlite3_bind_text(stmt, 1, ref_z, -1, sqlite.SQLITE_TRANSIENT);
-    _ = sqlite.sqlite3_bind_blob(stmt, 2, man.image_digest.ptr, @intCast(man.image_digest.len), sqlite.SQLITE_TRANSIENT);
-    _ = sqlite.sqlite3_bind_blob(stmt, 3, man.merged_root.ptr, @intCast(man.merged_root.len), sqlite.SQLITE_TRANSIENT);
+    _ = sqlite.sqlite3_bind_text(stmt, 1, ref_z, -1, sqlite.SQLITE_STATIC);
+    _ = sqlite.sqlite3_bind_blob(stmt, 2, man.image_digest.ptr, @intCast(man.image_digest.len), sqlite.SQLITE_STATIC);
+    _ = sqlite.sqlite3_bind_blob(stmt, 3, man.merged_root.ptr, @intCast(man.merged_root.len), sqlite.SQLITE_STATIC);
     _ = sqlite.sqlite3_bind_int64(stmt, 4, @intCast(man.total_size));
     _ = sqlite.sqlite3_bind_int64(stmt, 5, @intCast(man.chunk_count));
     _ = sqlite.sqlite3_bind_int64(stmt, 6, now);

@@ -139,7 +139,7 @@ fn upsertChunkIndex(
     var stmt: ?*sqlite.sqlite3_stmt = null;
     if (sqlite.sqlite3_prepare_v2(db_ptr, sql, -1, &stmt, null) != sqlite.SQLITE_OK) return error.SqlitePrepare;
     defer _ = sqlite.sqlite3_finalize(stmt);
-    _ = sqlite.sqlite3_bind_blob(stmt, 1, &id, 32, sqlite.SQLITE_TRANSIENT);
+    _ = sqlite.sqlite3_bind_blob(stmt, 1, &id, 32, sqlite.SQLITE_STATIC);
     _ = sqlite.sqlite3_bind_int64(stmt, 2, @intCast(logical_len));
     _ = sqlite.sqlite3_bind_int64(stmt, 3, @intCast(stored_len));
     _ = sqlite.sqlite3_bind_int64(stmt, 4, algo);
