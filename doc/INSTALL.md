@@ -14,11 +14,15 @@ section is all you need — the registry + auth sections are only required to
 
 ### One-shot installer (Linux)
 
-On a Linux host (voilad + `voila run` are Linux-only — the runtime uses runc,
-and mounts the rootfs via EROFS+NBD by default, falling back to FUSE when the
-host lacks EROFS support), the quickest path is the installer script, which
-downloads the latest release, verifies the SHA256, installs `voila` + `voilad` +
-`voila-registry` into `/usr/local/bin`, and configures the CLI env:
+On a Linux host (amd64 or arm64), the quickest path for the **daemonless Zig CLI**
+(`zig-fuse`, `run` and lifecycle commands) is the installer script. It downloads
+the per-arch release binary, verifies `zig-fuse-checksums.txt`, installs
+`zig-fuse` into `/usr/local/bin`, enables `user_allow_other` in `/etc/fuse.conf`
+when run with sudo, and configures `VOILA_ROOT` / optional registry env:
+
+The Go stack (`voila` + `voilad` + `voila-registry`) is still published on the
+same GitHub releases as tarballs (`voila_<tag>_linux_<arch>.tar.gz`); use those
+for the EROFS+NBD daemon path. The installer script targets the Zig CLI only.
 
 ```bash
 curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sudo bash
@@ -33,13 +37,10 @@ piping via `curl | sudo bash`).
 
 Useful flags (see `install.sh --help`):
 
-- `--with-systemd` — also install + enable a `voilad` systemd unit.
 - `--prefix <dir>` — install elsewhere (default `/usr/local/bin`).
 - `--version <tag>` — pin a specific release instead of latest.
-- `--install-prereqs` — install missing `runc` via the distro package manager
-  (apt-get / dnf / yum / zypper).
-- `--install-fuse` — also install `fuse3` + enable `user_allow_other`, for hosts
-  that need the FUSE fallback backend (the default is EROFS+NBD).
+- `--install-prereqs` — install missing `runc` and `fuse3` via the distro package
+  manager (apt-get / dnf / yum / zypper).
 - `--registry <url>` / `--registry ""` — set or clear the default registry
   (the installer writes it into `/etc/profile.d/voila.sh`).
 - `--token <key>` — configure a registry API key (`dreg_...`) non-interactively

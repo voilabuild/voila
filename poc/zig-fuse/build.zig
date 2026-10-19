@@ -221,6 +221,17 @@ pub fn build(b: *std.Build) void {
     });
     const run_abi_tests = b.addRunArtifact(tests);
 
+    const fuse_linux_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/fuse_conf_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    fuse_linux_tests.root_module.linkSystemLibrary("fuse3", .{});
+    const run_fuse_linux_tests = b.addRunArtifact(fuse_linux_tests);
+
     const walker_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/read_walker.zig"),
@@ -269,6 +280,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_abi_tests.step);
+    test_step.dependOn(&run_fuse_linux_tests.step);
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&run_voila_store_tests.step);
     test_step.dependOn(&run_loader_tests.step);
