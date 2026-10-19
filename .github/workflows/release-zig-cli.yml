@@ -1,0 +1,108 @@
+# release-zig-cli.yml — build zig-fuse (daemonless Zig CLI) for linux/amd64 + arm64
+# and attach binaries to the GitHub Release created by release.yml (GoReleaser).
+
+name: release-zig-cli
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+            zig_archive: zig-x86_64-linux-0.17.0
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            zig_archive: zig-aarch64-linux-0.17.0
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.17.0
+        env:
+          ZIG_VERSION: 0.17.0
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/${{ matrix.zig_archive }}-${ZIG_VERSION}.tar.xz" \
+            | tar -xJ
+          echo "$PWD/${{ matrix.zig_archive }}-${ZIG_VERSION}" >> "$GITHUB_PATH"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            pkg-config libfuse3-dev libsqlite3-dev libcurl4-openssl-dev
+
+      - name: Build zig-fuse
+        working-directory: poc/zig-fuse
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Package release binary
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('workflow-{0}', github.run_id) }}
+        run: |
+          set -euo pipefail
+          asset="zig-fuse_${TAG}_linux_${{ matrix.arch }}"
+          cp "poc/zig-fuse/zig-out/bin/zig-fuse" "$asset"
+          sha256sum "$asset" > "${asset}.sha256"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zig-fuse-${{ matrix.arch }}
+          path: |
+            zig-fuse_*_linux_${{ matrix.arch }}
+            zig-fuse_*_linux_${{ matrix.arch }}.sha256
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Merge checksums
+        run: |
+          set -euo pipefail
+          cat dist/*.sha256 > dist/zig-fuse-checksums.txt
+          ls -la dist/
+
+      - name: Wait for GoReleaser release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 90); do
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "timed out waiting for release $TAG (release.yml / GoReleaser)" >&2
+          exit 1
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/zig-fuse_*_linux_amd64
+            dist/zig-fuse_*_linux_arm64
+            dist/zig-fuse-checksums.txt
+          fail_on_unmatched_files: true

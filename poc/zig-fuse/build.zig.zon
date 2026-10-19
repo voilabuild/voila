@@ -6,7 +6,7 @@
     .dependencies = .{
         .zio = .{
             .url = "git+https://github.com/lalinsky/zio#main",
-            .hash = "zio-0.19.0-xHbVVN3FLABm8N_sLa1zfHWookpE3lCqjjoHw8Xr4GTF",
+            .hash = "zio-0.19.0-xHbVVCfXLACY4UlUXdbGZJDU1FkIXktIgdc317cB01Gc",
         },
         .zstd = .{
             .url = "git+https://github.com/allyourcodebase/zstd?ref=master#4ccb01e6fceae86fb9fe36c60b8a103cdc058155",
