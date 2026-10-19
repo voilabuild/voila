@@ -34,9 +34,9 @@ jobs:
           ZIG_VERSION: 0.17.0
         run: |
           set -euo pipefail
-          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/${{ matrix.zig_archive }}-${ZIG_VERSION}.tar.xz" \
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/${{ matrix.zig_archive }}.tar.xz" \
             | tar -xJ
-          echo "$PWD/${{ matrix.zig_archive }}-${ZIG_VERSION}" >> "$GITHUB_PATH"
+          echo "$PWD/${{ matrix.zig_archive }}" >> "$GITHUB_PATH"
 
       - name: Install build dependencies
         run: |
