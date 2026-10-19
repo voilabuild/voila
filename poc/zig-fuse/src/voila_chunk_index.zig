@@ -18,7 +18,7 @@ pub fn compAlgoForChunk(voila_root: []const u8, chunk_id: []const u8) !i32 {
     if (sqlite.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != sqlite.SQLITE_OK) return error.SqlitePrepare;
     defer _ = sqlite.sqlite3_finalize(stmt);
 
-    _ = sqlite.sqlite3_bind_blob(stmt, 1, chunk_id.ptr, @intCast(chunk_id.len), sqlite.SQLITE_TRANSIENT);
+    _ = sqlite.sqlite3_bind_blob(stmt, 1, chunk_id.ptr, @intCast(chunk_id.len), sqlite.SQLITE_STATIC);
     const step = sqlite.sqlite3_step(stmt);
     if (step == sqlite.SQLITE_DONE) return error.ChunkNotFound;
     if (step != sqlite.SQLITE_ROW) return error.SqliteStep;
