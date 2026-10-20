@@ -16,25 +16,29 @@ fn negErr(e: std.posix.E) c_int {
     return -@as(c_int, @intCast(@intFromEnum(e)));
 }
 
-fn fillStatFromAttr(vfs: *fuse_vfs.FuseVfs, ino: u64, stbuf: [*c]c.struct_stat) bool {
+fn fillStatFromAttr(vfs: *fuse_vfs.FuseVfs, ino: u64, stbuf: ?*c.struct_stat) bool {
     const attr = vfs.attr(ino) orelse return false;
-    const st: *c.struct_stat = @ptrCast(stbuf);
-    st.* = std.mem.zeroes(c.struct_stat);
-    st.st_ino = ino;
-    st.st_mode = attr.mode;
-    st.st_nlink = attr.nlink;
-    st.st_uid = attr.uid;
-    st.st_gid = attr.gid;
-    st.st_size = @bitCast(@as(i64, @intCast(attr.size)));
-    st.st_blksize = @intCast(attr.blksize);
-    st.st_blocks = @bitCast(@as(i64, @intCast(attr.blocks)));
-    st.st_atim = .{ .tv_sec = @bitCast(@as(isize, @intCast(attr.atime))), .tv_nsec = @intCast(attr.atime_nsec) };
-    st.st_mtim = .{ .tv_sec = @bitCast(@as(isize, @intCast(attr.mtime))), .tv_nsec = @intCast(attr.mtime_nsec) };
-    st.st_ctim = .{ .tv_sec = @bitCast(@as(isize, @intCast(attr.ctime))), .tv_nsec = @intCast(attr.ctime_nsec) };
+    c.voila_fuse_fill_stat(
+        stbuf,
+        ino,
+        attr.mode,
+        attr.nlink,
+        attr.uid,
+        attr.gid,
+        @intCast(attr.size),
+        @intCast(attr.blksize),
+        @intCast(attr.blocks),
+        @intCast(attr.atime),
+        @intCast(attr.atime_nsec),
+        @intCast(attr.mtime),
+        @intCast(attr.mtime_nsec),
+        @intCast(attr.ctime),
+        @intCast(attr.ctime_nsec),
+    );
     return true;
 }
 
-fn getattrCb(path: [*c]const u8, stbuf: [*c]c.struct_stat, fi: ?*c.struct_fuse_file_info) callconv(.c) c_int {
+fn getattrCb(path: [*c]const u8, stbuf: ?*c.struct_stat, fi: ?*c.struct_fuse_file_info) callconv(.c) c_int {
     _ = fi;
     const vfs = vfsFromCtx();
     const ino = vfs.inoFromPath(pathSlice(path)) orelse return negErr(.NOENT);

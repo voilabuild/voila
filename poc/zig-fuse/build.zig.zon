@@ -16,11 +16,20 @@
             .url = "git+https://github.com/BLAKE3-team/BLAKE3?ref=master#f55849f89cd85083c1c9daa2c5de20766f309c00",
             .hash = "N-V-__8AAMnrGwBumfNI7pLRW-e3ONLneFXxMkMcrlvmHMn-",
         },
+        .libfuse = .{
+            .url = "https://github.com/libfuse/libfuse/archive/refs/tags/fuse-3.17.1.tar.gz",
+            .hash = "N-V-__8AAHynIAAXNb2LpzvTOphDOLgk0AMaclYJ6pqvZD4W",
+        },
+        .sqlite = .{
+            .url = "https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip",
+            .hash = "N-V-__8AAEC6owBrwhm_VrknRpx9Q_U8I_4oAcgViAD4YTp4",
+        },
     },
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
+        "c",
         "README.md",
     },
 }
