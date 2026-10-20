@@ -20,7 +20,8 @@ CGO_ENABLED=0 go build ./... && go test ./internal/worker/ ./cmd/voila/ 2>&1 | t
 echo "=== build + ingest + start daemon ==="
 go build -o /usr/local/bin/voila ./cmd/voila
 go build -o /usr/local/bin/voilad ./cmd/voilad
-go build -o /usr/local/bin/voila-registry ./cmd/voila-registry
+. "$(dirname "$0")/_build_standalone_registry.sh"
+build_voila_registry
 voila ingest -root "$ROOT" "$TARBALL" | grep "image ref"
 REF=$(voila images -root "$ROOT" | awk 'NR==2{print $1}')
 voilad -root "$ROOT" &

@@ -1,10 +1,16 @@
 # CLI reference
 
-Three binaries (`make install` builds all of them):
+Two Go binaries (`make install` builds both):
 
 - **`voila`**: the client CLI
 - **`voilad`**: the worker daemon (root, Linux-only)
-- **`voila-registry`**: the unprivileged chunk/manifest server
+
+The standalone filesystem **`voila-registry`** server was removed from this
+release line; it is preserved on branch
+[`backup/main-before-go-registry-move`](https://github.com/voilabuild/voila/tree/backup/main-before-go-registry-move).
+The hosted registry service lives in
+[`voilabuild/cloud-registry`](https://github.com/voilabuild/cloud-registry).
+This repo still ships the registry **client** (`voila push` / `pull` / `login`).
 
 > ⚠️ Very early software, not even pre-alpha: flags and behavior may change
 > at any time.
@@ -27,7 +33,6 @@ Three binaries (`make install` builds all of them):
 | `voila logout` | Remove saved registry credentials | no |
 | `voilad [-root dir] [-socket path] [-registry URL] [-trace]` | The worker daemon (root, Linux); serves gRPC on `/var/run/voila.sock`. `-trace` records a per-run chunk-access trace (JSONL: every chunk Get with hit/miss, wait time, demand/prefetch source, plus exec/exit phase markers) under `<root>/traces/` — explore with `jq`/`duckdb` | **is** the daemon |
 | `voilad mount <ref> <mountpoint> [-allow-other]` | Debug: mount a read-only FUSE view of an ingested image | no |
-| `voila-registry [-root dir] [-listen :7423]` | The HTTP chunk + ImageManifest registry server (unprivileged) | no |
 
 ## Environment variables
 
@@ -37,7 +42,7 @@ Three binaries (`make install` builds all of them):
 - `VOILA_SOCKET`: worker daemon's unix socket path (default
   `/var/run/voila.sock`); daemon-talking subcommands also accept `-socket`.
   When `-root` is set explicitly, the socket defaults to `<root>/worker.sock`.
-- `VOILA_REGISTRY`: URL of a `voila-registry`, used by push/pull/import
+- `VOILA_REGISTRY`: URL of a voila registry server, used by push/pull/import
   (also `-registry`). For a registry serving under a path prefix, set the
   full base, e.g. `http://localhost:7423/registry`; the client appends
   `/v1/...`. `voilad` also reads this (or `-registry`) for the registry

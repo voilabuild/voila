@@ -22,7 +22,8 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq && apt-get install -y -qq --no-install-recommends runc fuse3 >/dev/null 2>&1
 go build -o /usr/local/bin/voila ./cmd/voila
 go build -o /usr/local/bin/voilad ./cmd/voilad
-go build -o /usr/local/bin/voila-registry ./cmd/voila-registry
+. "$(dirname "$0")/_build_standalone_registry.sh"
+build_voila_registry
 go test ./internal/registry/ ./internal/chunkstore/ 2>&1 | tail -2
 
 echo "=== machine A: ingest + push ==="

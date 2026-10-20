@@ -23,7 +23,8 @@ go test ./... 2>&1 | tail -8
 echo "=== build voila + ingest fixture ==="
 go build -o /usr/local/bin/voila ./cmd/voila
 go build -o /usr/local/bin/voilad ./cmd/voilad
-go build -o /usr/local/bin/voila-registry ./cmd/voila-registry
+. "$(dirname "$0")/_build_standalone_registry.sh"
+build_voila_registry
 rm -rf "$ROOT" "$MNT" && mkdir -p "$MNT"
 voila ingest -root "$ROOT" "$TARBALL"
 REF=$(voila images -root "$ROOT" | awk 'NR==2{print $1}')

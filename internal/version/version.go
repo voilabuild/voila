@@ -1,5 +1,5 @@
-// Package version holds the build-time version metadata voila's three
-// binaries (voila, voilad, voila-registry) report via a top-level
+// Package version holds the build-time version metadata voila's Go
+// binaries (voila, voilad) report via a top-level
 // `-version`/`--version` flag. The values are injected at link time via
 // `-ldflags -X`:
 //

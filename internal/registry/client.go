@@ -1,6 +1,6 @@
 // client.go implements the registry client used by `voila push`,
 // `voila pull`, and the chunkstore CachedStore fetcher (via the Fetcher
-// interface). It speaks the /v1 wire protocol of package registry's Server
+// interface). It speaks the /v1 wire protocol documented in openapi.yaml
 // over stdlib net/http, with retries limited to a single, opt-in attempt
 // (v0.2 is trusted-network; no exotic backoff yet).
 package registry
@@ -30,6 +30,11 @@ import (
 // instead of re-dialing (and re-TLS-handshaking on HTTPS) on every chunk PUT.
 // The stdlib default of 2 is a severe bottleneck under concurrent push.
 const defaultMaxIdleConnsPerHost = 256
+
+// ErrBulkMissingUnsupported is returned by (*Client).MissingChunks when the
+// registry answers 404 on POST /v1/chunks/missing, i.e. it predates the
+// bulk-stat endpoint. Callers (cmd_push) fall back to per-chunk HEADs.
+var ErrBulkMissingUnsupported = errors.New("registry: bulk missing-chunks endpoint not supported")
 
 // Client is the HTTP registry client. The base URL is the registry root
 // (e.g. "http://localhost:7423"); the client appends /v1/... paths. It is safe

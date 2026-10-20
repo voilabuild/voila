@@ -22,7 +22,8 @@ go test ./internal/runtime/ ./internal/mount/ 2>&1 | tail -3
 echo "=== build + ingest ==="
 go build -o /usr/local/bin/voila ./cmd/voila
 go build -o /usr/local/bin/voilad ./cmd/voilad
-go build -o /usr/local/bin/voila-registry ./cmd/voila-registry
+. "$(dirname "$0")/_build_standalone_registry.sh"
+build_voila_registry
 voila ingest -root "$ROOT" "$TARBALL" | grep "image ref"
 REF=$(voila images -root "$ROOT" | awk 'NR==2{print $1}')
 

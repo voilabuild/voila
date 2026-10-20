@@ -21,7 +21,8 @@ CGO_ENABLED=0 go build ./... && go test ./internal/erofsadapter/ ./internal/nbd/
 echo "=== build + ingest + start daemon (EROFS backend) ==="
 go build -o /usr/local/bin/voila ./cmd/voila
 go build -o /usr/local/bin/voilad ./cmd/voilad
-go build -o /usr/local/bin/voila-registry ./cmd/voila-registry
+. "$(dirname "$0")/_build_standalone_registry.sh"
+build_voila_registry
 voila ingest -root "$ROOT" "$TARBALL" | grep "image ref"
 REF=$(voila images -root "$ROOT" | awk 'NR==2{print $1}')
 # Use the explicit /usr/local/bin/voilad path: the devcontainer image ships a
