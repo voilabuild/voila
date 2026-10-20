@@ -1,3 +1,5 @@
+//go:build testregistry
+
 // Package registry implements the HTTP chunk + image-manifest registry used
 // by `voila-registry` (server side) and `voila push` / `voila pull` / the
 // CachedStore fetcher (client side). The wire protocol is documented in the
@@ -58,11 +60,6 @@ const maxMissingBody = 8 << 20
 // maxMissingIDs is the per-request id cap on POST /v1/chunks/missing. 65536
 // is the documented wire limit; going over returns 400 (per spec).
 const maxMissingIDs = 65536
-
-// ErrBulkMissingUnsupported is returned by (*Client).MissingChunks when the
-// registry answers 404 on POST /v1/chunks/missing, i.e. it predates the
-// bulk-stat endpoint. Callers (cmd_push) fall back to per-chunk HEADs.
-var ErrBulkMissingUnsupported = errors.New("registry: bulk missing-chunks endpoint not supported")
 
 // Server is the v0.2 HTTP chunk + image-manifest registry. It is safe for
 // concurrent use; the underlying chunkstore.ChunkStore must itself be safe

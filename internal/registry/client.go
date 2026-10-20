@@ -31,6 +31,11 @@ import (
 // The stdlib default of 2 is a severe bottleneck under concurrent push.
 const defaultMaxIdleConnsPerHost = 256
 
+// ErrBulkMissingUnsupported is returned by (*Client).MissingChunks when the
+// registry answers 404 on POST /v1/chunks/missing, i.e. it predates the
+// bulk-stat endpoint. Callers (cmd_push) fall back to per-chunk HEADs.
+var ErrBulkMissingUnsupported = errors.New("registry: bulk missing-chunks endpoint not supported")
+
 // Client is the HTTP registry client. The base URL is the registry root
 // (e.g. "http://localhost:7423"); the client appends /v1/... paths. It is safe
 // for concurrent use (the underlying *http.Client has its own goroutine
