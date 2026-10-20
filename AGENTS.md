@@ -1,76 +1,50 @@
 # AGENTS.md
 
-Notes for coding agents (and humans) working in this repo.
+voila runs OCI images from a content-addressed chunk store (BLAKE3 ids, zstd blobs), mounted
+through FUSE or EROFS+NBD. Linux only. Rules: [CONTRIBUTING.md](CONTRIBUTING.md). Design: [PRD](doc/zig/PRD-code-org.md).
 
-## What this is
+## Migration state
 
-**voila** is a container tool that ingests OCI / `docker save` images into a
-content-addressed chunk store (BLAKE3-addressed, zstd-compressed blobs) and
-runs them via EROFS+NBD or FUSE. Three binaries: `voila` (client CLI),
-`voilad` (root worker daemon, Linux-only), `voila-registry` (unprivileged
-HTTP server). Pre-alpha; Go only, stdlib-leaning by design.
+- Zig is replacing Go. Do not add features to Go code (`cmd/`, `internal/`); the frozen copy lives on branch `main-legacy`.
+- Until PRD phase 2 lands, Zig code lives in `poc/zig-fuse` (CLI), `poc/zig-nbd` (EROFS/NBD) and
+  `poc/zig-voilad` (daemon). New code goes into the root layout from the PRD, not into `poc/`.
 
 ## Build & test
 
 ```
-go build ./...
-go test ./...
-go test ./cmd/voila -run TestImagesPrune -v   # single package/test
+zig build && zig build test        # root workspace, no root needed
+zig build test -Dprivileged        # needs root, /dev/fuse, nbd, erofs, runc
+zig fmt --check .
 ```
 
-Known environment-dependent failures on macOS dev machines (not yours to
-"fix" blindly): `cmd/voilad` socket-mode tests and `internal/ocireg`
-platform-default tests. Verify a failure pre-exists on a clean tree before
-investigating.
+Privileged and e2e failures in a sandbox are usually environmental. Reproduce them on a clean tree before investigating.
 
-## CLI conventions (important)
+## Layers (dependencies point down; build.zig enforces it)
 
-The CLI uses **stdlib `flag` only — no cobra/urfave/kong** (plan §2). Routing
-and help come from the tiny declarative tree in `internal/cli/command.go`
-("light cobra"). To add or change a command:
+```
+core, codec      pure, no I/O
+sys, c           OS and C access, nothing else touches std.c
+store, registry  data
+mount, runtime   Backend / Runtime interfaces + implementations
+daemon, cli, app app/ is the only place that picks implementations and reads env
+```
 
-1. **Register it in the tree**, not in prose: top-level commands live in
-   `newRoot()` in `cmd/voila/main.go`; `voila images` subcommands live in
-   `imagesSubSpecs` in `cmd/voila/images.go`. The `Name`/`Usage`/`Short`
-   fields ARE the help output — there is no hand-written usage text to edit,
-   and none should be introduced.
-2. **Commands parse their own flags** with `cli.NewFlagSet(prog, name, w)`
-   and keep the signature `func(cfg Config, args []string) error`. The tree
-   routes argv words; it does not parse flags.
-3. **Scope flags to their owner.** Subcommand-specific flags are declared
-   only for that subcommand's flag set (see how `prune`'s `-f` is declared).
-4. Use the shared helpers instead of re-rolling them: `cli.ResolveRoot`,
-   `cli.ResolveSocket`, `cli.TryProbe` (refuse destructive store operations
-   while the daemon answers), `cli.FormatBytes`/`FormatTime`/`ShortDigest`.
-5. Interactive prompts read from `cfg.Stdin` (testable); user-facing output
-   goes through `cfg.Stdout`/`cfg.Stderr`.
+## Adding an implementation (backend, launcher, transport…)
 
-## Store layer
+1. Create `src/<layer>/<impl>/` implementing that layer's interface.
+2. Register it in `src/<layer>/impls.zig`.
+3. Gate heavy deps behind a `-D<impl>` build option.
 
-- Chunks: content-addressed (`internal/chunkstore`). Deletion policy:
-  `GC(reachable)` for mark-and-sweep reclaim, `PruneAll()` for total wipe.
-  Both delete index row + blob file together.
-- Images: `internal/imagestore` owns `<root>/images.db` + `<root>/images/*.pb`.
-- Destructive store ops must guard with `cli.TryProbe(socket)` and refuse
-  while a daemon is running.
+## Do not
 
-## Testing patterns
-
-- Package-internal tests, table-style where natural; temp roots via
-  `t.TempDir()`.
-- In cmd/voila tests, reuse `ingestTinyFixture(t, ref)` /
-  `countChunksFiles(t, root)` (cmd_daemon_test.go) for store fixtures.
-- Dispatch/help behavior is tested in `internal/cli/command_test.go`; stub
-  the command tree by swapping the `newRoot` var (see cmd_run_test.go).
+- Use globals, call `getenv` in libraries, run `sh -c`, or use `anyerror` on public APIs.
+- Write long comments, history comments, or banners (see CONTRIBUTING.md § Comments).
+- Commit `zig-pkg/`, `.zig-cache/` or `zig-out/`.
 
 ## Docs
 
-User-facing command changes must update `doc/CLI.md`; anything that alters
-the architecture belongs in `doc/ARCHITECTURE.md`.
+User-facing changes go in `doc/CLI.md`; architecture changes go in `doc/ARCHITECTURE.md`.
 
 ## Skills
 
-- `e2e-product-judge` (`.opencode/skills/e2e-product-judge/`): judge voila as
-  a first-time user — install fresh, walk documented flows, probe negative
-  paths, and report ranked findings with repro commands. Load it before any
-  product-evaluation task.
+`e2e-product-judge` (`.opencode/skills/e2e-product-judge/`): first-time-user evaluation. Load it before any product-evaluation task.
