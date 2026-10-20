@@ -20,9 +20,11 @@ jobs:
         include:
           - runner: ubuntu-latest
             arch: amd64
+            zig_target: x86_64-linux-musl
             zig_archive: zig-x86_64-linux-0.17.0
           - runner: ubuntu-24.04-arm
             arch: arm64
+            zig_target: aarch64-linux-musl
             zig_archive: zig-aarch64-linux-0.17.0
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -38,15 +40,20 @@ jobs:
             | tar -xJ
           echo "$PWD/${{ matrix.zig_archive }}" >> "$GITHUB_PATH"
 
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update -y
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            pkg-config libfuse3-dev libsqlite3-dev libcurl4-openssl-dev
-
       - name: Build zig-fuse
         working-directory: poc/zig-fuse
-        run: zig build -Doptimize=ReleaseSafe
+        run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.zig_target }}
+
+      - name: Require a fully static binary
+        working-directory: poc/zig-fuse
+        run: |
+          set -euo pipefail
+          file zig-out/bin/zig-fuse | grep -q 'statically linked'
+          if readelf -d zig-out/bin/zig-fuse | grep -q NEEDED; then
+            echo "zig-fuse still has dynamic library dependencies" >&2
+            readelf -d zig-out/bin/zig-fuse >&2
+            exit 1
+          fi
 
       - name: Package release binary
         env:
@@ -85,11 +92,12 @@ jobs:
       - name: Wait for GoReleaser release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           for _ in $(seq 1 90); do
-            if gh release view "$TAG" >/dev/null 2>&1; then
+            if gh release view "$TAG" -R "$GH_REPO" >/dev/null 2>&1; then
               exit 0
             fi
             sleep 10

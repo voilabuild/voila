@@ -31,7 +31,7 @@ Zig does not rebuild the fixture.
 
 ## Checks (pass bar)
 
-On Linux as root with `/dev/fuse` and **libfuse3** dev headers/libs installed (e.g. `libfuse3-dev` on Debian/Ubuntu), plus **libsqlite3-dev** for native store loading:
+The release binary is fully static (musl). It does not need `libfuse3.so`, `libsqlite3.so`, or `libcurl.so` on the host. Runtime still needs `/dev/fuse` and `fusermount3` for rootless mounts. `zig build` defaults to `-Dtarget=<arch>-linux-musl` and compiles libfuse 3.17.1 and the sqlite amalgamation into the binary. Registry HTTP uses `std.http`.
 
 1. Root listing exposes `big.bin` and `link`
 2. `readlink` of `link` is `big.bin`
@@ -90,6 +90,6 @@ sudo ./zig-out/bin/zig-fuse serve-index /tmp/zig-index.json /tmp/mnt
 ## Build deps
 
 - Zig 0.17
-- `pkg-config fuse3` (links `-lfuse3 -lpthread`, includes under `/usr/include/fuse3`)
-- `libsqlite3-dev` (native ref resolution)
 - Go toolchain (fixture writer and optional export tool)
+
+libfuse, sqlite, zstd, and BLAKE3 are compiled into the binary. No system `-dev` packages.

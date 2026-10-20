@@ -72,13 +72,24 @@ fn linkStaticBlake3(mod: *std.Build.Module, blake3_lib: *std.Build.Step.Compile)
     mod.linkLibrary(blake3_lib);
 }
 
-fn addFuse3Shim(
+const fuse_c_flags = [_][]const u8{
+    "-std=gnu11",
+    "-D_GNU_SOURCE",
+    "-D_REENTRANT",
+    "-D_FILE_OFFSET_BITS=64",
+    "-DHAVE_LIBFUSE_PRIVATE_CONFIG_H",
+    "-DFUSE_USE_VERSION=317",
+    "-DFUSERMOUNT_DIR=\"/usr/bin\"",
+};
+
+fn createStaticFuse(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-) struct { mod: *std.Build.Module, lib: *std.Build.Step.Compile } {
+) *std.Build.Step.Compile {
+    const fuse_dep = b.dependency("libfuse", .{});
     const lib = b.addLibrary(.{
-        .name = "voila_fuse3_shim",
+        .name = "fuse3",
         .linkage = .static,
         .root_module = b.createModule(.{
             .target = target,
@@ -86,33 +97,68 @@ fn addFuse3Shim(
             .link_libc = true,
         }),
     });
+    lib.root_module.addIncludePath(b.path("c"));
+    lib.root_module.addIncludePath(fuse_dep.path("include"));
+    lib.root_module.addIncludePath(fuse_dep.path("lib"));
+    lib.root_module.addCSourceFiles(.{
+        .root = fuse_dep.path("lib"),
+        .files = &.{
+            "fuse.c",
+            "fuse_loop.c",
+            "fuse_loop_mt.c",
+            "fuse_lowlevel.c",
+            "fuse_opt.c",
+            "fuse_signals.c",
+            "buffer.c",
+            "cuse_lowlevel.c",
+            "helper.c",
+            "modules/subdir.c",
+            "mount_util.c",
+            "fuse_log.c",
+            "compat.c",
+            "util.c",
+            "mount.c",
+        },
+        .flags = &fuse_c_flags,
+    });
     lib.root_module.addCSourceFiles(.{
         .root = b.path("src"),
         .files = &.{"fuse3_shim.c"},
+        .flags = &fuse_c_flags,
     });
     lib.root_module.addIncludePath(b.path("src"));
-    lib.root_module.linkSystemLibrary("fuse3", .{});
+    return lib;
+}
 
+fn addFuse3Module(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    fuse_lib: *std.Build.Step.Compile,
+) *std.Build.Module {
+    const fuse_dep = b.dependency("libfuse", .{});
     const translate = b.addTranslateC(.{
         .root_source_file = b.path("src/fuse3_shim.h"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
+    translate.addIncludePath(b.path("c"));
+    translate.addIncludePath(fuse_dep.path("include"));
     translate.addIncludePath(b.path("src"));
     const mod = translate.createModule();
-    mod.linkLibrary(lib);
-    mod.linkSystemLibrary("fuse3", .{});
-    return .{ .mod = mod, .lib = lib };
+    mod.linkLibrary(fuse_lib);
+    return mod;
 }
 
-fn addCurlShim(
+fn createStaticSqlite(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-) struct { mod: *std.Build.Module, lib: *std.Build.Step.Compile } {
+) *std.Build.Step.Compile {
+    const sqlite_dep = b.dependency("sqlite", .{});
     const lib = b.addLibrary(.{
-        .name = "voila_curl_shim",
+        .name = "sqlite3",
         .linkage = .static,
         .root_module = b.createModule(.{
             .target = target,
@@ -120,25 +166,26 @@ fn addCurlShim(
             .link_libc = true,
         }),
     });
+    lib.root_module.addIncludePath(sqlite_dep.path("."));
     lib.root_module.addCSourceFiles(.{
-        .root = b.path("src"),
-        .files = &.{"curl_shim.c"},
+        .root = sqlite_dep.path("."),
+        .files = &.{"sqlite3.c"},
+        .flags = &.{
+            "-std=c99",
+            "-DSQLITE_THREADSAFE=1",
+            "-DSQLITE_OMIT_LOAD_EXTENSION",
+            "-DSQLITE_DQS=0",
+        },
     });
-    lib.root_module.linkSystemLibrary("curl", .{});
-
-    const translate = b.addTranslateC(.{
-        .root_source_file = b.path("src/curl_shim.h"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    const mod = translate.createModule();
-    mod.linkLibrary(lib);
-    return .{ .mod = mod, .lib = lib };
+    return lib;
 }
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    // musl by default so `zig build` emits one static binary. GNU libc cannot
+    // be statically linked; a dynamic glibc CLI breaks across FUSE SONAMEs.
+    const target = b.standardTargetOptions(.{
+        .default_target = .{ .abi = .musl },
+    });
     const optimize = b.standardOptimizeOption(.{});
 
     const zio = b.dependency("zio", .{
@@ -170,18 +217,20 @@ pub fn build(b: *std.Build) void {
     const zstd_mod = zstd_translate.createModule();
     linkStaticZstd(b, target, optimize, zstd_mod);
 
+    const sqlite_dep = b.dependency("sqlite", .{});
+    const sqlite_lib = createStaticSqlite(b, target, optimize);
     const sqlite_translate = b.addTranslateC(.{
         .root_source_file = b.path("src/sqlite_shim.h"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
+    sqlite_translate.addIncludePath(sqlite_dep.path("."));
     const sqlite_mod = sqlite_translate.createModule();
-    sqlite_mod.linkSystemLibrary("sqlite3", .{});
+    sqlite_mod.linkLibrary(sqlite_lib);
 
-    const fuse3 = addFuse3Shim(b, target, optimize);
-
-    const curl = addCurlShim(b, target, optimize);
+    const fuse_lib = createStaticFuse(b, target, optimize);
+    const fuse3_mod = addFuse3Module(b, target, optimize, fuse_lib);
 
     const root_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -190,19 +239,14 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{
             .{ .name = "zio", .module = zio.module("zio") },
-            .{ .name = "fuse3", .module = fuse3.mod },
+            .{ .name = "fuse3", .module = fuse3_mod },
             .{ .name = "zstd", .module = zstd_mod },
             .{ .name = "blake3_c", .module = blake3_mod },
             .{ .name = "sqlite_c", .module = sqlite_mod },
-            .{ .name = "curl_c", .module = curl.mod },
         },
     });
-    root_mod.linkSystemLibrary("fuse3", .{});
-    root_mod.linkLibrary(fuse3.lib);
-    root_mod.linkSystemLibrary("pthread", .{});
-    root_mod.linkSystemLibrary("sqlite3", .{});
-    root_mod.linkSystemLibrary("curl", .{});
-    root_mod.linkLibrary(curl.lib);
+    root_mod.linkLibrary(fuse_lib);
+    root_mod.linkLibrary(sqlite_lib);
     linkStaticZstd(b, target, optimize, root_mod);
     linkStaticBlake3(root_mod, blake3_lib);
 
@@ -227,9 +271,12 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
+            .imports = &.{
+                .{ .name = "fuse3", .module = fuse3_mod },
+            },
         }),
     });
-    fuse_linux_tests.root_module.linkSystemLibrary("fuse3", .{});
+    fuse_linux_tests.root_module.linkLibrary(fuse_lib);
     const run_fuse_linux_tests = b.addRunArtifact(fuse_linux_tests);
 
     const walker_tests = b.addTest(.{
@@ -273,7 +320,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    loader_tests.root_module.linkSystemLibrary("sqlite3", .{});
+    loader_tests.root_module.linkLibrary(sqlite_lib);
     linkStaticZstd(b, target, optimize, loader_tests.root_module);
     linkStaticBlake3(loader_tests.root_module, blake3_lib);
     const run_loader_tests = b.addRunArtifact(loader_tests);

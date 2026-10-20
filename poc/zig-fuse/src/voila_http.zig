@@ -1,37 +1,47 @@
 const std = @import("std");
-const curl_c = @import("curl_c");
-
-const http_timeout_seconds: c_long = 120;
 
 /// GET url with optional Authorization: Bearer header. Returns owned body.
-/// Uses libcurl (blocking) so registry fetch works from the voilad gRPC thread.
+/// Uses std.http so the CLI does not link libcurl or its shared dependencies.
 pub fn httpGet(
     io: std.Io,
     allocator: std.mem.Allocator,
     url: []const u8,
     bearer_token: []const u8,
 ) ![]u8 {
-    _ = io;
-    const url_z = try allocator.allocSentinel(u8, url.len, 0);
-    defer allocator.free(url_z);
-    @memcpy(url_z, url);
+    var auth_buf: [8192]u8 = undefined;
+    const authorization: std.http.Client.Request.Headers.Value = if (bearer_token.len == 0)
+        .omit
+    else
+        .{ .override = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{bearer_token}) catch return error.HttpStatus };
 
-    var token_ptr: [*:0]const u8 = "";
-    var token_buf: ?[:0]u8 = null;
-    if (bearer_token.len != 0) {
-        token_buf = try allocator.allocSentinel(u8, bearer_token.len, 0);
-        @memcpy(token_buf.?, bearer_token);
-        token_ptr = token_buf.?.ptr;
+    var client: std.http.Client = .{
+        .allocator = allocator,
+        .io = io,
+    };
+    defer client.deinit();
+
+    var response: std.Io.Writer.Allocating = .init(allocator);
+    defer response.deinit();
+
+    const result = client.fetch(.{
+        .location = .{ .url = url },
+        .method = .GET,
+        .keep_alive = false,
+        .headers = .{
+            .user_agent = .{ .override = "voila-zig-registry/1.0" },
+            .authorization = authorization,
+        },
+        .response_writer = &response.writer,
+    }) catch return error.HttpStatus;
+
+    const code: u16 = @intFromEnum(result.status);
+    if (code < 200 or code >= 300) return error.HttpStatus;
+
+    const owned = try response.toOwnedSlice();
+    if (owned.len == 0) {
+        allocator.free(owned);
+        return error.HttpStatus;
     }
-    defer if (token_buf) |tb| allocator.free(tb);
-
-    var out_ptr: [*c]u8 = null;
-    var out_len: usize = 0;
-    const rc = curl_c.voila_curl_http_get(url_z.ptr, token_ptr, http_timeout_seconds, &out_ptr, &out_len);
-    if (rc != 0 or out_len == 0 or out_ptr == null) return error.HttpStatus;
-
-    const owned = try allocator.dupe(u8, out_ptr[0..out_len]);
-    curl_c.voila_curl_free(out_ptr);
     return owned;
 }
 
