@@ -9,8 +9,8 @@
 // owns local store operations (ingest / images / push / pull) and forwards
 // container operations (run / exec / logs / ps / kill) to the `voilad` worker
 // daemon over the worker socket. The FUSE mount, the runc launcher, and the
-// registry server live in `voilad` / `voila-registry` respectively; this
-// binary carries no daemon machinery.
+// registry client helpers live with this binary; the worker daemon is `voilad`.
+// This binary carries no daemon machinery.
 package main
 
 import (
@@ -59,8 +59,8 @@ func wrap(cfg Config, run subcommand) func(args []string) error {
 var newRoot = func(cfg Config) *cli.Command {
 	return &cli.Command{
 		Name: "voila",
-		Footer: "the FUSE mount (`voilad mount`), the worker daemon (`voilad`), and the\n" +
-			"registry server (`voila-registry`) are their own binaries.",
+		Footer: "the FUSE mount (`voilad mount`) and the worker daemon (`voilad`) are\n" +
+			"separate binaries; registry servers live outside this release line.",
 		Subs: []*cli.Command{
 			{
 				Name:  "ingest",

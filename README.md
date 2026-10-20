@@ -12,8 +12,7 @@ host with runc.
 ## Try it
 
 On Linux, use the install script — it downloads the release, verifies the
-checksum, installs `voila`, `voilad`, and `voila-registry`, and wires up the
-hosted registry:
+checksum, installs `zig-fuse` (Zig CLI), and can wire up the hosted registry:
 
 ```bash
 curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sudo bash

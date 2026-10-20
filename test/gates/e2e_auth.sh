@@ -17,7 +17,6 @@ count_chunks() { if [ -d "$1" ]; then find "$1" -type f | wc -l; else echo 0; fi
 echo "=== setup ==="
 go build -o /usr/local/bin/voila ./cmd/voila
 go build -o /usr/local/bin/voilad ./cmd/voilad
-go build -o /usr/local/bin/voila-registry ./cmd/voila-registry
 
 echo "=== auth sanity: no token -> 401, with token -> 200 ==="
 NO_AUTH=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" -d '{"ids":[]}' "$REG/v1/chunks/missing")

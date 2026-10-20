@@ -17,7 +17,8 @@ count_chunks() { if [ -d "$1" ]; then find "$1" -type f | wc -l; else echo 0; fi
 echo "=== setup ==="
 go build -o /usr/local/bin/voila ./cmd/voila
 go build -o /usr/local/bin/voilad ./cmd/voilad
-go build -o /usr/local/bin/voila-registry ./cmd/voila-registry
+. "$(dirname "$0")/_build_standalone_registry.sh"
+build_voila_registry
 go test ./internal/ingest/ ./internal/registry/ 2>&1 | tail -2
 
 echo "=== build fixtures: A(base+app v1), B(same base, one file changed) ==="

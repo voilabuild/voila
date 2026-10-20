@@ -1,7 +1,7 @@
 # GOBIN is where `go install` writes the binaries. Prefer `go env GOBIN` (set
 # by mise / explicit GOBIN) so the installed binaries land where the toolchain
 # actually puts them; fall back to GOPATH/bin. Prepended to PATH below so the
-# freshly built voila / voilad / voila-registry shadow any stale copies.
+# freshly built voila / voilad shadow any stale copies.
 GOBIN := $(shell go env GOBIN)
 ifeq ($(GOBIN),)
 GOBIN := $(shell go env GOPATH)/bin
@@ -28,13 +28,13 @@ build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" ./...
 
 install:
-	CGO_ENABLED=0 go install -trimpath -ldflags "$(LDFLAGS)" ./cmd/...
+	CGO_ENABLED=0 go install -trimpath -ldflags "$(LDFLAGS)" ./cmd/voila ./cmd/voilad
 
 vet:
 	go vet ./...
 
 test:
-	CGO_ENABLED=0 go test ./...
+	CGO_ENABLED=0 go test -tags=testregistry ./...
 
 # spec lints the embedded OpenAPI 3.1 YAML (internal/registry/openapi.yaml)
 # with vacuum. Run `mise install` first to provision vacuum, or use
@@ -45,10 +45,10 @@ spec:
 
 check: build vet test spec
 
-# --- run targets: start the registry and/or the worker daemon in the
-# background. `make install` first so voila / voilad / voila-registry are on
-# $GOPATH/bin (already on PATH via line 2). PIDs + logs land in /tmp so
-# `make stop` can reap them and `make logs-*` can tail them.
+# --- run targets: start the worker daemon in the background. For a local
+# registry server, build voila-registry from branch backup/main-before-go-registry-move
+# (see test/gates/_build_standalone_registry.sh). `make install` puts voila /
+# voilad on $GOPATH/bin (already on PATH via line 2).
 #
 # Defaults mirror Docker's layout (and the voila CLI defaults): data root
 # /var/lib/voila, worker socket /var/run/voila.sock — both root-owned, so run
@@ -57,20 +57,10 @@ check: build vet test spec
 #   make run VOILA_ROOT=/tmp/voila VOILA_SOCKET=/tmp/voila/worker.sock
 VOILA_ROOT ?= /var/lib/voila
 VOILA_SOCKET ?= /var/run/voila.sock
-REG_ROOT   ?= /tmp/reg
-REG_LISTEN ?= :7423
 DAEMON_PID := /tmp/voilad.pid
-REG_PID    := /tmp/voila-registry.pid
 DAEMON_LOG := /tmp/voilad.log
-REG_LOG    := /tmp/voila-registry.log
 
-.PHONY: run-registry run-daemon run stop logs-daemon logs-registry
-
-run-registry:
-	@mkdir -p $(REG_ROOT)
-	@echo "starting voila-registry on $(REG_LISTEN) (root $(REG_ROOT)) — log $(REG_LOG)"
-	@nohup voila-registry -root $(REG_ROOT) -listen $(REG_LISTEN) > $(REG_LOG) 2>&1 & echo $$! > $(REG_PID)
-	@echo "registry pid $$(cat $(REG_PID))"
+.PHONY: run-daemon run stop logs-daemon
 
 run-daemon:
 	@mkdir -p $(VOILA_ROOT) $(dir $(VOILA_SOCKET))
@@ -78,24 +68,16 @@ run-daemon:
 	@nohup voilad -root $(VOILA_ROOT) -socket $(VOILA_SOCKET) > $(DAEMON_LOG) 2>&1 & echo $$! > $(DAEMON_PID)
 	@echo "daemon pid $$(cat $(DAEMON_PID))"
 
-# run starts both. Set VOILA_REGISTRY on the daemon so it lazy-fetches chunks
-# from the registry we just started.
-run: run-registry run-daemon
-	@echo "registry: $$(cat $(REG_PID))  daemon: $$(cat $(DAEMON_PID))"
-	@echo "export VOILA_REGISTRY=http://127.0.0.1$$(echo $(REG_LISTEN) | sed 's/^:/:/')  # for voila push/pull"
+run: run-daemon
+	@echo "daemon: $$(cat $(DAEMON_PID))"
 	@echo "stop with: make stop"
 
 stop:
-	@for pidf in $(REG_PID) $(DAEMON_PID); do \
-	  if [ -f $$pidf ]; then kill $$(cat $$pidf) 2>/dev/null || true; rm -f $$pidf; fi; \
-	done
-	@echo "stopped registry + daemon"
+	@if [ -f $(DAEMON_PID) ]; then kill $$(cat $(DAEMON_PID)) 2>/dev/null || true; rm -f $(DAEMON_PID); fi
+	@echo "stopped daemon"
 
 logs-daemon:
 	@tail -n 50 -f $(DAEMON_LOG)
-
-logs-registry:
-	@tail -n 50 -f $(REG_LOG)
 
 # gates: documentation-by-make. Echoes the canonical `docker run --privileged`
 # command for each verification gate (see doc/TESTING.md); it does NOT execute

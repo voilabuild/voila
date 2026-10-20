@@ -1,6 +1,6 @@
 // client.go implements the registry client used by `voila push`,
 // `voila pull`, and the chunkstore CachedStore fetcher (via the Fetcher
-// interface). It speaks the /v1 wire protocol of package registry's Server
+// interface). It speaks the /v1 wire protocol documented in openapi.yaml
 // over stdlib net/http, with retries limited to a single, opt-in attempt
 // (v0.2 is trusted-network; no exotic backoff yet).
 package registry

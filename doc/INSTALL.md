@@ -20,9 +20,12 @@ the per-arch release binary, verifies `zig-fuse-checksums.txt`, installs
 `zig-fuse` into `/usr/local/bin`, enables `user_allow_other` in `/etc/fuse.conf`
 when run with sudo, and configures `VOILA_ROOT` / optional registry env:
 
-The Go stack (`voila` + `voilad` + `voila-registry`) is still published on the
-same GitHub releases as tarballs (`voila_<tag>_linux_<arch>.tar.gz`); use those
-for the EROFS+NBD daemon path. The installer script targets the Zig CLI only.
+The Go stack (`voila` + `voilad`) is still published on the same GitHub
+releases as tarballs (`voila_<tag>_linux_<arch>.tar.gz`); use those for the
+EROFS+NBD daemon path. The standalone `voila-registry` server is no longer in
+those tarballs (see branch `backup/main-before-go-registry-move` and
+[voilabuild/cloud-registry](https://github.com/voilabuild/cloud-registry)).
+The installer script targets the Zig CLI only.
 
 ```bash
 curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sudo bash
@@ -49,8 +52,8 @@ Useful flags (see `install.sh --help`):
 
 ### Manual install (Linux or macOS)
 
-The `voila` client ships for both linux and darwin; `voilad` and
-`voila-registry` are linux-only. Download the matching tarball from the
+The `voila` client ships for both linux and darwin; `voilad` is linux-only.
+Download the matching tarball from the
 [latest release](https://github.com/voilabuild/voila/releases/latest),
 verify it, and extract:
 
@@ -71,7 +74,6 @@ Verify the install:
 ```bash
 voila -version
 voilad -version        # linux only
-voila-registry -version
 ```
 
 ---

@@ -28,3 +28,6 @@ railway.json
 zig-pkg/
 .zig-cache/
 zig-out/
+
+# Gate scripts: detached worktree for backup-branch voila-registry builds
+.cache/gate-voila-registry-worktree/

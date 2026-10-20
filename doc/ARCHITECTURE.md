@@ -95,13 +95,15 @@ Docker-default capabilities; foreground `runc run`, so exit codes propagate.
 over `/var/run/voila.sock`; output is kept in a byte-budget ring buffer with
 replay+follow; a disconnecting client never kills a context.
 
-**Registry** (`voila-registry`): HTTP server for chunks and manifests,
-BLAKE3-verified PUTs. The wire protocol is documented in an
-[OpenAPI 3.1 spec](../internal/registry/openapi.yaml) embedded in the binary
-and self-served at `GET /openapi.yaml`. A registry may advertise a separate
-chunk endpoint (`GET /v1/registry/config`) so reads can be served straight
-from an S3/R2/CDN bucket. Auth is a bearer token (`VOILA_REGISTRY_TOKEN`);
-empty means trusted network.
+**Registry client** (`voila push` / `pull` / `login`): speaks the `/v1` HTTP
+wire protocol documented in [openapi.yaml](../internal/registry/openapi.yaml).
+The standalone filesystem server (`voila-registry`) and the hosted Postgres/S3
+service are maintained outside this release line — see branch
+`backup/main-before-go-registry-move` and
+[voilabuild/cloud-registry](https://github.com/voilabuild/cloud-registry).
+Registries may advertise a separate chunk endpoint (`GET /v1/registry/config`)
+so reads can be served from S3/R2/CDN. Auth is a bearer token
+(`VOILA_REGISTRY_TOKEN`); empty means trusted network.
 
 Earlier design notes lived in a separate plan file; this document is the
 source of truth for current behavior.
