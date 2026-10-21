@@ -43,6 +43,8 @@ fn stripDigestScheme(s: []const u8) []const u8 {
 }
 
 pub fn resolveImage(allocator: std.mem.Allocator, voila_root: []const u8, query: []const u8) !ImageRecord {
+    const query_norm = try registry_ref.normalizeUserRef(allocator, query);
+    defer allocator.free(query_norm);
     const db_path = try std.fmt.allocPrint(allocator, "{s}/images.db", .{voila_root});
     defer allocator.free(db_path);
     const db_path_z = try allocator.allocSentinel(u8, db_path.len, 0);
@@ -65,12 +67,17 @@ pub fn resolveImage(allocator: std.mem.Allocator, voila_root: []const u8, query:
     }
 
     for (rows) |r| {
-        if (std.mem.eql(u8, r.ref, query)) return dupRecord(allocator, r);
+        if (std.mem.eql(u8, r.ref, query_norm)) return dupRecord(allocator, r);
+    }
+    if (!std.mem.eql(u8, query, query_norm)) {
+        for (rows) |r| {
+            if (std.mem.eql(u8, r.ref, query)) return dupRecord(allocator, r);
+        }
     }
 
-    if (try ocireg.canonical(allocator, query)) |canon| {
+    if (try ocireg.canonical(allocator, query_norm)) |canon| {
         defer allocator.free(canon);
-        if (!std.mem.eql(u8, canon, query)) {
+        if (!std.mem.eql(u8, canon, query_norm)) {
             for (rows) |r| {
                 if (std.mem.eql(u8, r.ref, canon)) return dupRecord(allocator, r);
             }
@@ -88,7 +95,7 @@ pub fn resolveImage(allocator: std.mem.Allocator, voila_root: []const u8, query:
         allocator.free(lc.token);
         allocator.free(lc.org);
     };
-    if (registry_ref.registryPullCandidates(allocator, query, org_slice)) |pull_candidates| {
+    if (registry_ref.registryPullCandidates(allocator, query_norm, org_slice)) |pull_candidates| {
         defer {
             for (pull_candidates) |c| allocator.free(c);
             allocator.free(pull_candidates);
@@ -100,7 +107,7 @@ pub fn resolveImage(allocator: std.mem.Allocator, voila_root: []const u8, query:
         }
     } else |_| {}
 
-    const stripped = stripDigestScheme(query);
+    const stripped = stripDigestScheme(query_norm);
     var query_hex = try allocator.alloc(u8, stripped.len);
     defer allocator.free(query_hex);
     for (stripped, 0..) |c, i| query_hex[i] = std.ascii.toLower(c);

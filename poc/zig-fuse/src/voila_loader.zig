@@ -3,10 +3,13 @@ const voila_resolve = @import("voila_resolve.zig");
 const voila_tree = @import("voila_tree.zig");
 const voila_index = @import("voila_index.zig");
 const voila_image_pull = @import("voila_image_pull.zig");
+const registry_ref = @import("voila_registry_ref.zig");
 
 pub fn loadIndex(io: ?std.Io, allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) !voila_index.Index {
-    if (io) |i| _ = voila_image_pull.autoPull(i, allocator, voila_root, image_ref) catch {};
-    const rec = try voila_resolve.resolveImage(allocator, voila_root, image_ref);
+    const ref_norm = try normalizeImageRef(allocator, image_ref);
+    defer allocator.free(ref_norm);
+    if (io) |i| _ = voila_image_pull.autoPull(i, allocator, voila_root, ref_norm) catch {};
+    const rec = try voila_resolve.resolveImage(allocator, voila_root, ref_norm);
     defer {
         allocator.free(rec.ref);
         allocator.free(rec.image_digest);
@@ -20,9 +23,15 @@ pub fn loadIndex(io: ?std.Io, allocator: std.mem.Allocator, voila_root: []const 
 }
 
 /// Lazy tree (root manifest only) for serve-store; subtrees load on FUSE access.
+fn normalizeImageRef(allocator: std.mem.Allocator, image_ref: []const u8) ![]const u8 {
+    return registry_ref.normalizeUserRef(allocator, image_ref);
+}
+
 pub fn loadTreeRoot(io: ?std.Io, allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) !voila_tree.Tree {
-    if (io) |i| _ = voila_image_pull.autoPull(i, allocator, voila_root, image_ref) catch {};
-    const rec = try voila_resolve.resolveImage(allocator, voila_root, image_ref);
+    const ref_norm = try normalizeImageRef(allocator, image_ref);
+    defer allocator.free(ref_norm);
+    if (io) |i| _ = voila_image_pull.autoPull(i, allocator, voila_root, ref_norm) catch {};
+    const rec = try voila_resolve.resolveImage(allocator, voila_root, ref_norm);
     defer {
         allocator.free(rec.ref);
         allocator.free(rec.image_digest);
