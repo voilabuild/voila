@@ -831,7 +831,7 @@ fn parseExecArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator)
             try cmd_list.append(allocator, try allocator.dupe(u8, arg));
             continue;
         }
-        if (context_id != null and !std.mem.startsWith(u8, arg, "-")) {
+        if (context_id != null) {
             try cmd_list.append(allocator, try allocator.dupe(u8, arg));
             continue;
         }
