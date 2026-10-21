@@ -7,6 +7,7 @@ const registry_session = @import("../registry_session.zig");
 const voila_image_pull = @import("../voila_image_pull.zig");
 const voila_resolve = @import("../voila_resolve.zig");
 const voila_registry = @import("../voila_registry.zig");
+const voila_hub_import = @import("../voila_hub_import.zig");
 
 const Local = struct {
     store_root: []const u8,
@@ -72,7 +73,13 @@ fn pullImpl(ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: typ
         allocator.free(cfg.token);
         allocator.free(cfg.org);
     }
-    const man = try voila_image_pull.pullManifest(io, allocator, self.store_root, cfg, spec.image);
+    const man = voila_image_pull.pullManifest(io, allocator, self.store_root, cfg, spec.image) catch |e| {
+        if (voila_hub_import.formatMissingImageHelp(allocator, spec.image, cfg.org)) |msg| {
+            defer allocator.free(msg);
+            std.debug.print("{s}\n", .{msg});
+        } else |_| {}
+        return e;
+    };
     defer {
         allocator.free(man.image_ref);
         allocator.free(man.image_digest);
