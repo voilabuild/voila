@@ -11,6 +11,14 @@ const container_store = @import("container_store.zig");
 const container_lifecycle = @import("container_lifecycle.zig");
 const mount_exec = @import("mount_exec.zig");
 const types = @import("runtime/types.zig");
+const container_run_opts = @import("container_run_opts.zig");
+const container_bind = @import("container_bind.zig");
+const container_chroot = @import("container_chroot.zig");
+const container_ports = @import("container_ports.zig");
+const container_pty = @import("container_pty.zig");
+const run_cli_parse = @import("run_cli_parse.zig");
+
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 const ServeCtx = struct {
     session: fuse_linux.Session,
@@ -34,6 +42,34 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, spe
     return runForeground(io, allocator, voila_root, spec);
 }
 
+pub fn runOptsFromSpec(allocator: std.mem.Allocator, spec: types.RunSpec) !container_run_opts.RunOpts {
+    var env: std.ArrayList(run_cli_parse.EnvPair) = .empty;
+    for (spec.env) |e| {
+        try env.append(allocator, .{
+            .key = try allocator.dupe(u8, e.key),
+            .value = try allocator.dupe(u8, e.value),
+        });
+    }
+    var volumes: std.ArrayList(run_cli_parse.Volume) = .empty;
+    for (spec.volumes) |v| {
+        try volumes.append(allocator, .{
+            .host = try allocator.dupe(u8, v.host),
+            .container = try allocator.dupe(u8, v.container),
+            .read_only = v.read_only,
+        });
+    }
+    const ports = try allocator.alloc(run_cli_parse.PortMap, spec.ports.len);
+    @memcpy(ports, spec.ports);
+    return .{
+        .env = try env.toOwnedSlice(allocator),
+        .workdir = try allocator.dupe(u8, spec.workdir),
+        .volumes = try volumes.toOwnedSlice(allocator),
+        .ports = ports,
+        .tty = spec.tty,
+        .interactive = spec.interactive,
+    };
+}
+
 pub fn runWorker(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, container_id: []const u8) !u8 {
     _ = std.c.setpgid(0, 0);
     var st = try container_store.readState(allocator, voila_root, container_id);
@@ -49,12 +85,13 @@ pub fn runWorker(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u
     defer allocator.free(image);
     defer allocator.free(mount_dir);
     defer allocator.free(log_path);
-    const code = runMounted(io, allocator, voila_root, image, mount_dir, log_path, argv, false, container_id, voila_root) catch 1;
+    const opts = try container_run_opts.readRunOpts(allocator, voila_root, container_id);
+    defer opts.deinit(allocator);
+    const code = runMounted(io, allocator, voila_root, image, mount_dir, log_path, argv, opts) catch 1;
     var st_exit = try container_store.readState(allocator, voila_root, container_id);
     defer container_store.freeState(allocator, st_exit);
     markExited(allocator, &st_exit);
     try container_store.writeState(allocator, voila_root, st_exit);
-    if (st_exit.rm_on_exit) container_store.removeContainer(allocator, voila_root, container_id);
     return code;
 }
 
@@ -69,6 +106,9 @@ fn runForeground(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u
     defer container_store.freeState(allocator, st);
     try container_store.writeState(allocator, voila_root, st);
     try writeCmdArgv(allocator, voila_root, id, spec.argv);
+    const opts = try runOptsFromSpec(allocator, spec);
+    defer opts.deinit(allocator);
+    try container_run_opts.writeRunOpts(allocator, voila_root, id, opts);
     const code = try spawnContainerWorkerAndWait(io, allocator, voila_root, id, log_path, &st);
     var st_exit = try container_store.readState(allocator, voila_root, id);
     defer container_store.freeState(allocator, st_exit);
@@ -130,12 +170,20 @@ fn runDetached(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8,
     defer container_store.freeState(allocator, st);
     try container_store.writeState(allocator, voila_root, st);
     try writeCmdArgv(allocator, voila_root, id, spec.argv);
+    const opts = try runOptsFromSpec(allocator, spec);
+    defer opts.deinit(allocator);
+    try container_run_opts.writeRunOpts(allocator, voila_root, id, opts);
     const exe = try selfExePath(allocator);
     defer allocator.free(exe);
     const root_z = try allocator.dupe(u8, voila_root);
     defer allocator.free(root_z);
     const id_z = try allocator.dupe(u8, id);
     defer allocator.free(id_z);
+    const log_fd = openLogAppend(log_path);
+    const log_out = if (log_fd >= 0)
+        std.Io.File{ .handle = log_fd, .flags = .{ .nonblocking = false } }
+    else
+        std.Io.File{ .handle = std.c.STDOUT_FILENO, .flags = .{ .nonblocking = false } };
     const worker = try std.process.spawn(io, .{
         .argv = &[_][]const u8{
             exe,
@@ -145,6 +193,9 @@ fn runDetached(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8,
             "-id",
             id_z,
         },
+        .stdin = .ignore,
+        .stdout = .{ .file = log_out },
+        .stderr = .{ .file = log_out },
         .pgid = 0,
     });
     if (worker.id) |wp| {
@@ -169,12 +220,8 @@ fn runMounted(
     mount_dir: []const u8,
     log_path: []const u8,
     cmd_argv: []const []const u8,
-    tee_tty: bool,
-    container_id: []const u8,
-    store_root: []const u8,
+    opts: container_run_opts.RunOpts,
 ) !u8 {
-    _ = container_id;
-    _ = store_root;
     if (!fuse_linux.canUseFuse()) return error.NeedFuse;
     voila_registry.setIo(io, allocator);
     try voila_login_creds.loadIntoHub(allocator);
@@ -200,13 +247,29 @@ fn runMounted(
             };
         }
     }.serve, .{&ctx});
-    const result = execChild(io, allocator, mount_dir, host_argv0, log_path, cmd_argv, tee_tty);
+    const forwarders = try container_ports.start(io, opts.ports);
+    defer container_ports.stopAll(forwarders);
+    const use_tty = opts.tty or opts.interactive;
+    const result = execChild(io, allocator, mount_dir, host_argv0, log_path, cmd_argv, opts, use_tty, false);
     ctx.session.stop();
     fusermountU(allocator, mount_dir);
     thread.join();
     ctx.session.deinit();
     if (ctx.err) |e| return e;
     return result;
+}
+
+pub fn execInMount(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    mount_dir: []const u8,
+    host_argv0: []const u8,
+    log_path: []const u8,
+    cmd_argv: []const []const u8,
+    use_tty: bool,
+    opts: container_run_opts.RunOpts,
+) !u8 {
+    return execChild(io, allocator, mount_dir, host_argv0, log_path, cmd_argv, opts, use_tty, true);
 }
 
 fn execChild(
@@ -216,54 +279,94 @@ fn execChild(
     host_argv0: []const u8,
     log_path: []const u8,
     cmd_argv: []const []const u8,
-    tee_tty: bool,
+    opts: container_run_opts.RunOpts,
+    use_tty: bool,
+    is_exec: bool,
 ) !u8 {
-    try mount_exec.waitMountListed(mount_dir, io);
-    var argv_host: std.ArrayList([]const u8) = .empty;
-    defer argv_host.deinit(allocator);
-    try argv_host.append(allocator, host_argv0);
-    for (cmd_argv[1..]) |arg| try argv_host.append(allocator, arg);
+    _ = host_argv0;
+    if (!is_exec) try mount_exec.waitMountRootReady(mount_dir, io);
+    var argv_z: std.ArrayList([*:0]const u8) = .empty;
+    defer {
+        for (argv_z.items) |a| allocator.free(std.mem.span(a));
+        argv_z.deinit(allocator);
+    }
+    const argv0_vfs = cmd_argv[0];
+    const argv0_z = try allocSentinel(allocator, argv0_vfs);
+    try argv_z.append(allocator, argv0_z.ptr);
+    for (cmd_argv[1..]) |arg| {
+        const z = try allocSentinel(allocator, arg);
+        try argv_z.append(allocator, z.ptr);
+    }
+    var cargv = try allocator.alloc(?[*:0]const u8, argv_z.items.len + 1);
+    defer allocator.free(cargv);
+    for (argv_z.items, 0..) |a, i| cargv[i] = a;
+    cargv[argv_z.items.len] = null;
 
     const log_fd = openLogAppend(log_path);
-    defer {
-        if (log_fd >= 0) _ = std.c.close(log_fd);
+
+    var pty: ?container_pty.Pty = null;
+    if (use_tty) pty = try container_pty.Pty.open();
+
+    const pid = std.c.fork();
+    if (pid == 0) {
+        childBeforeExec(mount_dir, log_fd, opts, use_tty, &pty, is_exec);
+        _ = std.c.execve(argv0_z.ptr, @ptrCast(cargv.ptr), std.c.environ);
+        std.c._exit(127);
+    }
+    if (pid < 0) return error.ForkFailed;
+
+    if (pty) |*p| {
+        defer p.close();
+        container_pty.syncWindowSize(p.master);
+        const in_thread = std.Thread.spawn(.{}, container_pty.copyTerminalToMaster, .{p.master}) catch null;
+        container_pty.pumpMasterToStdout(p.master);
+        if (in_thread) |t| t.join();
     }
 
-    const spawn_stdio: struct { stdout: std.process.SpawnOptions.StdIo, stderr: std.process.SpawnOptions.StdIo } = if (tee_tty) .{
-        .stdout = .pipe,
-        .stderr = .pipe,
-    } else blk: {
-        const log_out = std.Io.File{ .handle = log_fd, .flags = .{ .nonblocking = false } };
-        const err_fd = std.c.dup(log_fd);
-        if (err_fd < 0) return error.FileOpenFailed;
-        const log_err = std.Io.File{ .handle = err_fd, .flags = .{ .nonblocking = false } };
-        break :blk .{ .stdout = .{ .file = log_out }, .stderr = .{ .file = log_err } };
-    };
+    var status: i32 = 0;
+    while (std.c.waitpid(pid, &status, 0) < 0 and std.c.errno(-1) == .INTR) {}
+    if (log_fd >= 0) _ = std.c.close(log_fd);
+    const st: u32 = @bitCast(status);
+    if (!std.c.W.IFEXITED(st)) return 1;
+    return @intCast(std.c.W.EXITSTATUS(st));
+}
 
-    var child = try std.process.spawn(io, .{
-        .argv = argv_host.items,
-        .stdin = .inherit,
-        .stdout = spawn_stdio.stdout,
-        .stderr = spawn_stdio.stderr,
-    });
-    defer if (!tee_tty) {
-        if (child.stderr) |f| _ = std.c.close(f.handle);
-    };
-
-    var stdout_thread: ?std.Thread = null;
-    var stderr_thread: ?std.Thread = null;
-    if (tee_tty) {
-        stdout_thread = std.Thread.spawn(.{}, pumpStream, .{ child.stdout.?.handle, log_fd, true, std.c.STDOUT_FILENO }) catch null;
-        stderr_thread = std.Thread.spawn(.{}, pumpStream, .{ child.stderr.?.handle, log_fd, true, std.c.STDERR_FILENO }) catch null;
+fn childBeforeExec(
+    mount_dir: []const u8,
+    log_fd: std.posix.fd_t,
+    opts: container_run_opts.RunOpts,
+    use_tty: bool,
+    pty: *?container_pty.Pty,
+    is_exec: bool,
+) void {
+    _ = std.c.setpgid(0, 0);
+    container_bind.applyInChild(mount_dir, if (is_exec) &.{} else opts.volumes) catch std.c._exit(127);
+    container_chroot.enterRootfs(mount_dir) catch std.c._exit(127);
+    for (opts.env) |e| {
+        const key_z = std.heap.page_allocator.allocSentinel(u8, e.key.len, 0) catch std.c._exit(127);
+        @memcpy(key_z, e.key);
+        const val_z = std.heap.page_allocator.allocSentinel(u8, e.value.len, 0) catch std.c._exit(127);
+        @memcpy(val_z, e.value);
+        _ = setenv(key_z, val_z, 1);
     }
+    if (opts.workdir.len > 0) {
+        const cwd_z = std.heap.page_allocator.allocSentinel(u8, opts.workdir.len, 0) catch std.c._exit(127);
+        @memcpy(cwd_z, opts.workdir);
+        _ = std.c.chdir(cwd_z);
+    }
+    if (use_tty) {
+        if (pty.*) |*p| p.useSlaveInChild() catch std.c._exit(127);
+    } else if (!is_exec and log_fd >= 0) {
+        _ = std.c.dup2(log_fd, std.c.STDOUT_FILENO);
+        _ = std.c.dup2(log_fd, std.c.STDERR_FILENO);
+        _ = std.c.close(log_fd);
+    }
+}
 
-    const term = try child.wait(io);
-    if (stdout_thread) |t| t.join();
-    if (stderr_thread) |t| t.join();
-    return switch (term) {
-        .exited => |code| code,
-        else => 1,
-    };
+fn allocSentinel(allocator: std.mem.Allocator, s: []const u8) ![:0]const u8 {
+    const out = try allocator.allocSentinel(u8, s.len, 0);
+    @memcpy(out, s);
+    return out;
 }
 
 fn pumpStream(src: std.posix.fd_t, log_fd: std.posix.fd_t, tee_tty: bool, tty_fd: std.posix.fd_t) void {
@@ -418,4 +521,5 @@ pub const Error = error{
     FileOpenFailed,
     FileWriteFailed,
     ExePathFailed,
+    ForkFailed,
 };

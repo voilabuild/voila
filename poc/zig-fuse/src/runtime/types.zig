@@ -1,5 +1,6 @@
 //! Shared request/response types for the voila runtime interface.
 const std = @import("std");
+const run_cli_parse = @import("../run_cli_parse.zig");
 
 pub const RunSpec = struct {
     image: []const u8,
@@ -7,6 +8,23 @@ pub const RunSpec = struct {
     detach: bool = false,
     name: []const u8 = "",
     rm_on_exit: bool = false,
+    env: []const run_cli_parse.EnvPair = &.{},
+    workdir: []const u8 = "",
+    volumes: []const run_cli_parse.Volume = &.{},
+    ports: []const run_cli_parse.PortMap = &.{},
+    tty: bool = false,
+    interactive: bool = false,
+};
+
+pub const ExecSpec = struct {
+    context_id: []const u8,
+    argv: []const []const u8,
+    tty: bool = false,
+    interactive: bool = false,
+};
+
+pub const RmiSpec = struct {
+    image: []const u8,
 };
 
 pub const PsRow = struct {

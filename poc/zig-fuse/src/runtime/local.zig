@@ -2,6 +2,7 @@ const std = @import("std");
 const iface = @import("iface.zig");
 const types = @import("types.zig");
 const container_run = @import("../container_run.zig");
+const container_exec = @import("../container_exec.zig");
 const container_lifecycle = @import("../container_lifecycle.zig");
 const registry_session = @import("../registry_session.zig");
 const voila_image_pull = @import("../voila_image_pull.zig");
@@ -31,6 +32,8 @@ const vtable: iface.Runtime.VTable = .{
     .rm = rmImpl,
     .pull = pullImpl,
     .images = imagesImpl,
+    .exec = execImpl,
+    .rmi = rmiImpl,
     .deinit = deinitImpl,
 };
 
@@ -86,6 +89,22 @@ fn pullImpl(ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: typ
         allocator.free(man.merged_root);
     }
     std.debug.print("pulled {s}\n", .{spec.image});
+}
+
+fn execImpl(ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: types.ExecSpec) !u8 {
+    const self: *Local = @ptrCast(@alignCast(ptr));
+    return container_exec.exec(io, allocator, self.store_root, .{
+        .context_id = spec.context_id,
+        .argv = spec.argv,
+        .tty = spec.tty,
+        .interactive = spec.interactive,
+    });
+}
+
+fn rmiImpl(ptr: *anyopaque, _: std.Io, allocator: std.mem.Allocator, spec: types.RmiSpec) !void {
+    const self: *Local = @ptrCast(@alignCast(ptr));
+    try voila_resolve.removeImage(allocator, self.store_root, spec.image);
+    std.debug.print("Removed {s}\n", .{spec.image});
 }
 
 fn imagesImpl(ptr: *anyopaque, _: std.Io, allocator: std.mem.Allocator) !void {

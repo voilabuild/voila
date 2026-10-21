@@ -167,7 +167,7 @@ fn sleepMs(ms: u64) void {
     while (std.c.nanosleep(&ts, &ts) == -1 and std.c.errno(-1) == .INTR) {}
 }
 
-fn isRunning(st: container_store.State) bool {
+pub fn isRunning(st: container_store.State) bool {
     if (std.mem.eql(u8, st.status, "exited")) return false;
     if (st.pid > 0 and isPidAlive(st.pid)) return true;
     if (st.mount_dir.len != 0 and mountStillListed(st.mount_dir)) return true;
@@ -180,7 +180,7 @@ fn isPidAlive(pid: i32) bool {
 }
 
 /// True while the path still appears in findmnt or /proc/self/mountinfo (including stale table rows).
-fn mountStillListed(mount_dir: []const u8) bool {
+pub fn mountStillListed(mount_dir: []const u8) bool {
     return findmntLists(mount_dir) or mountinfoLists(mount_dir) or procMountsLists(mount_dir);
 }
 
