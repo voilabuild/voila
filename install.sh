@@ -175,7 +175,7 @@ if ! check_runtime_prereqs; then
 fi
 
 ensure_user_allow_other() {
-	if [ -f /etc/fuse.conf ] && grep -q '^[[:space:]]*user_allow_other' /etc/fuse.conf; then
+	if [ -f /etc/fuse.conf ] && grep -qE '^[[:space:]]*user_allow_other[[:space:]]*$' /etc/fuse.conf; then
 		return 0
 	fi
 	if [ -z "$SUDO" ] && [ "$(id -u)" -ne 0 ]; then
@@ -188,10 +188,10 @@ ensure_user_allow_other() {
 		echo 'user_allow_other' | $SUDO tee /etc/fuse.conf >/dev/null
 		return 0
 	fi
-	if ! grep -q '^[[:space:]]*user_allow_other' /etc/fuse.conf; then
-		$SUDO sed -i 's/^# *user_allow_other/user_allow_other/' /etc/fuse.conf 2>/dev/null || true
+	if ! grep -qE '^[[:space:]]*user_allow_other[[:space:]]*$' /etc/fuse.conf; then
+		$SUDO sed -i 's/^#user_allow_other$/user_allow_other/' /etc/fuse.conf 2>/dev/null || true
 	fi
-	if ! grep -q '^[[:space:]]*user_allow_other' /etc/fuse.conf; then
+	if ! grep -qE '^[[:space:]]*user_allow_other[[:space:]]*$' /etc/fuse.conf; then
 		echo 'user_allow_other' | $SUDO tee -a /etc/fuse.conf >/dev/null
 	fi
 }

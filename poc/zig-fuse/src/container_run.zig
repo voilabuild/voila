@@ -8,6 +8,7 @@ const voila_registry_creds = @import("voila_registry_creds.zig");
 const posix_util = @import("posix_util.zig");
 const container_store = @import("container_store.zig");
 const container_lifecycle = @import("container_lifecycle.zig");
+const mount_exec = @import("mount_exec.zig");
 const types = @import("runtime/types.zig");
 
 const ServeCtx = struct {
@@ -130,6 +131,11 @@ fn runMounted(
     const tree = try voila_loader.loadTreeRoot(allocator, voila_root, image);
     var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(allocator, tree) };
     defer fuse_vfs.deinit();
+    const vfs_exec = try mount_exec.resolveArgv0VfsPath(allocator, &fuse_vfs, cmd_argv[0]);
+    defer allocator.free(vfs_exec);
+    const host_argv0 = try mount_exec.hostPathForVfsExec(allocator, mount_dir, vfs_exec);
+    defer allocator.free(host_argv0);
+
     try posix_util.makePath(mount_dir);
     var ctx: ServeCtx = .{
         .session = try fuse_linux.mountSession(allocator, mount_dir, &fuse_vfs),
@@ -142,7 +148,7 @@ fn runMounted(
             };
         }
     }.serve, .{&ctx});
-    const result = execChild(io, allocator, mount_dir, log_path, cmd_argv, tee_tty);
+    const result = execChild(io, allocator, mount_dir, host_argv0, log_path, cmd_argv, tee_tty);
     ctx.session.stop();
     fusermountU(allocator, mount_dir);
     thread.join();
@@ -155,13 +161,12 @@ fn execChild(
     io: std.Io,
     allocator: std.mem.Allocator,
     mount_dir: []const u8,
+    host_argv0: []const u8,
     log_path: []const u8,
     cmd_argv: []const []const u8,
     tee_tty: bool,
 ) !u8 {
-    const host_argv0 = try resolveHostArgv0(allocator, mount_dir, cmd_argv[0]);
-    defer allocator.free(host_argv0);
-    try waitPath(host_argv0, io);
+    try mount_exec.waitMountListed(mount_dir, io);
     var argv_host: std.ArrayList([]const u8) = .empty;
     defer argv_host.deinit(allocator);
     try argv_host.append(allocator, host_argv0);
@@ -274,38 +279,6 @@ fn ownedState(
     };
 }
 
-const default_path_dirs = [_][]const u8{
-    "/usr/local/sbin",
-    "/usr/local/bin",
-    "/usr/sbin",
-    "/usr/bin",
-    "/sbin",
-    "/bin",
-};
-
-fn resolveHostArgv0(allocator: std.mem.Allocator, mount_dir: []const u8, argv0: []const u8) ![]const u8 {
-    if (std.mem.indexOfScalar(u8, argv0, '/') != null) return hostPath(allocator, mount_dir, argv0);
-    for (default_path_dirs) |dir| {
-        const candidate = try std.fmt.allocPrint(allocator, "{s}{s}/{s}", .{ mount_dir, dir, argv0 });
-        if (posix_util.access(candidate)) return candidate;
-        allocator.free(candidate);
-    }
-    return hostPath(allocator, mount_dir, argv0);
-}
-
-fn hostPath(allocator: std.mem.Allocator, mount_dir: []const u8, argv0: []const u8) ![]const u8 {
-    if (std.mem.startsWith(u8, argv0, "/")) return std.fmt.allocPrint(allocator, "{s}{s}", .{ mount_dir, argv0 });
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ mount_dir, argv0 });
-}
-
-fn waitPath(path: []const u8, io: std.Io) !void {
-    for (0..30_000) |_| {
-        if (posix_util.access(path)) return;
-        try io.sleep(std.Io.Duration.fromMilliseconds(1), .awake);
-    }
-    return error.MountNotReady;
-}
-
 fn fusermountU(allocator: std.mem.Allocator, mount_dir: []const u8) void {
     const cmd = std.fmt.allocPrint(allocator, "fusermount3 -u {s} 2>/dev/null || umount {s} 2>/dev/null", .{ mount_dir, mount_dir }) catch return;
     defer allocator.free(cmd);
@@ -386,4 +359,11 @@ fn writeFile(path: []const u8, data: []const u8) !void {
     }
 }
 
-pub const Error = error{NeedFuse, MountNotReady, FileOpenFailed, FileWriteFailed, ExePathFailed};
+pub const Error = error{
+    NeedFuse,
+    MountNotReady,
+    ExecNotFound,
+    FileOpenFailed,
+    FileWriteFailed,
+    ExePathFailed,
+};
