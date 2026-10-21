@@ -100,6 +100,55 @@ pub fn hostPathForVfsExec(allocator: std.mem.Allocator, mount_dir: []const u8, v
     return std.fmt.allocPrint(allocator, "{s}{s}", .{ mount_dir, vfs_exec });
 }
 
+const interpreter_candidates = [_][]const u8{
+    "/lib/ld-musl-x86_64.so.1",
+    "/lib64/ld-linux-x86-64.so.2",
+};
+
+/// Exec under a FUSE mount without chroot (dynamic linker invoked with host paths).
+pub fn execViaFuseMount(
+    mount_dir: []const u8,
+    vfs_exec: []const u8,
+    cmd_argv: []const []const u8,
+) noreturn {
+    const host_bin = std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ mount_dir, vfs_exec }) catch std.c._exit(127);
+    defer std.heap.page_allocator.free(host_bin);
+    const host_bin_z = std.heap.page_allocator.allocSentinel(u8, host_bin.len, 0) catch std.c._exit(127);
+    defer std.heap.page_allocator.free(host_bin_z);
+    @memcpy(host_bin_z, host_bin);
+
+    var direct_argv: [2:null]?[*:0]const u8 = .{ host_bin_z.ptr, null };
+    _ = std.c.execve(host_bin_z.ptr, @ptrCast(&direct_argv), std.c.environ);
+
+    for (interpreter_candidates) |interp_vfs| {
+        const host_ld = std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ mount_dir, interp_vfs }) catch continue;
+        defer std.heap.page_allocator.free(host_ld);
+        if (!posix_util.access(host_ld)) continue;
+        const ld_z = std.heap.page_allocator.allocSentinel(u8, host_ld.len, 0) catch std.c._exit(127);
+        defer std.heap.page_allocator.free(ld_z);
+        @memcpy(ld_z, host_ld);
+
+        var argv_storage: [32][*:0]const u8 = undefined;
+        var argc: usize = 0;
+        argv_storage[argc] = ld_z.ptr;
+        argc += 1;
+        argv_storage[argc] = host_bin_z.ptr;
+        argc += 1;
+        for (cmd_argv[1..]) |arg| {
+            if (argc >= argv_storage.len) std.c._exit(127);
+            const z = std.heap.page_allocator.allocSentinel(u8, arg.len, 0) catch std.c._exit(127);
+            @memcpy(z, arg);
+            argv_storage[argc] = z.ptr;
+            argc += 1;
+        }
+        var cargv: [33:null]?[*:0]const u8 = undefined;
+        for (0..argc) |i| cargv[i] = argv_storage[i];
+        cargv[argc] = null;
+        _ = std.c.execve(ld_z.ptr, @ptrCast(&cargv), std.c.environ);
+    }
+    std.c._exit(127);
+}
+
 fn executableOnVfs(vfs: *fuse_vfs_mod.FuseVfs, vfs_path: []const u8) bool {
     const ino = vfs.inoFromPath(vfs_path) orelse return false;
     if (vfs.isFile(ino)) return true;

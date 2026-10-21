@@ -9,6 +9,7 @@ const voila_registry = @import("voila_registry.zig");
 const ocireg = @import("voila_ocireg.zig");
 const posix_util = @import("posix_util.zig");
 const voila_hub_import = @import("voila_hub_import.zig");
+const voila_resolve = @import("voila_resolve.zig");
 
 pub fn pullManifestOnce(
     io: std.Io,
@@ -48,8 +49,9 @@ pub fn pullManifest(
         };
         return man;
     }
-    voila_hub_import.tryImportFromHub(io, allocator, cfg, ref) catch |e| {
-        if (last_err == null) last_err = e;
+    voila_hub_import.tryImportFromHub(io, allocator, cfg, voila_root, ref) catch |e| {
+        if (e == voila_hub_import.Error.SkipDockerImport) {}
+        else if (last_err == null) last_err = e;
     };
     if (last_err != null) {
         for (candidates) |candidate| {
@@ -78,6 +80,12 @@ pub fn autoPull(
     }
     if (query.len == 0) return error.Skip;
     if (!voila_refkey.looksLikeRef(query)) return error.Skip;
+    if (voila_resolve.resolveImage(allocator, voila_root, query)) |rec| {
+        allocator.free(rec.ref);
+        allocator.free(rec.image_digest);
+        allocator.free(rec.merged_root_manifest);
+        return error.Skip;
+    } else |_| {}
     return pullManifest(io, allocator, voila_root, cfg, query);
 }
 

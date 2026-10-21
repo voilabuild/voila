@@ -9,24 +9,29 @@ pub fn tryImportFromHub(
     io: std.Io,
     allocator: std.mem.Allocator,
     cfg: voila_registry_hub.Config,
+    voila_root: []const u8,
     user_ref: []const u8,
 ) !void {
     if (cfg.org.len == 0) return error.NoOrg;
+    if (!shouldImportFromDockerHub(user_ref, cfg.org)) return error.SkipDockerImport;
     const hub_ref = try registry_ref.normalizeUserRef(allocator, user_ref);
     defer allocator.free(hub_ref);
     const push_ref = try registry_ref.hubPushRef(allocator, hub_ref, cfg.org);
     defer allocator.free(push_ref);
 
-    const tmp = try std.fmt.allocPrint(allocator, "/tmp/voila-hub-import-{d}", .{std.c.getpid()});
-    defer allocator.free(tmp);
-    try posix_util.makePath(tmp);
-
-    if (try runGoCheckoutImport(allocator, cfg, hub_ref, push_ref, tmp)) return;
+    if (try runGoCheckoutImport(allocator, cfg, hub_ref, push_ref, voila_root)) return;
 
     const helper = try findImportHelper(allocator) orelse return error.ImportHelperMissing;
     defer allocator.free(helper);
 
-    try runImportHelper(io, allocator, cfg, helper, hub_ref, push_ref, tmp);
+    try runImportHelper(io, allocator, cfg, helper, hub_ref, push_ref, voila_root);
+}
+
+fn shouldImportFromDockerHub(user_ref: []const u8, org: []const u8) bool {
+    if (org.len == 0) return true;
+    if (user_ref.len > org.len + 1 and std.mem.startsWith(u8, user_ref, org) and user_ref[org.len] == '/') return false;
+    if (std.mem.startsWith(u8, user_ref, "test/")) return false;
+    return true;
 }
 
 fn runImportHelper(
@@ -122,6 +127,7 @@ pub fn formatMissingImageHelp(
 
 pub const Error = error{
     NoOrg,
+    SkipDockerImport,
     ImportHelperMissing,
     ImportFailed,
     ExePathFailed,

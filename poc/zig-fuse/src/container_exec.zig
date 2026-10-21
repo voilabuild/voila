@@ -29,14 +29,12 @@ pub fn exec(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, sp
     defer fuse_vfs.deinit();
     const vfs_exec = try mount_exec.resolveArgv0VfsPath(allocator, &fuse_vfs, spec.argv[0]);
     defer allocator.free(vfs_exec);
-    const host_argv0 = try mount_exec.hostPathForVfsExec(allocator, st.mount_dir, vfs_exec);
-    defer allocator.free(host_argv0);
     const use_tty = spec.tty or spec.interactive or opts.tty or opts.interactive;
     return container_run.execInMount(
         io,
         allocator,
         st.mount_dir,
-        host_argv0,
+        vfs_exec,
         st.log_path,
         spec.argv,
         use_tty,

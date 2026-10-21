@@ -2,6 +2,8 @@ const std = @import("std");
 const sqlite = @import("sqlite_c");
 const ocireg = @import("voila_ocireg.zig");
 const hex_util = @import("hex_util.zig");
+const registry_ref = @import("voila_registry_ref.zig");
+const voila_login_creds = @import("voila_login_creds.zig");
 
 pub const Error = error{
     SqliteOpen,
@@ -74,6 +76,29 @@ pub fn resolveImage(allocator: std.mem.Allocator, voila_root: []const u8, query:
             }
         }
     }
+
+    var org_slice: []const u8 = "";
+    var login_creds: ?voila_login_creds.LoginCreds = null;
+    if (try voila_login_creds.loadLoginCreds(allocator)) |lc| {
+        login_creds = lc;
+        org_slice = lc.org;
+    }
+    defer if (login_creds) |lc| {
+        allocator.free(lc.registry);
+        allocator.free(lc.token);
+        allocator.free(lc.org);
+    };
+    if (registry_ref.registryPullCandidates(allocator, query, org_slice)) |pull_candidates| {
+        defer {
+            for (pull_candidates) |c| allocator.free(c);
+            allocator.free(pull_candidates);
+        }
+        for (pull_candidates) |candidate| {
+            for (rows) |r| {
+                if (std.mem.eql(u8, r.ref, candidate)) return dupRecord(allocator, r);
+            }
+        }
+    } else |_| {}
 
     const stripped = stripDigestScheme(query);
     var query_hex = try allocator.alloc(u8, stripped.len);

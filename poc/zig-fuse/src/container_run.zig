@@ -232,9 +232,6 @@ fn runMounted(
     defer fuse_vfs.deinit();
     const vfs_exec = try mount_exec.resolveArgv0VfsPath(allocator, &fuse_vfs, cmd_argv[0]);
     defer allocator.free(vfs_exec);
-    const host_argv0 = try mount_exec.hostPathForVfsExec(allocator, mount_dir, vfs_exec);
-    defer allocator.free(host_argv0);
-
     try posix_util.makePath(mount_dir);
     var ctx: ServeCtx = .{
         .session = try fuse_linux.mountSession(allocator, mount_dir, &fuse_vfs),
@@ -250,7 +247,7 @@ fn runMounted(
     const forwarders = try container_ports.start(io, opts.ports);
     defer container_ports.stopAll(forwarders);
     const use_tty = opts.tty or opts.interactive;
-    const result = execChild(io, allocator, mount_dir, host_argv0, log_path, cmd_argv, opts, use_tty, false);
+    const result = execChild(io, allocator, mount_dir, vfs_exec, log_path, cmd_argv, opts, use_tty, false);
     ctx.session.stop();
     fusermountU(allocator, mount_dir);
     thread.join();
@@ -263,35 +260,33 @@ pub fn execInMount(
     io: std.Io,
     allocator: std.mem.Allocator,
     mount_dir: []const u8,
-    host_argv0: []const u8,
+    vfs_argv0: []const u8,
     log_path: []const u8,
     cmd_argv: []const []const u8,
     use_tty: bool,
     opts: container_run_opts.RunOpts,
 ) !u8 {
-    return execChild(io, allocator, mount_dir, host_argv0, log_path, cmd_argv, opts, use_tty, true);
+    return execChild(io, allocator, mount_dir, vfs_argv0, log_path, cmd_argv, opts, use_tty, true);
 }
 
 fn execChild(
     io: std.Io,
     allocator: std.mem.Allocator,
     mount_dir: []const u8,
-    host_argv0: []const u8,
+    vfs_argv0: []const u8,
     log_path: []const u8,
     cmd_argv: []const []const u8,
     opts: container_run_opts.RunOpts,
     use_tty: bool,
     is_exec: bool,
 ) !u8 {
-    _ = host_argv0;
     if (!is_exec) try mount_exec.waitMountRootReady(mount_dir, io);
     var argv_z: std.ArrayList([*:0]const u8) = .empty;
     defer {
         for (argv_z.items) |a| allocator.free(std.mem.span(a));
         argv_z.deinit(allocator);
     }
-    const argv0_vfs = cmd_argv[0];
-    const argv0_z = try allocSentinel(allocator, argv0_vfs);
+    const argv0_z = try allocSentinel(allocator, vfs_argv0);
     try argv_z.append(allocator, argv0_z.ptr);
     for (cmd_argv[1..]) |arg| {
         const z = try allocSentinel(allocator, arg);
@@ -309,8 +304,13 @@ fn execChild(
 
     const pid = std.c.fork();
     if (pid == 0) {
-        childBeforeExec(mount_dir, log_fd, opts, use_tty, &pty, is_exec);
-        _ = std.c.execve(argv0_z.ptr, @ptrCast(cargv.ptr), std.c.environ);
+        const chroot_ok = childBeforeExec(mount_dir, log_fd, opts, use_tty, &pty, is_exec);
+        if (chroot_ok and opts.volumes.len > 0) {
+            container_chroot.enterRootfs(mount_dir) catch std.c._exit(127);
+            _ = std.c.execve(argv0_z.ptr, @ptrCast(cargv.ptr), std.c.environ);
+        } else {
+            mount_exec.execViaFuseMount(mount_dir, vfs_argv0, cmd_argv);
+        }
         std.c._exit(127);
     }
     if (pid < 0) return error.ForkFailed;
@@ -338,10 +338,9 @@ fn childBeforeExec(
     use_tty: bool,
     pty: *?container_pty.Pty,
     is_exec: bool,
-) void {
+) bool {
     _ = std.c.setpgid(0, 0);
-    container_bind.applyInChild(mount_dir, if (is_exec) &.{} else opts.volumes) catch std.c._exit(127);
-    container_chroot.enterRootfs(mount_dir) catch std.c._exit(127);
+    const chroot_ok = container_bind.prepareExecEnvironment(mount_dir, opts.volumes);
     for (opts.env) |e| {
         const key_z = std.heap.page_allocator.allocSentinel(u8, e.key.len, 0) catch std.c._exit(127);
         @memcpy(key_z, e.key);
@@ -350,9 +349,17 @@ fn childBeforeExec(
         _ = setenv(key_z, val_z, 1);
     }
     if (opts.workdir.len > 0) {
-        const cwd_z = std.heap.page_allocator.allocSentinel(u8, opts.workdir.len, 0) catch std.c._exit(127);
-        @memcpy(cwd_z, opts.workdir);
-        _ = std.c.chdir(cwd_z);
+        if (chroot_ok) {
+            const cwd_z = std.heap.page_allocator.allocSentinel(u8, opts.workdir.len, 0) catch std.c._exit(127);
+            @memcpy(cwd_z, opts.workdir);
+            _ = std.c.chdir(cwd_z);
+        } else {
+            const host_wd = std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ mount_dir, opts.workdir }) catch std.c._exit(127);
+            defer std.heap.page_allocator.free(host_wd);
+            const cwd_z = std.heap.page_allocator.allocSentinel(u8, host_wd.len, 0) catch std.c._exit(127);
+            @memcpy(cwd_z, host_wd);
+            _ = std.c.chdir(cwd_z);
+        }
     }
     if (use_tty) {
         if (pty.*) |*p| p.useSlaveInChild() catch std.c._exit(127);
@@ -361,6 +368,7 @@ fn childBeforeExec(
         _ = std.c.dup2(log_fd, std.c.STDERR_FILENO);
         _ = std.c.close(log_fd);
     }
+    return chroot_ok;
 }
 
 fn allocSentinel(allocator: std.mem.Allocator, s: []const u8) ![:0]const u8 {
