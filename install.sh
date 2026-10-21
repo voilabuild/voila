@@ -145,9 +145,9 @@ pkg_install() {
 
 if ! check_runtime_prereqs; then
 	if [ "$INSTALL_PREREQS" -eq 1 ] || [ "$ASSUME_YES" -eq 1 ]; then
-		pkg_install runc fuse3
+		pkg_install runc fuse3 || warn "continuing without runc/fuse3 (install failed or no sudo)"
 	elif confirm "install missing prerequisites (runc, fuse3)?"; then
-		pkg_install runc fuse3
+		pkg_install runc fuse3 || warn "continuing without runc/fuse3"
 	else
 		warn "continuing without runc/fuse3"
 	fi
