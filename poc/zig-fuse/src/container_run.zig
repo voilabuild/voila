@@ -14,6 +14,8 @@ const types = @import("runtime/types.zig");
 const container_run_opts = @import("container_run_opts.zig");
 const container_bind = @import("container_bind.zig");
 const container_chroot = @import("container_chroot.zig");
+const container_userns = @import("container_userns.zig");
+const container_isolated_exec = @import("container_isolated_exec.zig");
 const container_ports = @import("container_ports.zig");
 const container_pty = @import("container_pty.zig");
 const run_cli_parse = @import("run_cli_parse.zig");
@@ -36,7 +38,18 @@ fn setStatus(allocator: std.mem.Allocator, st: *container_store.State, status: [
     st.status = allocator.dupe(u8, status) catch status;
 }
 
+fn needsIsolation(spec: types.RunSpec) bool {
+    return spec.workdir.len > 0 or spec.volumes.len > 0 or spec.tty or spec.interactive or spec.ports.len > 0;
+}
+
 pub fn run(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, spec: types.RunSpec) !u8 {
+    if (needsIsolation(spec) and !container_userns.probeNow(io, allocator)) {
+        std.debug.print(
+            "voila: -w, -v, -it, and -p require user namespaces on this host (often blocked by AppArmor on Ubuntu 24.04+). Re-run install.sh to install the voila AppArmor profile, then try again.\n",
+            .{},
+        );
+        return error.UserNamespacesRequired;
+    }
     try container_lifecycle.ensureNameFree(allocator, voila_root, spec.name);
     if (spec.detach) return runDetached(io, allocator, voila_root, spec);
     return runForeground(io, allocator, voila_root, spec);
@@ -222,6 +235,7 @@ fn runMounted(
     cmd_argv: []const []const u8,
     opts: container_run_opts.RunOpts,
 ) !u8 {
+    const require_isolation = opts.workdir.len > 0 or opts.volumes.len > 0 or opts.tty or opts.interactive or opts.ports.len > 0;
     if (!fuse_linux.canUseFuse()) return error.NeedFuse;
     voila_registry.setIo(io, allocator);
     try voila_login_creds.loadIntoHub(allocator);
@@ -247,12 +261,25 @@ fn runMounted(
     const forwarders = try container_ports.start(io, opts.ports);
     defer container_ports.stopAll(forwarders);
     const use_tty = opts.tty or opts.interactive;
-    const result = execChild(io, allocator, mount_dir, vfs_exec, log_path, cmd_argv, opts, use_tty, false);
+    const result = execChild(io, allocator, mount_dir, vfs_exec, log_path, cmd_argv, opts, use_tty, false, require_isolation) catch |e| {
+        ctx.session.stop();
+        fusermountU(allocator, mount_dir);
+        thread.join();
+        ctx.session.deinit();
+        return e;
+    };
     ctx.session.stop();
     fusermountU(allocator, mount_dir);
     thread.join();
     ctx.session.deinit();
     if (ctx.err) |e| return e;
+    if (require_isolation and result == 127) {
+        std.debug.print(
+            "voila: -w, -v, -it, and -p need user namespaces (re-run install.sh for the AppArmor voila profile).\n",
+            .{},
+        );
+        return error.UserNamespacesRequired;
+    }
     return result;
 }
 
@@ -266,7 +293,7 @@ pub fn execInMount(
     use_tty: bool,
     opts: container_run_opts.RunOpts,
 ) !u8 {
-    return execChild(io, allocator, mount_dir, vfs_argv0, log_path, cmd_argv, opts, use_tty, true);
+    return execChild(io, allocator, mount_dir, vfs_argv0, log_path, cmd_argv, opts, use_tty, true, true);
 }
 
 fn execChild(
@@ -279,8 +306,19 @@ fn execChild(
     opts: container_run_opts.RunOpts,
     use_tty: bool,
     is_exec: bool,
+    require_isolation: bool,
 ) !u8 {
     if (!is_exec) try mount_exec.waitMountRootReady(mount_dir, io);
+    if (require_isolation and !use_tty) {
+        return container_isolated_exec.spawnAndWait(io, allocator, .{
+            .mount_dir = mount_dir,
+            .log_path = log_path,
+            .vfs_argv0 = vfs_argv0,
+            .cmd_argv = cmd_argv,
+            .opts = opts,
+            .use_tty = false,
+        });
+    }
     var argv_z: std.ArrayList([*:0]const u8) = .empty;
     defer {
         for (argv_z.items) |a| allocator.free(std.mem.span(a));
@@ -304,8 +342,10 @@ fn execChild(
 
     const pid = std.c.fork();
     if (pid == 0) {
-        const chroot_ok = childBeforeExec(mount_dir, log_fd, opts, use_tty, &pty, is_exec);
-        if (chroot_ok and opts.volumes.len > 0) {
+        if (require_isolation) closeInheritedFds(log_fd, if (pty) |p| p.master else -1, if (pty) |p| p.slave else -1);
+        const chroot_ok = childBeforeExec(mount_dir, log_fd, opts, use_tty, &pty, is_exec, require_isolation);
+        if (require_isolation and !chroot_ok) std.c._exit(127);
+        if (chroot_ok) {
             container_chroot.enterRootfs(mount_dir) catch std.c._exit(127);
             _ = std.c.execve(argv0_z.ptr, @ptrCast(cargv.ptr), std.c.environ);
         } else {
@@ -338,9 +378,17 @@ fn childBeforeExec(
     use_tty: bool,
     pty: *?container_pty.Pty,
     is_exec: bool,
+    require_isolation: bool,
 ) bool {
     _ = std.c.setpgid(0, 0);
-    const chroot_ok = container_bind.prepareExecEnvironment(mount_dir, opts.volumes);
+    const chroot_ok = if (require_isolation) blk: {
+        if (!container_bind.enterUserNamespaceOnly()) break :blk false;
+        if (opts.volumes.len != 0) {
+            if (!container_bind.attachPrivateMountRoot(mount_dir)) break :blk false;
+            if (!container_bind.applyVolumeBinds(mount_dir, opts.volumes)) break :blk false;
+        }
+        break :blk true;
+    } else false;
     for (opts.env) |e| {
         const key_z = std.heap.page_allocator.allocSentinel(u8, e.key.len, 0) catch std.c._exit(127);
         @memcpy(key_z, e.key);
@@ -392,6 +440,14 @@ fn pumpStream(src: std.posix.fd_t, log_fd: std.posix.fd_t, tee_tty: bool, tty_fd
         const slice = buf[0..@intCast(n)];
         if (log_fd >= 0) writeAllFd(log_fd, slice);
         if (tee_tty) writeAllFd(tty_fd, slice);
+    }
+}
+
+fn closeInheritedFds(log_fd: std.posix.fd_t, pty_master: std.posix.fd_t, pty_slave: std.posix.fd_t) void {
+    var fd: i32 = 3;
+    while (fd < 512) : (fd += 1) {
+        if (fd == log_fd or fd == pty_master or fd == pty_slave) continue;
+        _ = std.c.close(fd);
     }
 }
 

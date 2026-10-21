@@ -15,6 +15,9 @@ const voila_refkey = @import("voila_refkey.zig");
 const _voila_image_pull = @import("voila_image_pull.zig");
 const _registry_session = @import("registry_session.zig");
 const container_run = @import("container_run.zig");
+const voila_image_run_config = @import("voila_image_run_config.zig");
+const container_bind = @import("container_bind.zig");
+const container_isolated_exec = @import("container_isolated_exec.zig");
 const voila_paths = @import("voila_paths.zig");
 const voila_login_creds = @import("voila_login_creds.zig");
 const run_cli_parse = @import("run_cli_parse.zig");
@@ -30,6 +33,9 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next();
     const sub = args.next() orelse "prove";
 
+    if (std.mem.eql(u8, sub, "userns-probe")) {
+        std.process.exit(if (container_bind.probeUserNamespaces()) 0 else 1);
+    }
     if (std.mem.eql(u8, sub, "login")) {
         try cmdLogin(io, init);
         return;
@@ -71,6 +77,11 @@ pub fn main(init: std.process.Init) !void {
         try fuse_linux.mountAndServe(io, init.gpa, &fuse_vfs, mountpoint);
         return;
     }
+    if (std.mem.eql(u8, sub, "container-isolated-exec")) {
+        const spec = try container_isolated_exec.parseCliArgs(init.gpa, &args);
+        const code = container_isolated_exec.run(spec) catch 127;
+        std.process.exit(code);
+    }
     if (std.mem.eql(u8, sub, "container-worker")) {
         const parsed = try parseWorkerArgs(init.gpa, &args);
         defer init.gpa.free(parsed.store_root);
@@ -83,9 +94,19 @@ pub fn main(init: std.process.Init) !void {
         defer parsed.deinit(init.gpa);
         var worker = try openRuntime(init.gpa, parsed.runtime_cfg);
         defer worker.deinit(init.gpa);
+        var argv = parsed.cmd;
+        var default_argv: ?[]const []const u8 = null;
+        if (argv.len == 0) {
+            default_argv = try voila_image_run_config.defaultArgv(init.gpa, parsed.runtime_cfg.store_root, parsed.image, &.{});
+            argv = default_argv.?;
+        }
+        defer if (default_argv) |a| {
+            for (a) |s| init.gpa.free(s);
+            init.gpa.free(a);
+        };
         const code = try worker.run(io, init.gpa, .{
             .image = parsed.image,
-            .argv = parsed.cmd,
+            .argv = argv,
             .detach = parsed.detach,
             .name = parsed.name,
             .rm_on_exit = parsed.rm_on_exit,
@@ -780,7 +801,6 @@ fn parseRunArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) 
         root = null;
     }
     const image_final = image_ref orelse return error.NeedImage;
-    if (cmd_list.items.len == 0) return error.NeedCommand;
 
     const root_abs = try resolveStoreRoot(allocator, root);
     if (root) |owned| allocator.free(owned);
