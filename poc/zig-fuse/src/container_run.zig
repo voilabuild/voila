@@ -36,33 +36,39 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, spe
 pub fn runWorker(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, container_id: []const u8) !u8 {
     _ = std.c.setpgid(0, 0);
     var st = try container_store.readState(allocator, voila_root, container_id);
-    defer container_store.freeState(allocator, st);
     const argv = try readCmdArgv(allocator, voila_root, container_id);
     defer freeArgv(allocator, argv);
     st.pid = @intCast(std.c.getpid());
     setStatus(allocator, &st, "running");
     try container_store.writeState(allocator, voila_root, st);
-    const code = runMounted(io, allocator, voila_root, st.image, st.mount_dir, st.log_path, argv, false, container_id, voila_root) catch 1;
-    st = try container_store.readState(allocator, voila_root, container_id);
-    defer container_store.freeState(allocator, st);
-    markExited(allocator, &st);
-    try container_store.writeState(allocator, voila_root, st);
-    if (st.rm_on_exit) container_store.removeContainer(allocator, voila_root, container_id);
+    const image = try allocator.dupe(u8, st.image);
+    const mount_dir = try allocator.dupe(u8, st.mount_dir);
+    const log_path = try allocator.dupe(u8, st.log_path);
+    container_store.freeState(allocator, st);
+    defer allocator.free(image);
+    defer allocator.free(mount_dir);
+    defer allocator.free(log_path);
+    const code = runMounted(io, allocator, voila_root, image, mount_dir, log_path, argv, false, container_id, voila_root) catch 1;
+    var st_exit = try container_store.readState(allocator, voila_root, container_id);
+    defer container_store.freeState(allocator, st_exit);
+    markExited(allocator, &st_exit);
+    try container_store.writeState(allocator, voila_root, st_exit);
+    if (st_exit.rm_on_exit) container_store.removeContainer(allocator, voila_root, container_id);
     return code;
 }
 
 fn runForeground(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, spec: types.RunSpec) !u8 {
     const id = try container_store.newId(allocator);
     defer allocator.free(id);
-    const mount_dir = try std.fmt.allocPrint(allocator, "/tmp/voila-run-mnt-{s}", .{id});
+    const mount_dir = try std.fmt.allocPrint(allocator, "/tmp/zig-fuse-run-mnt-{s}", .{id});
     defer allocator.free(mount_dir);
     const log_path = try container_store.logPath(allocator, voila_root, id);
     defer allocator.free(log_path);
-    const st = try ownedState(allocator, id, spec.name, spec.image, "running", @intCast(std.c.getpid()), mount_dir, log_path, spec.rm_on_exit);
+    var st = try ownedState(allocator, id, spec.name, spec.image, "created", 0, mount_dir, log_path, spec.rm_on_exit);
     defer container_store.freeState(allocator, st);
     try container_store.writeState(allocator, voila_root, st);
     try writeCmdArgv(allocator, voila_root, id, spec.argv);
-    const code = runMounted(io, allocator, voila_root, spec.image, mount_dir, log_path, spec.argv, true, id, voila_root) catch 1;
+    const code = try spawnContainerWorkerAndWait(io, allocator, voila_root, id, log_path, &st);
     var st_exit = try container_store.readState(allocator, voila_root, id);
     defer container_store.freeState(allocator, st_exit);
     markExited(allocator, &st_exit);
@@ -71,9 +77,53 @@ fn runForeground(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u
     return code;
 }
 
+fn spawnContainerWorkerAndWait(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    voila_root: []const u8,
+    id: []const u8,
+    log_path: []const u8,
+    st: *container_store.State,
+) !u8 {
+    const exe = try selfExePath(allocator);
+    defer allocator.free(exe);
+    const root_z = try allocator.dupe(u8, voila_root);
+    defer allocator.free(root_z);
+    const id_z = try allocator.dupe(u8, id);
+    defer allocator.free(id_z);
+    var worker = try std.process.spawn(io, .{
+        .argv = &[_][]const u8{
+            exe,
+            "container-worker",
+            "-root",
+            root_z,
+            "-id",
+            id_z,
+        },
+        .pgid = 0,
+    });
+    if (worker.id) |wp| {
+        st.pid = @intCast(wp);
+        setStatus(allocator, st, "running");
+        try container_store.writeState(allocator, voila_root, st.*);
+    }
+    const term = try worker.wait(io);
+    try printLogFile(log_path);
+    return switch (term) {
+        .exited => |c| c,
+        else => 1,
+    };
+}
+
+fn printLogFile(path: []const u8) !void {
+    const data = posix_util.readFileAlloc(std.heap.page_allocator, path, 16 * 1024 * 1024) catch return;
+    defer std.heap.page_allocator.free(data);
+    writeAllFd(std.c.STDOUT_FILENO, data);
+}
+
 fn runDetached(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, spec: types.RunSpec) !u8 {
     const id = try container_store.newId(allocator);
-    const mount_dir = try std.fmt.allocPrint(allocator, "/tmp/voila-run-mnt-{s}", .{id});
+    const mount_dir = try std.fmt.allocPrint(allocator, "/tmp/zig-fuse-run-mnt-{s}", .{id});
     const log_path = try container_store.logPath(allocator, voila_root, id);
     var st = try ownedState(allocator, id, spec.name, spec.image, "created", 0, mount_dir, log_path, spec.rm_on_exit);
     defer container_store.freeState(allocator, st);

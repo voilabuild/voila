@@ -22,6 +22,15 @@ pub fn waitMountListed(mount_dir: []const u8, io: std.Io) !void {
     return error.MountNotReady;
 }
 
+fn nextField(line: []const u8, start: usize) ?struct { value: []const u8, end: usize } {
+    var i = start;
+    while (i < line.len and line[i] == ' ') i += 1;
+    if (i >= line.len) return null;
+    var j = i;
+    while (j < line.len and line[j] != ' ') j += 1;
+    return .{ .value = line[i..j], .end = j };
+}
+
 fn mountListed(mount_dir: []const u8) bool {
     const data = posix_util.readFileAlloc(std.heap.page_allocator, "/proc/mounts", 256 * 1024) catch return false;
     defer std.heap.page_allocator.free(data);
@@ -31,16 +40,12 @@ fn mountListed(mount_dir: []const u8) bool {
         while (end < data.len and data[end] != '\n') end += 1;
         const line = data[start..end];
         start = end + 1;
-        // mountpoint is the second field
-        var i: usize = 0;
-        while (i < line.len and line[i] != ' ') i += 1;
-        if (i >= line.len) continue;
-        var j = i + 1;
-        while (j < line.len and line[j] == ' ') j += 1;
-        var k = j;
-        while (k < line.len and line[k] != ' ') k += 1;
-        const mnt = line[j..k];
-        if (std.mem.eql(u8, mnt, mount_dir)) return true;
+        const mnt = nextField(line, 0) orelse continue;
+        const mnt_pt = nextField(line, mnt.end) orelse continue;
+        const fstype = nextField(line, mnt_pt.end) orelse continue;
+        if (!std.mem.eql(u8, mnt_pt.value, mount_dir)) continue;
+        if (!std.mem.eql(u8, fstype.value, "fuse")) continue;
+        return true;
     }
     return false;
 }
@@ -72,7 +77,9 @@ pub fn hostPathForVfsExec(allocator: std.mem.Allocator, mount_dir: []const u8, v
 
 fn executableOnVfs(vfs: *fuse_vfs_mod.FuseVfs, vfs_path: []const u8) bool {
     const ino = vfs.inoFromPath(vfs_path) orelse return false;
-    return vfs.isFile(ino);
+    if (vfs.isFile(ino)) return true;
+    // Alpine and others expose /bin/sh as a symlink; execve resolves it on the mount.
+    return vfs.readlink(ino) != null;
 }
 
 pub const Error = error{
