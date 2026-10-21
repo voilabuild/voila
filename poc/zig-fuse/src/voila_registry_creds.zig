@@ -15,7 +15,7 @@ pub fn loadFromCredsFile(allocator: std.mem.Allocator, voila_root: []const u8) !
     if (reg) |v| {
         if (v == .string) {
             const token_slice: []const u8 = if (tok) |t| if (t == .string) t.string else "" else "";
-            try hub.configure(allocator, v.string, token_slice);
+            try hub.configure(allocator, v.string, token_slice, "");
         }
     }
 }

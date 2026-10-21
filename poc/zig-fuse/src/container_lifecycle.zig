@@ -67,7 +67,7 @@ pub fn kill(allocator: std.mem.Allocator, voila_root: []const u8, context_id: []
     const st = try container_store.readState(allocator, voila_root, id);
     defer container_store.freeState(allocator, st);
     if (st.pid <= 0) return;
-    const sig: std.c.SIG = if (signal != 0) @enumFromInt(signal) else std.c.SIG.KILL;
+    const sig: std.c.SIG = if (signal != 0) @fromBackingInt(@intCast(signal)) else std.c.SIG.KILL;
     terminateWorker(allocator, st.pid, st.mount_dir, sig);
 }
 
@@ -176,7 +176,7 @@ fn isRunning(st: container_store.State) bool {
 
 fn isPidAlive(pid: i32) bool {
     if (pid <= 0) return false;
-    return std.c.kill(pid, @enumFromInt(0)) == 0;
+    return std.c.kill(pid, @fromBackingInt(@intCast(0))) == 0;
 }
 
 /// True while the path still appears in findmnt or /proc/self/mountinfo (including stale table rows).

@@ -7,7 +7,7 @@ pub fn syscallErr(rc: usize) std.posix.E {
     const signed: isize = @bitCast(rc);
     if (signed >= 0) return .SUCCESS;
     if (signed == -1) {
-        const e: std.posix.E = @enumFromInt(std.c._errno().*);
+        const e: std.posix.E = @fromBackingInt(@intCast(std.c._errno().*));
         if (e != .SUCCESS) return e;
     }
     return std.posix.errno(rc);
@@ -41,7 +41,7 @@ pub fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8, limit: usiz
     defer allocator.free(path_z);
     const fd = std.c.open(path_z, .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
     if (fd < 0) {
-        const open_err: std.posix.E = @enumFromInt(std.c._errno().*);
+        const open_err: std.posix.E = @fromBackingInt(@intCast(std.c._errno().*));
         if (open_err == .SUCCESS) return error.Unexpected;
         if (open_err == .NOENT) return error.FileNotFound;
         return std.posix.unexpectedErrno(open_err);
@@ -53,7 +53,7 @@ pub fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8, limit: usiz
     while (true) {
         const n = std.c.read(fd, chunk[0..].ptr, chunk.len);
         if (n < 0) {
-            const rd_err: std.posix.E = @enumFromInt(std.c._errno().*);
+            const rd_err: std.posix.E = @fromBackingInt(@intCast(std.c._errno().*));
             if (rd_err == .SUCCESS) return error.Unexpected;
             return std.posix.unexpectedErrno(rd_err);
         }
@@ -82,7 +82,7 @@ pub fn makePath(path: []const u8) !void {
     buf[path.len] = 0;
     const rc = std.c.mkdir(buf[0..path.len :0], 0o755);
     if (rc == 0) return;
-    const err: std.posix.E = @enumFromInt(std.c._errno().*);
+    const err: std.posix.E = @fromBackingInt(@intCast(std.c._errno().*));
     if (err == .EXIST) return;
     if (err == .SUCCESS) return error.Unexpected;
     return std.posix.unexpectedErrno(err);

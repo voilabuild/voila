@@ -41,6 +41,7 @@ pub fn fetchChunkRaw(
     defer {
         allocator.free(cfg.base_url);
         allocator.free(cfg.token);
+        allocator.free(cfg.org);
     }
 
     try ensureOrigin(io, allocator, cfg);

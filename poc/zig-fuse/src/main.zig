@@ -15,6 +15,8 @@ const voila_refkey = @import("voila_refkey.zig");
 const _voila_image_pull = @import("voila_image_pull.zig");
 const _registry_session = @import("registry_session.zig");
 const container_run = @import("container_run.zig");
+const voila_paths = @import("voila_paths.zig");
+const voila_login_creds = @import("voila_login_creds.zig");
 
 pub const std_options_debug_io = zio.debug_io;
 
@@ -27,6 +29,15 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next();
     const sub = args.next() orelse "prove";
 
+    if (std.mem.eql(u8, sub, "login")) {
+        try cmdLogin(io, init);
+        return;
+    }
+    if (std.mem.eql(u8, sub, "logout")) {
+        try voila_login_creds.deleteLoginCreds(init.gpa);
+        std.debug.print("logged out\n", .{});
+        return;
+    }
     if (std.mem.eql(u8, sub, "prove")) {
         const fixture_dir = args.next() orelse "fixture-out";
         try prove(io, init, fixture_dir);
@@ -160,6 +171,7 @@ pub fn main(init: std.process.Init) !void {
         const voila_root_abs = try resolveAbs(init.gpa, voila_root);
         defer init.gpa.free(voila_root_abs);
         voila_registry.setIo(io, init.gpa);
+        try voila_login_creds.loadIntoHub(init.gpa);
         try voila_registry_creds.loadFromCredsFile(init.gpa, voila_root_abs);
         try voila_registry.loadFromEnv(init.gpa);
         voila_fetch_stats.init(init.gpa, stats_path_arg);
@@ -172,16 +184,98 @@ pub fn main(init: std.process.Init) !void {
             if (bytes_arg) |b| bytes = std.fmt.parseInt(u64, b, 10) catch 0;
             voila_fetch_stats.setImageTotals(chunks, bytes);
         }
-        const tree = try voila_loader.loadTreeRoot(init.gpa, voila_root_abs, image);
+        const tree = try voila_loader.loadTreeRoot(io, init.gpa, voila_root_abs, image);
         var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(init.gpa, tree) };
         defer fuse_vfs.deinit();
         try fuse_linux.mountAndServe(io, init.gpa, &fuse_vfs, mountpoint);
         return;
     }
+    printUsage();
+}
+
+fn printUsage() void {
     std.debug.print(
-        "usage:\n  zig-fuse run [-root <dir>] [-d] [--name NAME] [--rm] [-backend local|remote] <image-ref> -- <cmd> [args...]\n  zig-fuse ps|logs|stop|kill|rm [-root <dir>] [-backend local|remote] ...\n  zig-fuse prove [fixture-dir]\n  zig-fuse prove-store <voila-root> <image>\n  zig-fuse serve-store <voila-root> <image-ref> <mountpoint>\n",
+        \\voila — daemonless voila container CLI (Linux, rootless FUSE)
+        \\
+        \\  voila login [registry-url]
+        \\  voila logout
+        \\  voila pull [-root <dir>] <image-ref>
+        \\  voila run [-root <dir>] [-d] [--name NAME] [--rm] <image-ref> -- <cmd> [args...]
+        \\  voila ps|logs|images|stop|kill|rm [-root <dir>] ...
+        \\
+        \\  voila prove [fixture-dir]
+        \\
+    ,
         .{},
     );
+}
+
+fn cmdLogin(io: std.Io, init: std.process.Init) !void {
+    var args = std.process.Args.Iterator.init(init.minimal.args);
+    _ = args.next();
+    _ = args.next();
+    const url_arg = args.next();
+
+    var raw_url: []const u8 = voila_paths.default_registry_url;
+    if (url_arg) |u| {
+        raw_url = u;
+    } else if (std.c.getenv("VOILA_REGISTRY")) |e| {
+        raw_url = std.mem.span(e);
+    } else {
+        std.debug.print("Registry URL [{s}]: ", .{voila_paths.default_registry_url});
+        const line = try readLineAlloc(init.gpa);
+        defer init.gpa.free(line);
+        if (line.len != 0) raw_url = line;
+    }
+
+    const registry = try voila_paths.normalizeRegistryUrl(init.gpa, raw_url);
+    defer init.gpa.free(registry);
+
+    const token = if (std.c.getenv("VOILA_REGISTRY_TOKEN")) |t|
+        try init.gpa.dupe(u8, std.mem.span(t))
+    else blk: {
+        std.debug.print("API key (dreg_...): ", .{});
+        break :blk try readLineAlloc(init.gpa);
+    };
+    defer init.gpa.free(token);
+    if (token.len == 0) return error.BadRunArgs;
+
+    var org_default: []const u8 = "";
+    if (std.c.getenv("VOILA_ORG")) |o| org_default = std.mem.span(o);
+    const org_line = if (org_default.len != 0 and std.c.getenv("VOILA_REGISTRY_TOKEN") != null)
+        try init.gpa.dupe(u8, org_default)
+    else blk: {
+        std.debug.print("Org namespace", .{});
+        if (org_default.len != 0) std.debug.print(" [{s}]", .{org_default});
+        std.debug.print(": ", .{});
+        break :blk try readLineAlloc(init.gpa);
+    };
+    defer init.gpa.free(org_line);
+    const org_owned = if (org_line.len != 0)
+        try init.gpa.dupe(u8, org_line)
+    else
+        try init.gpa.dupe(u8, org_default);
+    defer init.gpa.free(org_owned);
+
+    try voila_login_creds.probeRegistryAuth(io, init.gpa, registry, token);
+    try voila_login_creds.saveLoginCreds(init.gpa, registry, token, org_owned);
+    std.debug.print("logged in to {s}\n", .{registry});
+}
+
+fn readLineAlloc(allocator: std.mem.Allocator) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    var chunk: [256]u8 = undefined;
+    const stdin_fd = std.posix.STDIN_FILENO;
+    while (true) {
+        const n = std.c.read(stdin_fd, chunk[0..].ptr, chunk.len);
+        if (n == 0) break;
+        if (n < 0) return error.BadRunArgs;
+        for (chunk[0..@intCast(n)]) |c| {
+            if (c == '\n') return try buf.toOwnedSlice(allocator);
+            if (c != '\r') try buf.append(allocator, c);
+        }
+    }
+    return try buf.toOwnedSlice(allocator);
 }
 
 fn rootMountProve(io: std.Io, init: std.process.Init, fuse_vfs: *fuse_vfs_mod.FuseVfs) !void {
@@ -268,7 +362,7 @@ fn proveStore(io: std.Io, init: std.process.Init, voila_root: []const u8, image:
     }
     const voila_root_abs = try resolveAbs(init.gpa, voila_root);
     defer init.gpa.free(voila_root_abs);
-    const index = try voila_loader.loadIndex(init.gpa, voila_root_abs, image);
+    const index = try voila_loader.loadIndex(io, init.gpa, voila_root_abs, image);
     var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = try voila_vfs_mod.VoilaVfs.initFromIndex(init.gpa, index) };
     defer fuse_vfs.deinit();
 
@@ -421,7 +515,7 @@ fn readlinkAlloc(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     @memcpy(path_z, path);
     const n = std.c.readlink(path_z, &buf, buf.len);
     if (n < 0) {
-        const err: std.posix.E = @enumFromInt(std.c._errno().*);
+        const err: std.posix.E = @fromBackingInt(@intCast(std.c._errno().*));
         if (err == .SUCCESS) return error.Unexpected;
         return std.posix.unexpectedErrno(err);
     }
@@ -434,14 +528,14 @@ fn preadFile(path: []const u8, buf: []u8, offset: u64) !void {
     @memcpy(path_z, path);
     const fd = std.c.open(path_z, .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
     if (fd < 0) {
-        const err: std.posix.E = @enumFromInt(std.c._errno().*);
+        const err: std.posix.E = @fromBackingInt(@intCast(std.c._errno().*));
         if (err == .SUCCESS) return error.Unexpected;
         return std.posix.unexpectedErrno(err);
     }
     defer _ = std.c.close(fd);
     const rc = std.c.pread(fd, buf.ptr, buf.len, @bitCast(@as(i64, @intCast(offset))));
     if (rc < 0) {
-        const err: std.posix.E = @enumFromInt(std.c._errno().*);
+        const err: std.posix.E = @fromBackingInt(@intCast(std.c._errno().*));
         if (err == .SUCCESS) return error.Unexpected;
         return std.posix.unexpectedErrno(err);
     }
@@ -478,11 +572,8 @@ fn parseBackendArg(arg: []const u8) ?voila_runtime.Kind {
 }
 
 fn resolveStoreRoot(allocator: std.mem.Allocator, root: ?[]const u8) ![]const u8 {
-    const r = root orelse blk: {
-        const p = std.c.getenv("VOILA_ROOT") orelse return error.NeedVoilaRoot;
-        break :blk std.mem.span(p);
-    };
-    return resolveAbs(allocator, r);
+    if (root) |r| return resolveAbs(allocator, r);
+    return voila_paths.defaultVoilaRoot(allocator);
 }
 
 const PullParsed = struct {

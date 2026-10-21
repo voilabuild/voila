@@ -251,7 +251,7 @@ pub fn build(b: *std.Build) void {
     linkStaticBlake3(root_mod, blake3_lib);
 
     const exe = b.addExecutable(.{
-        .name = "zig-fuse",
+        .name = "voila",
         .root_module = root_mod,
     });
     b.installArtifact(exe);
@@ -307,6 +307,15 @@ pub fn build(b: *std.Build) void {
     linkStaticBlake3(voila_store_tests.root_module, blake3_lib);
     const run_voila_store_tests = b.addRunArtifact(voila_store_tests);
 
+    const registry_ref_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/voila_registry_ref_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_registry_ref_tests = b.addRunArtifact(registry_ref_tests);
+
     const loader_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/voila_loader_test.zig"),
@@ -330,5 +339,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_fuse_linux_tests.step);
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&run_voila_store_tests.step);
+    test_step.dependOn(&run_registry_ref_tests.step);
     test_step.dependOn(&run_loader_tests.step);
 }

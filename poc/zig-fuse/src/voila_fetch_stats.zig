@@ -68,7 +68,8 @@ fn writeStatsFileUnlocked() void {
     const path = g_stats_path orelse return;
     const alloc = g_allocator orelse return;
     const n: u64 = if (g_seen) |*m| @intCast(m.count()) else 0;
-    const json = std.fmt.allocPrint(alloc,
+    const json = std.fmt.allocPrint(
+        alloc,
         "{{\"chunks_fetched\":{d},\"bytes_fetched\":{d},\"image_chunks\":{d},\"image_bytes\":{d}}}\n",
         .{ n, g_bytes, g_image_chunks, g_image_bytes },
     ) catch return;
