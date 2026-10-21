@@ -3,6 +3,8 @@ const sqlite = @import("sqlite_c");
 const voila_http = @import("voila_http.zig");
 const voila_manifest_json = @import("voila_manifest_json.zig");
 const voila_refkey = @import("voila_refkey.zig");
+const registry_ref = @import("voila_registry_ref.zig");
+const voila_registry_hub = @import("voila_registry_hub.zig");
 const voila_registry = @import("voila_registry.zig");
 const ocireg = @import("voila_ocireg.zig");
 const posix_util = @import("posix_util.zig");
@@ -11,7 +13,7 @@ pub fn pullManifestOnce(
     io: std.Io,
     allocator: std.mem.Allocator,
     voila_root: []const u8,
-    cfg: voila_registry.Config,
+    cfg: voila_registry_hub.Config,
     ref: []const u8,
 ) !voila_manifest_json.Manifest {
     const escaped = try voila_http.queryEscape(allocator, ref);
@@ -29,19 +31,24 @@ pub fn pullManifest(
     io: std.Io,
     allocator: std.mem.Allocator,
     voila_root: []const u8,
-    cfg: voila_registry.Config,
+    cfg: voila_registry_hub.Config,
     ref: []const u8,
 ) !voila_manifest_json.Manifest {
-    const once = pullManifestOnce(io, allocator, voila_root, cfg, ref) catch |e| {
-        if (try ocireg.canonical(allocator, ref)) |canon| {
-            defer allocator.free(canon);
-            if (!std.mem.eql(u8, canon, ref)) {
-                return pullManifestOnce(io, allocator, voila_root, cfg, canon);
-            }
-        }
-        return e;
-    };
-    return once;
+    const candidates = try registry_ref.registryPullCandidates(allocator, ref, cfg.org);
+    defer {
+        for (candidates) |c| allocator.free(c);
+        allocator.free(candidates);
+    }
+    var last_err: ?anyerror = null;
+    for (candidates) |candidate| {
+        const man = pullManifestOnce(io, allocator, voila_root, cfg, candidate) catch |e| {
+            last_err = e;
+            continue;
+        };
+        return man;
+    }
+    if (last_err) |e| return e;
+    return error.HttpStatus;
 }
 
 pub fn autoPull(
@@ -54,6 +61,7 @@ pub fn autoPull(
     defer {
         allocator.free(cfg.base_url);
         allocator.free(cfg.token);
+        allocator.free(cfg.org);
     }
     if (query.len == 0) return error.Skip;
     if (!voila_refkey.looksLikeRef(query)) return error.Skip;

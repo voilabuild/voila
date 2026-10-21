@@ -13,7 +13,7 @@ fn vfsFromCtx() *fuse_vfs.FuseVfs {
 }
 
 fn negErr(e: std.posix.E) c_int {
-    return -@as(c_int, @intCast(@intFromEnum(e)));
+    return -@as(c_int, @intCast(@backingInt(e)));
 }
 
 fn fillStatFromAttr(vfs: *fuse_vfs.FuseVfs, ino: u64, stbuf: ?*c.struct_stat) bool {
@@ -63,7 +63,7 @@ fn openCb(path: [*c]const u8, fi: ?*c.struct_fuse_file_info) callconv(.c) c_int 
     const ino = vfs.inoFromPath(pathSlice(path)) orelse return negErr(.NOENT);
     if (!vfs.isFile(ino)) return negErr(.ISDIR);
     const info = fi orelse return negErr(.INVAL);
-    const open_flags = @as(*const c_int, @alignCast(@ptrCast(info)));
+    const open_flags = @as(*const c_int, @ptrCast(@alignCast(info)));
     const accmode = @as(u32, @intCast(open_flags.*)) & 3; // O_ACCMODE
     if (accmode != 0) return negErr(.ROFS); // O_RDONLY
     return 0;

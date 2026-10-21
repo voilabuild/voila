@@ -28,7 +28,7 @@ pub fn run(
     try voila_registry_creds.loadFromCredsFile(allocator, voila_root);
     try voila_registry.loadFromEnv(allocator);
 
-    const tree = try voila_loader.loadTreeRoot(allocator, voila_root, image);
+    const tree = try voila_loader.loadTreeRoot(io, allocator, voila_root, image);
     var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(allocator, tree) };
     defer fuse_vfs.deinit();
 

@@ -55,7 +55,7 @@ pub fn writeState(allocator: std.mem.Allocator, voila_root: []const u8, st: Stat
     const json = try std.fmt.allocPrint(allocator,
         \\{{"id":"{s}","name":"{s}","image":"{s}","status":"{s}","pid":{d},"mount_dir":"{s}","log_path":"{s}","rm_on_exit":{s}}}
     , .{
-        st.id, st.name, st.image, st.status, st.pid, st.mount_dir, st.log_path,
+        st.id,                                  st.name, st.image, st.status, st.pid, st.mount_dir, st.log_path,
         if (st.rm_on_exit) "true" else "false",
     });
     defer allocator.free(json);
@@ -226,4 +226,4 @@ fn appendFile(path: []const u8, data: []const u8) !void {
     }
 }
 
-pub const Error = error{NotFound, BadState, FileOpenFailed, FileWriteFailed};
+pub const Error = error{ NotFound, BadState, FileOpenFailed, FileWriteFailed };

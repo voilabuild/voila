@@ -40,7 +40,7 @@ jobs:
             | tar -xJ
           echo "$PWD/${{ matrix.zig_archive }}" >> "$GITHUB_PATH"
 
-      - name: Build zig-fuse
+      - name: Build voila
         working-directory: poc/zig-fuse
         run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.zig_target }}
 
@@ -48,10 +48,10 @@ jobs:
         working-directory: poc/zig-fuse
         run: |
           set -euo pipefail
-          file zig-out/bin/zig-fuse | grep -q 'statically linked'
-          if readelf -d zig-out/bin/zig-fuse | grep -q NEEDED; then
-            echo "zig-fuse still has dynamic library dependencies" >&2
-            readelf -d zig-out/bin/zig-fuse >&2
+          file zig-out/bin/voila | grep -q 'statically linked'
+          if readelf -d zig-out/bin/voila | grep -q NEEDED; then
+            echo "voila still has dynamic library dependencies" >&2
+            readelf -d zig-out/bin/voila >&2
             exit 1
           fi
 
@@ -60,17 +60,17 @@ jobs:
           TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('workflow-{0}', github.run_id) }}
         run: |
           set -euo pipefail
-          asset="zig-fuse_${TAG}_linux_${{ matrix.arch }}"
-          cp "poc/zig-fuse/zig-out/bin/zig-fuse" "$asset"
+          asset="voila_${TAG}_linux_${{ matrix.arch }}"
+          cp "poc/zig-fuse/zig-out/bin/voila" "$asset"
           sha256sum "$asset" > "${asset}.sha256"
           echo "ASSET=$asset" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: zig-fuse-${{ matrix.arch }}
+          name: voila-${{ matrix.arch }}
           path: |
-            zig-fuse_*_linux_${{ matrix.arch }}
-            zig-fuse_*_linux_${{ matrix.arch }}.sha256
+            voila_*_linux_${{ matrix.arch }}
+            voila_*_linux_${{ matrix.arch }}.sha256
 
   release:
     if: github.ref_type == 'tag'
@@ -86,7 +86,7 @@ jobs:
       - name: Merge checksums
         run: |
           set -euo pipefail
-          cat dist/*.sha256 > dist/zig-fuse-checksums.txt
+          cat dist/*.sha256 > dist/voila-checksums.txt
           ls -la dist/
 
       - name: Wait for GoReleaser release
@@ -110,7 +110,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           files: |
-            dist/zig-fuse_*_linux_amd64
-            dist/zig-fuse_*_linux_arm64
-            dist/zig-fuse-checksums.txt
+            dist/voila_*_linux_amd64
+            dist/voila_*_linux_arm64
+            dist/voila-checksums.txt
           fail_on_unmatched_files: true

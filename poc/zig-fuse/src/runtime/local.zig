@@ -70,6 +70,7 @@ fn pullImpl(ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: typ
     defer {
         allocator.free(cfg.base_url);
         allocator.free(cfg.token);
+        allocator.free(cfg.org);
     }
     const man = try voila_image_pull.pullManifest(io, allocator, self.store_root, cfg, spec.image);
     defer {
