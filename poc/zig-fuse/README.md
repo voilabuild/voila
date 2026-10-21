@@ -13,7 +13,9 @@ zig build
 ./zig-out/bin/zig-fuse run -root /path/to/store IMAGE_REF -- /usr/local/bin/python3 -c 'print("hello")'
 ```
 
-`pull` and `images` use the runtime against `registry.creds` (Drift: `https://drift-registry-production.up.railway.app/registry` + token). `ps`, `logs`, and `kill` return not-implemented on local until detached run exists.
+`pull` and `images` use the runtime against `registry.creds` (Drift: `https://drift-registry-production.up.railway.app/registry` + token). Container lifecycle (`run` with `-d`, `--rm`, `--name`, `-e`, `-w`, `-v`, `-p`, `-it`, `ps`, `logs`, `exec`, `stop`, `rm`, `rmi`) is implemented on the local runtime.
+
+Port publishing (`-p host:container`) runs `socat` on the host to forward `host` → `127.0.0.1:container`. Containers share the host network namespace (no iptables), so listeners bind on localhost like Docker’s `host` network mode.
 
 ## What stayed in Go
 

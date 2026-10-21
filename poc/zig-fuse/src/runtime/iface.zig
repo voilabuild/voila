@@ -8,6 +8,8 @@ pub const KillSpec = types.KillSpec;
 pub const PullSpec = types.PullSpec;
 pub const ImageInfo = types.ImageInfo;
 pub const ContextRef = types.ContextRef;
+pub const ExecSpec = types.ExecSpec;
+pub const RmiSpec = types.RmiSpec;
 
 pub const Kind = enum { local, remote };
 
@@ -24,6 +26,8 @@ pub const Runtime = struct {
         rm: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, ref: ContextRef) anyerror!void,
         pull: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: PullSpec) anyerror!void,
         images: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator) anyerror!void,
+        exec: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: ExecSpec) anyerror!u8,
+        rmi: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: RmiSpec) anyerror!void,
         deinit: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator) void,
     };
 
@@ -57,6 +61,14 @@ pub const Runtime = struct {
 
     pub fn images(self: Runtime, io: std.Io, allocator: std.mem.Allocator) !void {
         return self.vtable.images(self.ptr, io, allocator);
+    }
+
+    pub fn exec(self: Runtime, io: std.Io, allocator: std.mem.Allocator, spec: ExecSpec) !u8 {
+        return self.vtable.exec(self.ptr, io, allocator, spec);
+    }
+
+    pub fn rmi(self: Runtime, io: std.Io, allocator: std.mem.Allocator, spec: RmiSpec) !void {
+        return self.vtable.rmi(self.ptr, io, allocator, spec);
     }
 
     pub fn deinit(self: *Runtime, allocator: std.mem.Allocator) void {

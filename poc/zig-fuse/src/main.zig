@@ -17,6 +17,7 @@ const _registry_session = @import("registry_session.zig");
 const container_run = @import("container_run.zig");
 const voila_paths = @import("voila_paths.zig");
 const voila_login_creds = @import("voila_login_creds.zig");
+const run_cli_parse = @import("run_cli_parse.zig");
 
 pub const std_options_debug_io = zio.debug_io;
 
@@ -88,6 +89,25 @@ pub fn main(init: std.process.Init) !void {
             .detach = parsed.detach,
             .name = parsed.name,
             .rm_on_exit = parsed.rm_on_exit,
+            .env = parsed.env,
+            .workdir = parsed.workdir,
+            .volumes = parsed.volumes,
+            .ports = parsed.ports,
+            .tty = parsed.tty,
+            .interactive = parsed.interactive,
+        });
+        std.process.exit(code);
+    }
+    if (std.mem.eql(u8, sub, "exec")) {
+        const parsed = try parseExecArgs(init.gpa, &args);
+        defer parsed.deinit(init.gpa);
+        var worker = try openRuntime(init.gpa, parsed.runtime_cfg);
+        defer worker.deinit(init.gpa);
+        const code = try worker.exec(io, init.gpa, .{
+            .context_id = parsed.context_id,
+            .argv = parsed.cmd,
+            .tty = parsed.tty,
+            .interactive = parsed.interactive,
         });
         std.process.exit(code);
     }
@@ -120,6 +140,14 @@ pub fn main(init: std.process.Init) !void {
         var worker = try openRuntime(init.gpa, parsed.runtime_cfg);
         defer worker.deinit(init.gpa);
         try worker.pull(io, init.gpa, .{ .image = parsed.image });
+        return;
+    }
+    if (std.mem.eql(u8, sub, "rmi")) {
+        const parsed = try parseRmiArgs(init.gpa, &args);
+        defer parsed.deinit(init.gpa);
+        var worker = try openRuntime(init.gpa, parsed.runtime_cfg);
+        defer worker.deinit(init.gpa);
+        try worker.rmi(io, init.gpa, .{ .image = parsed.image });
         return;
     }
     if (std.mem.eql(u8, sub, "images")) {
@@ -614,13 +642,31 @@ const RunParsed = struct {
     detach: bool,
     name: []const u8,
     rm_on_exit: bool,
+    env: []run_cli_parse.EnvPair,
+    workdir: []const u8,
+    volumes: []run_cli_parse.Volume,
+    ports: []run_cli_parse.PortMap,
+    tty: bool,
+    interactive: bool,
 
     fn deinit(self: RunParsed, allocator: std.mem.Allocator) void {
         allocator.free(self.runtime_cfg.store_root);
         allocator.free(self.image);
         allocator.free(self.name);
+        allocator.free(self.workdir);
         for (self.cmd) |a| allocator.free(a);
         allocator.free(self.cmd);
+        for (self.env) |e| {
+            allocator.free(e.key);
+            allocator.free(e.value);
+        }
+        allocator.free(self.env);
+        for (self.volumes) |v| {
+            allocator.free(v.host);
+            allocator.free(v.container);
+        }
+        allocator.free(self.volumes);
+        allocator.free(self.ports);
     }
 };
 
@@ -633,8 +679,18 @@ fn parseRunArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) 
     var detach = false;
     var name: ?[]const u8 = null;
     var rm_on_exit = false;
+    var env_list: std.ArrayList(run_cli_parse.EnvPair) = .empty;
+    var vol_list: std.ArrayList(run_cli_parse.Volume) = .empty;
+    var port_list: std.ArrayList(run_cli_parse.PortMap) = .empty;
+    var workdir: ?[]const u8 = null;
+    var tty = false;
+    var interactive = false;
     while (args.next()) |arg| {
         if (after_sep) {
+            try cmd_list.append(allocator, try allocator.dupe(u8, arg));
+            continue;
+        }
+        if (image != null) {
             try cmd_list.append(allocator, try allocator.dupe(u8, arg));
             continue;
         }
@@ -665,6 +721,48 @@ fn parseRunArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) 
             rm_on_exit = true;
             continue;
         }
+        if (std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "--env")) {
+            const e = args.next() orelse return error.BadRunArgs;
+            const pair = try run_cli_parse.parseEnvArg(e);
+            try env_list.append(allocator, .{
+                .key = try allocator.dupe(u8, pair.key),
+                .value = try allocator.dupe(u8, pair.value),
+            });
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-w") or std.mem.eql(u8, arg, "--workdir")) {
+            const w = args.next() orelse return error.BadRunArgs;
+            workdir = try allocator.dupe(u8, w);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--volume")) {
+            const v = args.next() orelse return error.BadRunArgs;
+            const vol = try run_cli_parse.parseVolumeSpec(v);
+            try vol_list.append(allocator, .{
+                .host = try allocator.dupe(u8, vol.host),
+                .container = try allocator.dupe(u8, vol.container),
+                .read_only = vol.read_only,
+            });
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-p") or std.mem.eql(u8, arg, "--publish")) {
+            const p = args.next() orelse return error.BadRunArgs;
+            try port_list.append(allocator, try run_cli_parse.parsePortSpec(p));
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-i")) {
+            interactive = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-t")) {
+            tty = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-it") or std.mem.eql(u8, arg, "-ti")) {
+            interactive = true;
+            tty = true;
+            continue;
+        }
         if (root == null and image == null and !voila_refkey.looksLikeRef(arg)) {
             root = try allocator.dupe(u8, arg);
             continue;
@@ -687,6 +785,7 @@ fn parseRunArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) 
     const root_abs = try resolveStoreRoot(allocator, root);
     if (root) |owned| allocator.free(owned);
     const name_final = name orelse try allocator.dupe(u8, "");
+    const workdir_final = workdir orelse try allocator.dupe(u8, "");
 
     return .{
         .runtime_cfg = .{ .kind = kind, .store_root = root_abs },
@@ -695,6 +794,124 @@ fn parseRunArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) 
         .detach = detach,
         .name = name_final,
         .rm_on_exit = rm_on_exit,
+        .env = try env_list.toOwnedSlice(allocator),
+        .workdir = workdir_final,
+        .volumes = try vol_list.toOwnedSlice(allocator),
+        .ports = try port_list.toOwnedSlice(allocator),
+        .tty = tty,
+        .interactive = interactive,
+    };
+}
+
+const ExecParsed = struct {
+    runtime_cfg: voila_runtime.Config,
+    context_id: []const u8,
+    cmd: []const []const u8,
+    tty: bool,
+    interactive: bool,
+
+    fn deinit(self: ExecParsed, allocator: std.mem.Allocator) void {
+        allocator.free(self.runtime_cfg.store_root);
+        allocator.free(self.context_id);
+        for (self.cmd) |a| allocator.free(a);
+        allocator.free(self.cmd);
+    }
+};
+
+fn parseExecArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !ExecParsed {
+    var root: ?[]const u8 = null;
+    var kind = voila_runtime.kindFromEnv();
+    var context_id: ?[]const u8 = null;
+    var cmd_list: std.ArrayList([]const u8) = .empty;
+    var after_sep = false;
+    var tty = false;
+    var interactive = false;
+    while (args.next()) |arg| {
+        if (after_sep) {
+            try cmd_list.append(allocator, try allocator.dupe(u8, arg));
+            continue;
+        }
+        if (context_id != null and !std.mem.startsWith(u8, arg, "-")) {
+            try cmd_list.append(allocator, try allocator.dupe(u8, arg));
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--")) {
+            after_sep = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-root")) {
+            const r = args.next() orelse return error.NeedVoilaRoot;
+            root = try allocator.dupe(u8, r);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-backend")) {
+            const b = args.next() orelse return error.BadRunArgs;
+            kind = parseBackendArg(b) orelse return error.BadRunArgs;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-i")) {
+            interactive = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-t")) {
+            tty = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-it") or std.mem.eql(u8, arg, "-ti")) {
+            interactive = true;
+            tty = true;
+            continue;
+        }
+        if (context_id == null) {
+            context_id = try allocator.dupe(u8, arg);
+            continue;
+        }
+        return error.BadRunArgs;
+    }
+    const cid = context_id orelse return error.NeedContextId;
+    if (cmd_list.items.len == 0) return error.NeedCommand;
+    const root_abs = try resolveStoreRoot(allocator, root);
+    if (root) |owned| allocator.free(owned);
+    return .{
+        .runtime_cfg = .{ .kind = kind, .store_root = root_abs },
+        .context_id = cid,
+        .cmd = try cmd_list.toOwnedSlice(allocator),
+        .tty = tty,
+        .interactive = interactive,
+    };
+}
+
+const RmiParsed = struct {
+    runtime_cfg: voila_runtime.Config,
+    image: []const u8,
+
+    fn deinit(self: RmiParsed, allocator: std.mem.Allocator) void {
+        allocator.free(self.runtime_cfg.store_root);
+        allocator.free(self.image);
+    }
+};
+
+fn parseRmiArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !RmiParsed {
+    var root: ?[]const u8 = null;
+    var kind = voila_runtime.kindFromEnv();
+    var image: ?[]const u8 = null;
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-root")) {
+            const r = args.next() orelse return error.NeedVoilaRoot;
+            root = try allocator.dupe(u8, r);
+        } else if (std.mem.eql(u8, arg, "-backend")) {
+            const b = args.next() orelse return error.BadRunArgs;
+            kind = parseBackendArg(b) orelse return error.BadRunArgs;
+        } else if (image == null) {
+            image = try allocator.dupe(u8, arg);
+        }
+    }
+    const img = image orelse return error.NeedImage;
+    const root_abs = try resolveStoreRoot(allocator, root);
+    if (root) |owned| allocator.free(owned);
+    return .{
+        .runtime_cfg = .{ .kind = kind, .store_root = root_abs },
+        .image = img,
     };
 }
 

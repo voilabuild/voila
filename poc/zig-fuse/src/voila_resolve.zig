@@ -147,3 +147,24 @@ pub fn chunkIdToHex(allocator: std.mem.Allocator, id: []const u8) ![]const u8 {
     if (id.len != 32) return error.BadManifestChunk;
     return hex_util.allocHexLower(allocator, id);
 }
+
+pub fn removeImage(allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) !void {
+    const db_path = try std.fmt.allocPrint(allocator, "{s}/images.db", .{voila_root});
+    defer allocator.free(db_path);
+    const db_path_z = try allocator.allocSentinel(u8, db_path.len, 0);
+    defer allocator.free(db_path_z);
+    @memcpy(db_path_z, db_path);
+    var db: ?*sqlite.sqlite3 = null;
+    if (sqlite.sqlite3_open(db_path_z, &db) != sqlite.SQLITE_OK) return Error.SqliteOpen;
+    const db_ptr = db orelse return Error.SqliteOpen;
+    defer _ = sqlite.sqlite3_close(db_ptr);
+    const sql = "DELETE FROM images WHERE ref = ?1";
+    var stmt: ?*sqlite.sqlite3_stmt = null;
+    if (sqlite.sqlite3_prepare_v2(db_ptr, sql, -1, &stmt, null) != sqlite.SQLITE_OK) return Error.SqlitePrepare;
+    defer _ = sqlite.sqlite3_finalize(stmt);
+    const ref_z = try allocator.allocSentinel(u8, image_ref.len, 0);
+    defer allocator.free(ref_z);
+    @memcpy(ref_z, image_ref);
+    _ = sqlite.sqlite3_bind_text(stmt, 1, ref_z, -1, sqlite.SQLITE_STATIC);
+    if (sqlite.sqlite3_step(stmt) != sqlite.SQLITE_DONE) return Error.SqliteStep;
+}
