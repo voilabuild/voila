@@ -75,4 +75,20 @@ fn pushUnique(allocator: std.mem.Allocator, list: *std.ArrayList([]const u8), re
     try list.append(allocator, try allocator.dupe(u8, ref));
 }
 
+/// `{org}/nginx:latest` for Docker-style `nginx` / `nginx:latest`.
+pub fn hubPushRef(allocator: std.mem.Allocator, hub_ref: []const u8, org: []const u8) ![]const u8 {
+    if (org.len == 0) return allocator.dupe(u8, hub_ref);
+    if (std.mem.indexOfScalar(u8, hub_ref, '/')) |slash| {
+        const prefix = hub_ref[0..slash];
+        if (std.mem.eql(u8, prefix, org)) return allocator.dupe(u8, hub_ref);
+        if (std.mem.indexOfScalar(u8, prefix, '.') != null or std.mem.eql(u8, prefix, "localhost")) {
+            if (try dockerShortFromCanonical(allocator, hub_ref)) |short| {
+                defer allocator.free(short);
+                return std.fmt.allocPrint(allocator, "{s}/{s}", .{ org, short });
+            }
+        }
+    }
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ org, hub_ref });
+}
+
 pub const Error = error{EmptyRef};

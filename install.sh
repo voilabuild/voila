@@ -239,6 +239,22 @@ if [ "$PREFIX/voila" != "$PREFIX/zig-fuse" ]; then
 	$SUDO ln -sf voila "$PREFIX/zig-fuse"
 fi
 
+GO_TARBALL="voila_${VERSION}_linux_${ARCH}.tar.gz"
+IMPORT_LIB=""
+case "$PREFIX" in
+	/usr/local/bin|/usr/bin) IMPORT_LIB="/usr/local/lib/voila" ;;
+	*) IMPORT_LIB="${HOME}/.local/lib/voila" ;;
+esac
+log "installing voila-import helper (Go OCI import) into $IMPORT_LIB"
+if curl_auth -fsSL -o "$WORK/$GO_TARBALL" \
+	"https://github.com/${REPO}/releases/download/${VERSION}/${GO_TARBALL}" 2>/dev/null; then
+	$SUDO mkdir -p "$IMPORT_LIB"
+	tar -xzf "$WORK/$GO_TARBALL" -C "$WORK" voila
+	$SUDO install -m 0755 "$WORK/voila" "$IMPORT_LIB/voila-import"
+else
+	warn "could not download $GO_TARBALL — hub auto-import needs voila-import (re-run install or set VOILA_IMPORT_HELPER)"
+fi
+
 case "$PREFIX" in
 	/usr/local/bin|/usr/bin) VOILA_ROOT="/var/lib/voila" ;;
 	*) VOILA_ROOT="${HOME}/.local/share/voila" ;;
@@ -276,7 +292,7 @@ cat <<EOF
 Next steps:
   1. source $USER_ENV   # or add it to your shell rc
   2. voila login        # save drift URL, org, and API key (~/.config/voila/credentials)
-  3. voila pull alpine
+  3. voila pull nginx     # imports from Docker Hub on first pull when needed
   4. voila run --rm alpine echo hi
 
 Docs: https://github.com/${REPO}/blob/main/doc/INSTALL.md

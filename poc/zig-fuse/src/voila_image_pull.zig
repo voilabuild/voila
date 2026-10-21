@@ -8,6 +8,7 @@ const voila_registry_hub = @import("voila_registry_hub.zig");
 const voila_registry = @import("voila_registry.zig");
 const ocireg = @import("voila_ocireg.zig");
 const posix_util = @import("posix_util.zig");
+const voila_hub_import = @import("voila_hub_import.zig");
 
 pub fn pullManifestOnce(
     io: std.Io,
@@ -46,6 +47,18 @@ pub fn pullManifest(
             continue;
         };
         return man;
+    }
+    voila_hub_import.tryImportFromHub(io, allocator, cfg, ref) catch |e| {
+        if (last_err == null) last_err = e;
+    };
+    if (last_err != null) {
+        for (candidates) |candidate| {
+            const man = pullManifestOnce(io, allocator, voila_root, cfg, candidate) catch |e| {
+                last_err = e;
+                continue;
+            };
+            return man;
+        }
     }
     if (last_err) |e| return e;
     return error.HttpStatus;
