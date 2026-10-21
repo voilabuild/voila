@@ -19,28 +19,32 @@ extern "c" fn mount(
     data: ?*anyopaque,
 ) c_int;
 
-pub fn applyInChild(mount_dir: []const u8, volumes: []const run_cli_parse.Volume) !void {
-    if (unshare(@intCast(CLONE_NEWNS | CLONE_NEWUSER)) != 0) return error.UnshareFailed;
-    writeUidMap();
-    const mount_z = try allocZ(mount_dir);
+/// User + mount namespace and optional bind mounts. Returns false when user namespaces
+/// are unavailable (caller should exec via the FUSE mount path + dynamic linker).
+pub fn prepareExecEnvironment(mount_dir: []const u8, volumes: []const run_cli_parse.Volume) bool {
+    if (unshare(@intCast(CLONE_NEWUSER)) != 0) return false;
+    if (!writeUidMap()) return false;
+    writeGidMap();
+    if (unshare(@intCast(CLONE_NEWNS)) != 0) return false;
+    const mount_z = allocZ(mount_dir) catch return false;
     defer std.heap.page_allocator.free(mount_z);
-    if (mount(mount_z, mount_z, null, MS_BIND | MS_REC, null) != 0) return error.BindMountFailed;
-    if (volumes.len == 0) return;
+    if (mount(mount_z, mount_z, null, MS_BIND | MS_REC, null) != 0) return false;
     const slash_z: [*:0]const u8 = "/";
     _ = mount(null, slash_z, null, MS_REC | MS_PRIVATE, null);
     for (volumes) |vol| {
-        const target = try std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ mount_dir, vol.container });
+        const target = std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ mount_dir, vol.container }) catch return false;
         defer std.heap.page_allocator.free(target);
-        try ensureParent(target);
-        const host_z = try allocZ(vol.host);
+        ensureParent(target) catch return false;
+        const host_z = allocZ(vol.host) catch return false;
         defer std.heap.page_allocator.free(host_z);
-        const target_z = try allocZ(target);
+        const target_z = allocZ(target) catch return false;
         defer std.heap.page_allocator.free(target_z);
-        if (mount(host_z, target_z, null, MS_BIND | MS_REC, null) != 0) return error.BindMountFailed;
+        if (mount(host_z, target_z, null, MS_BIND | MS_REC, null) != 0) return false;
         if (vol.read_only) {
             _ = mount(null, target_z, null, MS_BIND | MS_REMOUNT | MS_RDONLY, null);
         }
     }
+    return true;
 }
 
 fn ensureParent(path: []const u8) !void {
@@ -55,16 +59,7 @@ fn ensureParent(path: []const u8) !void {
     try posix_util.makePath(parent);
 }
 
-fn writeUidMap() void {
-    const path = "/proc/self/uid_map";
-    const data = "0 0 1\n";
-    const path_z = std.heap.page_allocator.allocSentinel(u8, path.len, 0) catch return;
-    defer std.heap.page_allocator.free(path_z);
-    @memcpy(path_z, path);
-    const fd = std.c.open(path_z, .{ .ACCMODE = .WRONLY }, @as(std.c.mode_t, 0));
-    if (fd < 0) return;
-    defer _ = std.c.close(fd);
-    _ = std.c.write(fd, data.ptr, data.len);
+fn writeGidMap() void {
     const deny = "/proc/self/setgroups";
     const deny_z = std.heap.page_allocator.allocSentinel(u8, deny.len, 0) catch return;
     defer std.heap.page_allocator.free(deny_z);
@@ -74,6 +69,28 @@ fn writeUidMap() void {
         defer _ = std.c.close(dfd);
         _ = std.c.write(dfd, "deny", 4);
     }
+    const host_gid = std.c.getgid();
+    var data: [64]u8 = undefined;
+    const data_slice = std.fmt.bufPrint(&data, "0 {d} 1\n", .{host_gid}) catch return;
+    _ = writeProcMap("/proc/self/gid_map", data_slice);
+}
+
+fn writeUidMap() bool {
+    const host_uid = std.c.getuid();
+    var data: [64]u8 = undefined;
+    const data_slice = std.fmt.bufPrint(&data, "0 {d} 1\n", .{host_uid}) catch return false;
+    return writeProcMap("/proc/self/uid_map", data_slice);
+}
+
+fn writeProcMap(path: []const u8, data: []const u8) bool {
+    const path_z = std.heap.page_allocator.allocSentinel(u8, path.len, 0) catch return false;
+    defer std.heap.page_allocator.free(path_z);
+    @memcpy(path_z, path);
+    const fd = std.c.open(path_z, .{ .ACCMODE = .WRONLY }, @as(std.c.mode_t, 0));
+    if (fd < 0) return false;
+    defer _ = std.c.close(fd);
+    const n = std.c.write(fd, data.ptr, data.len);
+    return n == @as(@TypeOf(n), @intCast(data.len));
 }
 
 fn allocZ(s: []const u8) ![:0]const u8 {

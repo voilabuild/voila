@@ -15,7 +15,7 @@ extern "c" fn mount(
 extern "c" fn chroot(path: [*:0]const u8) c_int;
 
 pub fn enterRootfs(mount_dir: []const u8) !void {
-    try bindHost("/proc", mount_dir, "/proc");
+    bindHost("/proc", mount_dir, "/proc") catch {};
     bindHost("/dev", mount_dir, "/dev") catch {};
     bindHost("/sys", mount_dir, "/sys") catch {};
     const root_z = try allocZ(mount_dir);

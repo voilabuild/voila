@@ -62,11 +62,17 @@ need_cmd() {
 	command -v "$1" >/dev/null 2>&1 || die "missing required command: '$1'"
 }
 
-CURL_AUTH=()
-for _t in GITHUB_TOKEN GH_TOKEN FORGEJO_TOKEN; do
-	if [ -n "${!_t:-}" ]; then CURL_AUTH=(-H "Authorization: Bearer ${!_t}"); break; fi
-done
-curl_auth() { curl "${CURL_AUTH[@]}" "$@"; }
+curl_auth() {
+	if [ -n "${GITHUB_TOKEN:-}" ]; then
+		curl -H "Authorization: Bearer ${GITHUB_TOKEN}" "$@"
+	elif [ -n "${GH_TOKEN:-}" ]; then
+		curl -H "Authorization: Bearer ${GH_TOKEN}" "$@"
+	elif [ -n "${FORGEJO_TOKEN:-}" ]; then
+		curl -H "Authorization: Bearer ${FORGEJO_TOKEN}" "$@"
+	else
+		curl "$@"
+	fi
+}
 
 confirm() {
 	[ "$ASSUME_YES" -eq 1 ] && return 0
