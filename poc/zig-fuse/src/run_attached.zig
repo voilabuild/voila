@@ -7,6 +7,7 @@ const voila_loader = @import("voila_loader.zig");
 const voila_registry = @import("voila_registry.zig");
 const voila_registry_creds = @import("voila_registry_creds.zig");
 const posix_util = @import("posix_util.zig");
+const mount_exec = @import("mount_exec.zig");
 
 const ServeCtx = struct {
     session: fuse_linux.Session,
@@ -33,6 +34,11 @@ pub fn run(
 
     const mount_dir = try std.fmt.allocPrint(allocator, "/tmp/voila-run-mnt-{d}", .{std.c.getpid()});
     defer allocator.free(mount_dir);
+    const vfs_exec = try mount_exec.resolveArgv0VfsPath(allocator, &fuse_vfs, cmd_argv[0]);
+    defer allocator.free(vfs_exec);
+    const host_argv0 = try mount_exec.hostPathForVfsExec(allocator, mount_dir, vfs_exec);
+    defer allocator.free(host_argv0);
+
     try posix_util.makePath(mount_dir);
 
     var ctx: ServeCtx = .{
@@ -48,7 +54,7 @@ pub fn run(
         }
     }.serve, .{&ctx});
 
-    const result = execChild(io, allocator, mount_dir, cmd_argv);
+    const result = execChild(io, allocator, mount_dir, host_argv0, cmd_argv);
     teardown(allocator, mount_dir, &ctx, thread);
     return result;
 }
@@ -60,10 +66,8 @@ fn teardown(allocator: std.mem.Allocator, mount_dir: []const u8, ctx: *ServeCtx,
     ctx.session.deinit();
 }
 
-fn execChild(io: std.Io, allocator: std.mem.Allocator, mount_dir: []const u8, cmd_argv: []const []const u8) !u8 {
-    const host_argv0 = try hostPath(allocator, mount_dir, cmd_argv[0]);
-    defer allocator.free(host_argv0);
-    try waitPath(host_argv0, io);
+fn execChild(io: std.Io, allocator: std.mem.Allocator, mount_dir: []const u8, host_argv0: []const u8, cmd_argv: []const []const u8) !u8 {
+    try mount_exec.waitMountListed(mount_dir, io);
 
     var argv_host: std.ArrayList([]const u8) = .empty;
     defer argv_host.deinit(allocator);
@@ -81,21 +85,6 @@ fn execChild(io: std.Io, allocator: std.mem.Allocator, mount_dir: []const u8, cm
         .exited => |code| code,
         else => 1,
     };
-}
-
-fn hostPath(allocator: std.mem.Allocator, mount_dir: []const u8, argv0: []const u8) ![]const u8 {
-    if (std.mem.startsWith(u8, argv0, "/")) {
-        return std.fmt.allocPrint(allocator, "{s}{s}", .{ mount_dir, argv0 });
-    }
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ mount_dir, argv0 });
-}
-
-fn waitPath(path: []const u8, io: std.Io) !void {
-    for (0..30_000) |_| {
-        if (posix_util.access(path)) return;
-        try io.sleep(std.Io.Duration.fromMilliseconds(1), .awake);
-    }
-    return error.MountNotReady;
 }
 
 fn fusermountU(allocator: std.mem.Allocator, mount_dir: []const u8) void {

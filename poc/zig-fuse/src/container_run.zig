@@ -8,6 +8,7 @@ const voila_registry_creds = @import("voila_registry_creds.zig");
 const posix_util = @import("posix_util.zig");
 const container_store = @import("container_store.zig");
 const container_lifecycle = @import("container_lifecycle.zig");
+const mount_exec = @import("mount_exec.zig");
 const types = @import("runtime/types.zig");
 
 const ServeCtx = struct {
@@ -35,33 +36,39 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, spe
 pub fn runWorker(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, container_id: []const u8) !u8 {
     _ = std.c.setpgid(0, 0);
     var st = try container_store.readState(allocator, voila_root, container_id);
-    defer container_store.freeState(allocator, st);
     const argv = try readCmdArgv(allocator, voila_root, container_id);
     defer freeArgv(allocator, argv);
     st.pid = @intCast(std.c.getpid());
     setStatus(allocator, &st, "running");
     try container_store.writeState(allocator, voila_root, st);
-    const code = runMounted(io, allocator, voila_root, st.image, st.mount_dir, st.log_path, argv, false, container_id, voila_root) catch 1;
-    st = try container_store.readState(allocator, voila_root, container_id);
-    defer container_store.freeState(allocator, st);
-    markExited(allocator, &st);
-    try container_store.writeState(allocator, voila_root, st);
-    if (st.rm_on_exit) container_store.removeContainer(allocator, voila_root, container_id);
+    const image = try allocator.dupe(u8, st.image);
+    const mount_dir = try allocator.dupe(u8, st.mount_dir);
+    const log_path = try allocator.dupe(u8, st.log_path);
+    container_store.freeState(allocator, st);
+    defer allocator.free(image);
+    defer allocator.free(mount_dir);
+    defer allocator.free(log_path);
+    const code = runMounted(io, allocator, voila_root, image, mount_dir, log_path, argv, false, container_id, voila_root) catch 1;
+    var st_exit = try container_store.readState(allocator, voila_root, container_id);
+    defer container_store.freeState(allocator, st_exit);
+    markExited(allocator, &st_exit);
+    try container_store.writeState(allocator, voila_root, st_exit);
+    if (st_exit.rm_on_exit) container_store.removeContainer(allocator, voila_root, container_id);
     return code;
 }
 
 fn runForeground(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, spec: types.RunSpec) !u8 {
     const id = try container_store.newId(allocator);
     defer allocator.free(id);
-    const mount_dir = try std.fmt.allocPrint(allocator, "/tmp/voila-run-mnt-{s}", .{id});
+    const mount_dir = try std.fmt.allocPrint(allocator, "/tmp/zig-fuse-run-mnt-{s}", .{id});
     defer allocator.free(mount_dir);
     const log_path = try container_store.logPath(allocator, voila_root, id);
     defer allocator.free(log_path);
-    const st = try ownedState(allocator, id, spec.name, spec.image, "running", @intCast(std.c.getpid()), mount_dir, log_path, spec.rm_on_exit);
+    var st = try ownedState(allocator, id, spec.name, spec.image, "created", 0, mount_dir, log_path, spec.rm_on_exit);
     defer container_store.freeState(allocator, st);
     try container_store.writeState(allocator, voila_root, st);
     try writeCmdArgv(allocator, voila_root, id, spec.argv);
-    const code = runMounted(io, allocator, voila_root, spec.image, mount_dir, log_path, spec.argv, true, id, voila_root) catch 1;
+    const code = try spawnContainerWorkerAndWait(io, allocator, voila_root, id, log_path, &st);
     var st_exit = try container_store.readState(allocator, voila_root, id);
     defer container_store.freeState(allocator, st_exit);
     markExited(allocator, &st_exit);
@@ -70,9 +77,53 @@ fn runForeground(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u
     return code;
 }
 
+fn spawnContainerWorkerAndWait(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    voila_root: []const u8,
+    id: []const u8,
+    log_path: []const u8,
+    st: *container_store.State,
+) !u8 {
+    const exe = try selfExePath(allocator);
+    defer allocator.free(exe);
+    const root_z = try allocator.dupe(u8, voila_root);
+    defer allocator.free(root_z);
+    const id_z = try allocator.dupe(u8, id);
+    defer allocator.free(id_z);
+    var worker = try std.process.spawn(io, .{
+        .argv = &[_][]const u8{
+            exe,
+            "container-worker",
+            "-root",
+            root_z,
+            "-id",
+            id_z,
+        },
+        .pgid = 0,
+    });
+    if (worker.id) |wp| {
+        st.pid = @intCast(wp);
+        setStatus(allocator, st, "running");
+        try container_store.writeState(allocator, voila_root, st.*);
+    }
+    const term = try worker.wait(io);
+    try printLogFile(log_path);
+    return switch (term) {
+        .exited => |c| c,
+        else => 1,
+    };
+}
+
+fn printLogFile(path: []const u8) !void {
+    const data = posix_util.readFileAlloc(std.heap.page_allocator, path, 16 * 1024 * 1024) catch return;
+    defer std.heap.page_allocator.free(data);
+    writeAllFd(std.c.STDOUT_FILENO, data);
+}
+
 fn runDetached(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, spec: types.RunSpec) !u8 {
     const id = try container_store.newId(allocator);
-    const mount_dir = try std.fmt.allocPrint(allocator, "/tmp/voila-run-mnt-{s}", .{id});
+    const mount_dir = try std.fmt.allocPrint(allocator, "/tmp/zig-fuse-run-mnt-{s}", .{id});
     const log_path = try container_store.logPath(allocator, voila_root, id);
     var st = try ownedState(allocator, id, spec.name, spec.image, "created", 0, mount_dir, log_path, spec.rm_on_exit);
     defer container_store.freeState(allocator, st);
@@ -130,6 +181,11 @@ fn runMounted(
     const tree = try voila_loader.loadTreeRoot(allocator, voila_root, image);
     var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(allocator, tree) };
     defer fuse_vfs.deinit();
+    const vfs_exec = try mount_exec.resolveArgv0VfsPath(allocator, &fuse_vfs, cmd_argv[0]);
+    defer allocator.free(vfs_exec);
+    const host_argv0 = try mount_exec.hostPathForVfsExec(allocator, mount_dir, vfs_exec);
+    defer allocator.free(host_argv0);
+
     try posix_util.makePath(mount_dir);
     var ctx: ServeCtx = .{
         .session = try fuse_linux.mountSession(allocator, mount_dir, &fuse_vfs),
@@ -142,7 +198,7 @@ fn runMounted(
             };
         }
     }.serve, .{&ctx});
-    const result = execChild(io, allocator, mount_dir, log_path, cmd_argv, tee_tty);
+    const result = execChild(io, allocator, mount_dir, host_argv0, log_path, cmd_argv, tee_tty);
     ctx.session.stop();
     fusermountU(allocator, mount_dir);
     thread.join();
@@ -155,13 +211,12 @@ fn execChild(
     io: std.Io,
     allocator: std.mem.Allocator,
     mount_dir: []const u8,
+    host_argv0: []const u8,
     log_path: []const u8,
     cmd_argv: []const []const u8,
     tee_tty: bool,
 ) !u8 {
-    const host_argv0 = try resolveHostArgv0(allocator, mount_dir, cmd_argv[0]);
-    defer allocator.free(host_argv0);
-    try waitPath(host_argv0, io);
+    try mount_exec.waitMountListed(mount_dir, io);
     var argv_host: std.ArrayList([]const u8) = .empty;
     defer argv_host.deinit(allocator);
     try argv_host.append(allocator, host_argv0);
@@ -274,38 +329,6 @@ fn ownedState(
     };
 }
 
-const default_path_dirs = [_][]const u8{
-    "/usr/local/sbin",
-    "/usr/local/bin",
-    "/usr/sbin",
-    "/usr/bin",
-    "/sbin",
-    "/bin",
-};
-
-fn resolveHostArgv0(allocator: std.mem.Allocator, mount_dir: []const u8, argv0: []const u8) ![]const u8 {
-    if (std.mem.indexOfScalar(u8, argv0, '/') != null) return hostPath(allocator, mount_dir, argv0);
-    for (default_path_dirs) |dir| {
-        const candidate = try std.fmt.allocPrint(allocator, "{s}{s}/{s}", .{ mount_dir, dir, argv0 });
-        if (posix_util.access(candidate)) return candidate;
-        allocator.free(candidate);
-    }
-    return hostPath(allocator, mount_dir, argv0);
-}
-
-fn hostPath(allocator: std.mem.Allocator, mount_dir: []const u8, argv0: []const u8) ![]const u8 {
-    if (std.mem.startsWith(u8, argv0, "/")) return std.fmt.allocPrint(allocator, "{s}{s}", .{ mount_dir, argv0 });
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ mount_dir, argv0 });
-}
-
-fn waitPath(path: []const u8, io: std.Io) !void {
-    for (0..30_000) |_| {
-        if (posix_util.access(path)) return;
-        try io.sleep(std.Io.Duration.fromMilliseconds(1), .awake);
-    }
-    return error.MountNotReady;
-}
-
 fn fusermountU(allocator: std.mem.Allocator, mount_dir: []const u8) void {
     const cmd = std.fmt.allocPrint(allocator, "fusermount3 -u {s} 2>/dev/null || umount {s} 2>/dev/null", .{ mount_dir, mount_dir }) catch return;
     defer allocator.free(cmd);
@@ -386,4 +409,11 @@ fn writeFile(path: []const u8, data: []const u8) !void {
     }
 }
 
-pub const Error = error{NeedFuse, MountNotReady, FileOpenFailed, FileWriteFailed, ExePathFailed};
+pub const Error = error{
+    NeedFuse,
+    MountNotReady,
+    ExecNotFound,
+    FileOpenFailed,
+    FileWriteFailed,
+    ExePathFailed,
+};

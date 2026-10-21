@@ -41,7 +41,8 @@ pub fn fuseConfUserAllowOtherFromBytes(data: []const u8) bool {
 
 pub fn fuseMountOptions() []const u8 {
     if (std.os.linux.geteuid() == 0) return "ro,allow_other";
-    if (fuseUserAllowOtherEnabled()) return "ro,allow_other";
+    // Non-root attached/detached runs exec as the mounter; allow_other often EPERM when
+    // another FUSE mount is active even with user_allow_other in fuse.conf.
     return "ro";
 }
 
