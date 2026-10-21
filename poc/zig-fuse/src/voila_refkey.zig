@@ -16,10 +16,11 @@ pub fn refKey(allocator: std.mem.Allocator, ref: []const u8) ![]const u8 {
     return std.fmt.allocPrint(allocator, "{s}-{s}", .{ sanitized.items, &hex8 });
 }
 
-/// Matches imagestore.LooksLikeRef (':' or '/' present).
+/// Docker-style image refs, including bare names like `alpine` or `nginx`.
 pub fn looksLikeRef(query: []const u8) bool {
+    if (query.len == 0) return false;
     for (query) |c| {
-        if (c == ':' or c == '/') return true;
+        if (c == ':' or c == '/' or c == '@') return true;
     }
-    return false;
+    return true;
 }

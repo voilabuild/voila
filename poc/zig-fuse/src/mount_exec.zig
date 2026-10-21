@@ -114,11 +114,23 @@ pub fn execViaFuseMount(
     const host_bin = std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ mount_dir, vfs_exec }) catch std.c._exit(127);
     defer std.heap.page_allocator.free(host_bin);
     const host_bin_z = std.heap.page_allocator.allocSentinel(u8, host_bin.len, 0) catch std.c._exit(127);
-    defer std.heap.page_allocator.free(host_bin_z);
     @memcpy(host_bin_z, host_bin);
 
-    var direct_argv: [2:null]?[*:0]const u8 = .{ host_bin_z.ptr, null };
-    _ = std.c.execve(host_bin_z.ptr, @ptrCast(&direct_argv), std.c.environ);
+    var host_argv_storage: [32][*:0]const u8 = undefined;
+    var host_argc: usize = 0;
+    host_argv_storage[host_argc] = host_bin_z.ptr;
+    host_argc += 1;
+    for (cmd_argv[1..]) |arg| {
+        if (host_argc >= host_argv_storage.len) std.c._exit(127);
+        const z = std.heap.page_allocator.allocSentinel(u8, arg.len, 0) catch std.c._exit(127);
+        @memcpy(z, arg);
+        host_argv_storage[host_argc] = z.ptr;
+        host_argc += 1;
+    }
+    var host_cargv: [33:null]?[*:0]const u8 = undefined;
+    for (0..host_argc) |i| host_cargv[i] = host_argv_storage[i];
+    host_cargv[host_argc] = null;
+    _ = std.c.execve(host_bin_z.ptr, @ptrCast(&host_cargv), std.c.environ);
 
     for (interpreter_candidates) |interp_vfs| {
         const host_ld = std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ mount_dir, interp_vfs }) catch continue;
