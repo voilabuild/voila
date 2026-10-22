@@ -3,7 +3,7 @@ set -euo pipefail
 TO="${VOILA_TEST_TIMEOUT:-90}"
 for m in /tmp/zig-fuse-run-mnt-*; do
   [ -d "$m" ] || continue
-  fusermount3 -u "$m" 2>/dev/null || umount "$m" 2>/dev/null || true
+  timeout 2 fusermount3 -u "$m" 2>/dev/null || timeout 2 umount "$m" 2>/dev/null || true
   rmdir "$m" 2>/dev/null || true
 done
 run() {
