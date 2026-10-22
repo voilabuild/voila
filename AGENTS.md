@@ -3,12 +3,6 @@
 voila runs OCI images from a content-addressed chunk store (BLAKE3 ids, zstd blobs), mounted
 through FUSE or EROFS+NBD. Linux only. Rules: [CONTRIBUTING.md](CONTRIBUTING.md). Design: [PRD](doc/zig/PRD-code-org.md).
 
-## Migration state
-
-- Zig is replacing Go. Do not add features to Go code (`cmd/`, `internal/`); the frozen copy lives on branch `main-legacy`.
-- Until PRD phase 2 lands, Zig code lives in `poc/zig-fuse` (CLI), `poc/zig-nbd` (EROFS/NBD) and
-  `poc/zig-voilad` (daemon). New code goes into the root layout from the PRD, not into `poc/`.
-
 ## Build & test
 
 ```
@@ -18,6 +12,12 @@ zig fmt --check .
 ```
 
 Privileged and e2e failures in a sandbox are usually environmental. Reproduce them on a clean tree before investigating.
+
+## Layout
+
+Root `build.zig` / `build.zig.zon`. Zig sources under `src/` (`core`, `codec`, `c`, `sys`, `store`, `registry`, `mount`, `runtime`, `daemon`, `cli`, `app`). Binaries: `cmd/voila/main.zig`, `cmd/voilad/main.zig`.
+
+Frozen Go sources for the Docker Hub import helper live on tag `go-final` (built as `voila-import` in release CI).
 
 ## Layers (dependencies point down; build.zig enforces it)
 
@@ -32,7 +32,7 @@ daemon, cli, app app/ is the only place that picks implementations and reads env
 ## Adding an implementation (backend, launcher, transport…)
 
 1. Create `src/<layer>/<impl>/` implementing that layer's interface.
-2. Register it in `src/<layer>/impls.zig`.
+2. Register it in `src/<layer>/impls.zig` when present.
 3. Gate heavy deps behind a `-D<impl>` build option.
 
 ## Do not

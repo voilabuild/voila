@@ -1,0 +1,7 @@
+const hub = @import("./voila_registry_hub.zig");
+pub const Config = hub.Config;
+pub const g_io = hub.g_io;
+pub const setIo = hub.setIo;
+pub const configure = hub.configure;
+pub const loadFromEnv = hub.loadFromEnv;
+pub const getConfigCopy = hub.getConfigCopy;

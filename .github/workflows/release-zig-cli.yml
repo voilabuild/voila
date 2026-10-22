@@ -1,5 +1,4 @@
-# release-zig-cli.yml — build zig-fuse (daemonless Zig CLI) for linux/amd64 + arm64
-# and attach binaries to the GitHub Release created by release.yml (GoReleaser).
+# release-zig-cli.yml — static musl voila CLI (+ voila-import helper from go-final) on v* tags.
 
 name: release-zig-cli
 
@@ -22,14 +21,18 @@ jobs:
             arch: amd64
             zig_target: x86_64-linux-musl
             zig_archive: zig-x86_64-linux-0.17.0
+            goarch: amd64
           - runner: ubuntu-24.04-arm
             arch: arm64
             zig_target: aarch64-linux-musl
             zig_archive: zig-aarch64-linux-0.17.0
+            goarch: arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Zig 0.17.0
         env:
@@ -41,11 +44,9 @@ jobs:
           echo "$PWD/${{ matrix.zig_archive }}" >> "$GITHUB_PATH"
 
       - name: Build voila
-        working-directory: poc/zig-fuse
         run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.zig_target }}
 
       - name: Require a fully static binary
-        working-directory: poc/zig-fuse
         run: |
           set -euo pipefail
           file zig-out/bin/voila | grep -q 'statically linked'
@@ -55,22 +56,39 @@ jobs:
             exit 1
           fi
 
-      - name: Package release binary
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build voila-import from go-final
+        run: |
+          set -euo pipefail
+          git fetch --depth 1 origin tag go-final
+          work="$(mktemp -d)"
+          git archive go-final | tar -x -C "$work"
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} \
+            go -C "$work" build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/voila-import" ./cmd/voila
+
+      - name: Package release binaries
         env:
           TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('workflow-{0}', github.run_id) }}
         run: |
           set -euo pipefail
-          asset="voila_${TAG}_linux_${{ matrix.arch }}"
-          cp "poc/zig-fuse/zig-out/bin/voila" "$asset"
-          sha256sum "$asset" > "${asset}.sha256"
-          echo "ASSET=$asset" >> "$GITHUB_ENV"
+          voila_asset="voila_${TAG}_linux_${{ matrix.arch }}"
+          import_asset="voila-import_${TAG}_linux_${{ matrix.arch }}"
+          cp zig-out/bin/voila "$voila_asset"
+          cp voila-import "$import_asset"
+          sha256sum "$voila_asset" "$import_asset" > "checksums_${{ matrix.arch }}.txt"
+          echo "VOILA_ASSET=$voila_asset" >> "$GITHUB_ENV"
+          echo "IMPORT_ASSET=$import_asset" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
           name: voila-${{ matrix.arch }}
           path: |
             voila_*_linux_${{ matrix.arch }}
-            voila_*_linux_${{ matrix.arch }}.sha256
+            voila-import_*_linux_${{ matrix.arch }}
+            checksums_${{ matrix.arch }}.txt
 
   release:
     if: github.ref_type == 'tag'
@@ -86,31 +104,18 @@ jobs:
       - name: Merge checksums
         run: |
           set -euo pipefail
-          cat dist/*.sha256 > dist/voila-checksums.txt
+          cat dist/checksums_*.txt > dist/voila-checksums.txt
           ls -la dist/
 
-      - name: Wait for GoReleaser release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          for _ in $(seq 1 90); do
-            if gh release view "$TAG" -R "$GH_REPO" >/dev/null 2>&1; then
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "timed out waiting for release $TAG (release.yml / GoReleaser)" >&2
-          exit 1
-
-      - name: Upload to GitHub Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
           files: |
             dist/voila_*_linux_amd64
             dist/voila_*_linux_arm64
+            dist/voila-import_*_linux_amd64
+            dist/voila-import_*_linux_arm64
             dist/voila-checksums.txt
           fail_on_unmatched_files: true

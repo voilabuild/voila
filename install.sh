@@ -245,20 +245,19 @@ if [ "$PREFIX/voila" != "$PREFIX/zig-fuse" ]; then
 	$SUDO ln -sf voila "$PREFIX/zig-fuse"
 fi
 
-GO_TARBALL="voila_${VERSION}_linux_${ARCH}.tar.gz"
+IMPORT_BIN="voila-import_${VERSION}_linux_${ARCH}"
 IMPORT_LIB=""
 case "$PREFIX" in
 	/usr/local/bin|/usr/bin) IMPORT_LIB="/usr/local/lib/voila" ;;
 	*) IMPORT_LIB="${HOME}/.local/lib/voila" ;;
 esac
-log "installing voila-import helper (Go OCI import) into $IMPORT_LIB"
-if curl_auth -fsSL -o "$WORK/$GO_TARBALL" \
-	"https://github.com/${REPO}/releases/download/${VERSION}/${GO_TARBALL}" 2>/dev/null; then
+log "installing voila-import helper into $IMPORT_LIB"
+if curl_auth -fsSL -o "$WORK/$IMPORT_BIN" \
+	"https://github.com/${REPO}/releases/download/${VERSION}/${IMPORT_BIN}" 2>/dev/null; then
 	$SUDO mkdir -p "$IMPORT_LIB"
-	tar -xzf "$WORK/$GO_TARBALL" -C "$WORK" voila
-	$SUDO install -m 0755 "$WORK/voila" "$IMPORT_LIB/voila-import"
+	$SUDO install -m 0755 "$WORK/$IMPORT_BIN" "$IMPORT_LIB/voila-import"
 else
-	warn "could not download $GO_TARBALL — hub auto-import needs voila-import (re-run install or set VOILA_IMPORT_HELPER)"
+	warn "could not download $IMPORT_BIN — hub auto-import needs voila-import (re-run install or set VOILA_IMPORT_HELPER)"
 fi
 
 case "$PREFIX" in
