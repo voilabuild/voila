@@ -34,6 +34,7 @@ pub fn start(io: std.Io, ports: []const run_cli_parse.PortMap) ![]Forwarder {
         });
         const pid: i32 = if (child.id) |id| @intCast(id) else -1;
         try out.append(std.heap.page_allocator, .{ .pid = pid });
+        try io.sleep(std.Io.Duration.fromMilliseconds(50), .awake);
     }
     return try out.toOwnedSlice(std.heap.page_allocator);
 }

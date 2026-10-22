@@ -19,18 +19,59 @@ extern "c" fn mount(
     data: ?*anyopaque,
 ) c_int;
 
-/// User + mount namespace and optional bind mounts. Returns false when user namespaces
-/// are unavailable (caller should exec via the FUSE mount path + dynamic linker).
-pub fn prepareExecEnvironment(mount_dir: []const u8, volumes: []const run_cli_parse.Volume) bool {
+/// Quick check: unprivileged user + mount namespaces (no bind mounts).
+pub fn probeUserNamespaces() bool {
+    const host_uid = std.c.getuid();
+    const host_gid = std.c.getgid();
     if (unshare(@intCast(CLONE_NEWUSER)) != 0) return false;
-    if (!writeUidMap()) return false;
-    writeGidMap();
+    if (!writeUidMapFor(host_uid)) return false;
+    writeGidMapFor(host_gid);
     if (unshare(@intCast(CLONE_NEWNS)) != 0) return false;
+    return true;
+}
+
+fn enterUserNamespace() bool {
+    const host_uid = std.c.getuid();
+    const host_gid = std.c.getgid();
+    if (unshare(@intCast(CLONE_NEWUSER)) != 0) return false;
+    if (!writeUidMapFor(host_uid)) return false;
+    writeGidMapFor(host_gid);
+    return true;
+}
+
+fn enterUserAndMountNs() bool {
+    if (!enterUserNamespace()) return false;
+    if (unshare(@intCast(CLONE_NEWNS)) != 0) return false;
+    return true;
+}
+
+fn bindPrivateRoot(mount_dir: []const u8) bool {
     const mount_z = allocZ(mount_dir) catch return false;
     defer std.heap.page_allocator.free(mount_z);
     if (mount(mount_z, mount_z, null, MS_BIND | MS_REC, null) != 0) return false;
     const slash_z: [*:0]const u8 = "/";
     _ = mount(null, slash_z, null, MS_REC | MS_PRIVATE, null);
+    return true;
+}
+
+/// User namespace only (keeps the host mount namespace — FUSE stays visible).
+pub fn enterUserNamespaceOnly() bool {
+    return enterUserNamespace();
+}
+
+/// Private mount namespace (caller must already be in a user namespace).
+pub fn attachPrivateMountRoot(mount_dir: []const u8) bool {
+    if (unshare(@intCast(CLONE_NEWNS)) != 0) return false;
+    return bindPrivateRoot(mount_dir);
+}
+
+/// Call in the FUSE worker before mounting when `-v` bind mounts are used.
+pub fn setupMountNamespaceForWorker(mount_dir: []const u8) bool {
+    if (!enterUserAndMountNs()) return false;
+    return bindPrivateRoot(mount_dir);
+}
+
+pub fn applyVolumeBinds(mount_dir: []const u8, volumes: []const run_cli_parse.Volume) bool {
     for (volumes) |vol| {
         const target = std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ mount_dir, vol.container }) catch return false;
         defer std.heap.page_allocator.free(target);
@@ -47,6 +88,12 @@ pub fn prepareExecEnvironment(mount_dir: []const u8, volumes: []const run_cli_pa
     return true;
 }
 
+/// User + mount namespace and optional bind mounts (legacy; prefer worker setup + applyVolumeBinds).
+pub fn prepareExecEnvironment(mount_dir: []const u8, volumes: []const run_cli_parse.Volume) bool {
+    if (!setupMountNamespaceForWorker(mount_dir)) return false;
+    return applyVolumeBinds(mount_dir, volumes);
+}
+
 fn ensureParent(path: []const u8) !void {
     var i = path.len;
     while (i > 0) {
@@ -59,7 +106,7 @@ fn ensureParent(path: []const u8) !void {
     try posix_util.makePath(parent);
 }
 
-fn writeGidMap() void {
+fn writeGidMapFor(host_gid: std.c.uid_t) void {
     const deny = "/proc/self/setgroups";
     const deny_z = std.heap.page_allocator.allocSentinel(u8, deny.len, 0) catch return;
     defer std.heap.page_allocator.free(deny_z);
@@ -69,14 +116,12 @@ fn writeGidMap() void {
         defer _ = std.c.close(dfd);
         _ = std.c.write(dfd, "deny", 4);
     }
-    const host_gid = std.c.getgid();
     var data: [64]u8 = undefined;
     const data_slice = std.fmt.bufPrint(&data, "0 {d} 1\n", .{host_gid}) catch return;
     _ = writeProcMap("/proc/self/gid_map", data_slice);
 }
 
-fn writeUidMap() bool {
-    const host_uid = std.c.getuid();
+fn writeUidMapFor(host_uid: std.c.uid_t) bool {
     var data: [64]u8 = undefined;
     const data_slice = std.fmt.bufPrint(&data, "0 {d} 1\n", .{host_uid}) catch return false;
     return writeProcMap("/proc/self/uid_map", data_slice);

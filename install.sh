@@ -292,6 +292,47 @@ case ":$PATH:" in
 	*) warn "add $PREFIX to your PATH (e.g. export PATH=\"$PREFIX:\$PATH\")" ;;
 esac
 
+maybe_install_apparmor_profile() {
+	if [ ! -d /sys/kernel/security/apparmor ]; then
+		return 0
+	fi
+	restrict="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)"
+	if [ "$restrict" != "1" ]; then
+		return 0
+	fi
+	if ! command -v apparmor_parser >/dev/null 2>&1; then
+		warn "AppArmor restricts user namespaces; install apparmor-utils for voila -it/-v/-p"
+		return 0
+	fi
+	VOILA_BIN="$PREFIX/voila"
+	log "installing AppArmor profile for user namespaces (Ubuntu 24.04+)"
+	$SUDO tee /etc/apparmor.d/voila >/dev/null <<EOF
+abi <abi/4.0>,
+include <tunables/global>
+
+profile voila $VOILA_BIN flags=(unconfined) {
+	userns,
+	include if exists <local/voila>
+}
+EOF
+	if [ "$VOILA_BIN" != "${HOME}/.local/bin/voila" ] && [ -x "${HOME}/.local/bin/voila" ]; then
+		$SUDO tee -a /etc/apparmor.d/voila >/dev/null <<EOF
+
+profile voila_home ${HOME}/.local/bin/voila flags=(unconfined) {
+	userns,
+	include if exists <local/voila>
+}
+EOF
+	fi
+	if $SUDO apparmor_parser -r /etc/apparmor.d/voila 2>/dev/null; then
+		log "loaded AppArmor profile voila (unprivileged userns allowed for voila binary)"
+	else
+		warn "could not load AppArmor profile; you may need: sudo apparmor_parser -r /etc/apparmor.d/voila"
+	fi
+}
+
+maybe_install_apparmor_profile
+
 printf '\033[1;32m==>\033[0m voila %s installed to %s/voila\n' "$VERSION" "$PREFIX"
 cat <<EOF
 
