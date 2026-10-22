@@ -10,7 +10,7 @@ fn linkStaticZstd(
         .target = target,
         .optimize = optimize,
         .linkage = .static,
-        .compression = false,
+        .compression = true,
         .decompression = true,
         .dictbuilder = false,
         .deprecated = false,
