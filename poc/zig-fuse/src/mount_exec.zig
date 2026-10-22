@@ -56,7 +56,7 @@ fn nextField(line: []const u8, start: usize) ?struct { value: []const u8, end: u
     return .{ .value = line[i..j], .end = j };
 }
 
-fn mountListed(mount_dir: []const u8) bool {
+pub fn mountListed(mount_dir: []const u8) bool {
     const data = posix_util.readFileAlloc(std.heap.page_allocator, "/proc/mounts", 256 * 1024) catch return false;
     defer std.heap.page_allocator.free(data);
     var start: usize = 0;

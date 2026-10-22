@@ -236,6 +236,9 @@ fn runMounted(
     opts: container_run_opts.RunOpts,
 ) !u8 {
     const require_isolation = opts.workdir.len > 0 or opts.volumes.len > 0 or opts.tty or opts.interactive or opts.ports.len > 0;
+    if (require_isolation) {
+        return runMountedIsolated(io, allocator, voila_root, image, mount_dir, log_path, cmd_argv, opts);
+    }
     if (!fuse_linux.canUseFuse()) return error.NeedFuse;
     voila_registry.setIo(io, allocator);
     try voila_login_creds.loadIntoHub(allocator);
@@ -283,6 +286,100 @@ fn runMounted(
     return result;
 }
 
+fn vfsArgv0ForRun(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    voila_root: []const u8,
+    image: []const u8,
+    argv0: []const u8,
+) ![]const u8 {
+    if (argv0.len > 0 and argv0[0] == '/') return allocator.dupe(u8, argv0);
+    voila_registry.setIo(io, allocator);
+    try voila_login_creds.loadIntoHub(allocator);
+    try voila_registry_creds.loadFromCredsFile(allocator, voila_root);
+    try voila_registry.loadFromEnv(allocator);
+    const tree = try voila_loader.loadTreeRoot(io, allocator, voila_root, image);
+    var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(allocator, tree) };
+    defer fuse_vfs.deinit();
+    return mount_exec.resolveArgv0VfsPath(allocator, &fuse_vfs, argv0);
+}
+
+fn runMountedIsolated(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    voila_root: []const u8,
+    image: []const u8,
+    mount_dir: []const u8,
+    log_path: []const u8,
+    cmd_argv: []const []const u8,
+    opts: container_run_opts.RunOpts,
+) !u8 {
+    if (!fuse_linux.canUseFuse()) return error.NeedFuse;
+    voila_registry.setIo(io, allocator);
+    try voila_login_creds.loadIntoHub(allocator);
+    try voila_registry_creds.loadFromCredsFile(allocator, voila_root);
+    try voila_registry.loadFromEnv(allocator);
+    const tree = try voila_loader.loadTreeRoot(io, allocator, voila_root, image);
+    var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(allocator, tree) };
+    defer fuse_vfs.deinit();
+    const vfs_exec = try mount_exec.resolveArgv0VfsPath(allocator, &fuse_vfs, cmd_argv[0]);
+    defer allocator.free(vfs_exec);
+    try posix_util.makePath(mount_dir);
+    var ctx: ServeCtx = .{
+        .session = try fuse_linux.mountSession(allocator, mount_dir, &fuse_vfs),
+        .err = null,
+    };
+    const thread = try std.Thread.spawn(.{}, struct {
+        fn serve(shared: *ServeCtx) void {
+            fuse_linux.serveSession(&shared.session) catch |e| {
+                shared.err = e;
+            };
+        }
+    }.serve, .{&ctx});
+    const forwarders = try container_ports.start(io, opts.ports);
+    defer container_ports.stopAll(forwarders);
+    try mount_exec.waitMountRootReady(mount_dir, io);
+
+    const use_tty = opts.tty or opts.interactive;
+    var pty: ?container_pty.Pty = null;
+    if (use_tty) pty = try container_pty.Pty.open();
+    const pty_master: std.posix.fd_t = if (pty) |p| p.master else -1;
+    if (pty_master >= 0) container_pty.syncWindowSize(pty_master);
+
+    const result = container_isolated_exec.spawnAndWait(io, allocator, .{
+        .mount_dir = mount_dir,
+        .log_path = log_path,
+        .vfs_argv0 = vfs_exec,
+        .cmd_argv = cmd_argv,
+        .opts = opts,
+        .use_tty = use_tty,
+        .pty_slave = if (pty) |p| p.slave else -1,
+    }, pty_master, 120_000) catch |e| {
+        ctx.session.stop();
+        fusermountU(allocator, mount_dir);
+        thread.join();
+        ctx.session.deinit();
+        if (pty) |*p| p.close();
+        return e;
+    };
+
+    if (pty) |*p| p.close();
+    ctx.session.stop();
+    fusermountU(allocator, mount_dir);
+    thread.join();
+    ctx.session.deinit();
+    if (ctx.err) |e| return e;
+
+    if (result == 127) {
+        std.debug.print(
+            "voila: -w, -v, -it, and -p need user namespaces (re-run install.sh for the AppArmor voila profile).\n",
+            .{},
+        );
+        return error.UserNamespacesRequired;
+    }
+    return result;
+}
+
 pub fn execInMount(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -309,15 +406,16 @@ fn execChild(
     require_isolation: bool,
 ) !u8 {
     if (!is_exec) try mount_exec.waitMountRootReady(mount_dir, io);
-    if (require_isolation and !use_tty) {
+    if (require_isolation) {
         return container_isolated_exec.spawnAndWait(io, allocator, .{
             .mount_dir = mount_dir,
             .log_path = log_path,
             .vfs_argv0 = vfs_argv0,
             .cmd_argv = cmd_argv,
             .opts = opts,
-            .use_tty = false,
-        });
+            .use_tty = use_tty,
+            .pty_slave = -1,
+        }, -1, 120_000);
     }
     var argv_z: std.ArrayList([*:0]const u8) = .empty;
     defer {

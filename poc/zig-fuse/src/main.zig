@@ -18,6 +18,7 @@ const container_run = @import("container_run.zig");
 const voila_image_run_config = @import("voila_image_run_config.zig");
 const container_bind = @import("container_bind.zig");
 const container_isolated_exec = @import("container_isolated_exec.zig");
+const container_fuse_sibling = @import("container_fuse_sibling.zig");
 const voila_paths = @import("voila_paths.zig");
 const voila_login_creds = @import("voila_login_creds.zig");
 const run_cli_parse = @import("run_cli_parse.zig");
@@ -76,6 +77,11 @@ pub fn main(init: std.process.Init) !void {
         var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs };
         try fuse_linux.mountAndServe(io, init.gpa, &fuse_vfs, mountpoint);
         return;
+    }
+    if (std.mem.eql(u8, sub, "container-fuse-serve")) {
+        const parsed = try container_fuse_sibling.parseServeCliArgs(init.gpa, &args);
+        container_fuse_sibling.runServe(io, parsed.root, parsed.image, parsed.mount, parsed.ready_fd, parsed.stop_fd);
+        std.process.exit(1);
     }
     if (std.mem.eql(u8, sub, "container-isolated-exec")) {
         const spec = try container_isolated_exec.parseCliArgs(init.gpa, &args);
