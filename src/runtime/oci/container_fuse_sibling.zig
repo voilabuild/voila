@@ -108,8 +108,8 @@ fn execFuseServe(
     const rw = std.fmt.allocPrint(allocator, "{d}", .{ready_w}) catch return;
     const sw = std.fmt.allocPrint(allocator, "{d}", .{stop_r}) catch return;
     const parts = [_][]const u8{
-        exe, "container-fuse-serve", "-root", voila_root, "-image", image, "-mount", mount_dir,
-        "--ready-fd", rw, "--stop-fd", sw,
+        exe,          "container-fuse-serve", "-root",     voila_root, "-image", image, "-mount", mount_dir,
+        "--ready-fd", rw,                     "--stop-fd", sw,
     };
     var zargs: [parts.len][:0]const u8 = undefined;
     for (parts, 0..) |s, i| {
