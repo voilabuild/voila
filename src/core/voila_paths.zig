@@ -25,7 +25,6 @@ pub fn normalizeRegistryUrl(allocator: std.mem.Allocator, raw: []const u8) ![]co
     if (std.mem.endsWith(u8, s, "/registry")) return allocator.dupe(u8, s);
     return std.fmt.allocPrint(allocator, "{s}/registry", .{s});
 }
-
 pub const Error = error{
     NoHome,
     EmptyRegistry,
