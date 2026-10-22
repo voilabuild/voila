@@ -96,7 +96,7 @@ over `/var/run/voila.sock`; output is kept in a byte-budget ring buffer with
 replay+follow; a disconnecting client never kills a context.
 
 **Registry client** (`voila push` / `pull` / `login`): speaks the `/v1` HTTP
-wire protocol documented in [openapi.yaml](../internal/registry/openapi.yaml).
+wire protocol documented in [openapi.yaml](registry/openapi.yaml).
 The standalone filesystem server (`voila-registry`) and the hosted Postgres/S3
 service are maintained outside this release line — see branch
 `backup/main-before-go-registry-move` and

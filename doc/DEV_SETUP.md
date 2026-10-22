@@ -28,7 +28,7 @@ mise install
 | Tool | Version | Purpose |
 |---|---|---|
 | `go` | 1.26.3 (matches `go.mod`) | build, vet, test |
-| `zig` | 0.17.0 | `poc/zig-fuse`, `poc/zig-voilad` (`zig build`) |
+| `zig` | 0.17.0 | root workspace (`zig build`, `zig build test`) |
 | `buf` | 1.71.0 | `make proto` (buf.gen.yaml) |
 | `protoc-gen-go` | 1.36.11 | protobuf Go codegen |
 | `protoc-gen-go-grpc` | 1.6.2 | protobuf gRPC codegen |
@@ -111,7 +111,7 @@ grep -q '^user_allow_other' /etc/fuse.conf || echo 'user_allow_other' >> /etc/fu
 | `fuse3` | FUSE fallback mount path (`/dev/fuse`) when EROFS+NBD is unavailable |
 | `skopeo` | daemonless image pulls for e2e fixtures |
 
-**Zig PoC build** (`poc/zig-fuse`, `poc/zig-voilad` — dev headers/libs mise does not ship):
+**Zig workspace** (from repo root — static musl CLI by default):
 
 ```bash
 apt-get install -y --no-install-recommends \
@@ -140,7 +140,7 @@ After `mise install`, from the repo root:
 
 ```bash
 zig version    # 0.17.0
-cd poc/zig-fuse && zig build
+zig build && zig build test
 cd ../zig-voilad && zig build
 ```
 

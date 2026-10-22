@@ -13,21 +13,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  unit:
+  zig:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: stable
-          cache: true
-      - run: go build ./...
-      - run: go vet -tags=testregistry ./...
-      - run: CGO_ENABLED=0 go test -tags=testregistry ./...
-      - name: gofmt
+
+      - name: Install Zig 0.17.0
+        env:
+          ZIG_VERSION: 0.17.0
         run: |
-          gofmt -l internal/ cmd/ && test -z "$(gofmt -l internal/ cmd/)"
+          set -euo pipefail
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
+            | tar -xJ
+          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+
+      - name: zig fmt --check
+        run: zig fmt --check .
+
+      - name: zig build test
+        run: zig build test
 
   lint-openapi:
     runs-on: ubuntu-latest
@@ -40,4 +45,4 @@ jobs:
           curl -fsSL "https://github.com/daveshanley/vacuum/releases/download/${VACUUM}/vacuum_${VACUUM#v}_linux_x86_64.tar.gz" -o vacuum.tgz
           tar -xzf vacuum.tgz vacuum
       - name: Lint OpenAPI spec
-        run: ./vacuum lint -d internal/registry/openapi.yaml
+        run: ./vacuum lint -d doc/registry/openapi.yaml
