@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 TO="${VOILA_TEST_TIMEOUT:-90}"
+for m in /tmp/zig-fuse-run-mnt-*; do
+  [ -d "$m" ] || continue
+  fusermount3 -u "$m" 2>/dev/null || umount "$m" 2>/dev/null || true
+  rmdir "$m" 2>/dev/null || true
+done
 run() {
   local name="$1"
   shift
@@ -16,7 +21,7 @@ failures=0
 run "userns-probe" voila userns-probe || failures=$((failures+1))
 run "echo" voila run --rm alpine /bin/echo hi || failures=$((failures+1))
 run "exit-code" sh -c 'voila run --rm alpine /bin/sh -c "exit 42"; test $? = 42' || failures=$((failures+1))
-run "env-e" sh -c 'voila run --rm -e FOO=bar alpine /bin/sh -c "test \"$FOO\" = bar"' || failures=$((failures+1))
+run "env-e" voila run --rm -e FOO=bar alpine /bin/sh -c 'test "$FOO" = bar' || failures=$((failures+1))
 run "workdir-w" sh -c 'out=$(voila run --rm -w /tmp alpine /bin/pwd); test "$out" = /tmp' || failures=$((failures+1))
 tmpdir=$(mktemp -d)
 echo bindme > "$tmpdir/file"
