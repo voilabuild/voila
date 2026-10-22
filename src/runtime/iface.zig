@@ -6,6 +6,7 @@ pub const PsRow = types.PsRow;
 pub const LogsOptions = types.LogsOptions;
 pub const KillSpec = types.KillSpec;
 pub const PullSpec = types.PullSpec;
+pub const PushSpec = types.PushSpec;
 pub const ImageInfo = types.ImageInfo;
 pub const ContextRef = types.ContextRef;
 pub const ExecSpec = types.ExecSpec;
@@ -25,6 +26,7 @@ pub const Runtime = struct {
         stop: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, ref: ContextRef) anyerror!void,
         rm: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, ref: ContextRef) anyerror!void,
         pull: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: PullSpec) anyerror!void,
+        push: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: PushSpec) anyerror!void,
         images: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator) anyerror!void,
         exec: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: ExecSpec) anyerror!u8,
         rmi: *const fn (ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: RmiSpec) anyerror!void,
@@ -57,6 +59,10 @@ pub const Runtime = struct {
 
     pub fn pull(self: Runtime, io: std.Io, allocator: std.mem.Allocator, spec: PullSpec) !void {
         return self.vtable.pull(self.ptr, io, allocator, spec);
+    }
+
+    pub fn push(self: Runtime, io: std.Io, allocator: std.mem.Allocator, spec: PushSpec) !void {
+        return self.vtable.push(self.ptr, io, allocator, spec);
     }
 
     pub fn images(self: Runtime, io: std.Io, allocator: std.mem.Allocator) !void {

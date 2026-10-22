@@ -169,6 +169,15 @@ pub fn main(init: std.process.Init) !void {
         try worker.pull(io, init.gpa, .{ .image = parsed.image });
         return;
     }
+    if (std.mem.eql(u8, sub, "push")) {
+        const parsed = try parsePullArgs(init.gpa, &args);
+        defer init.gpa.free(parsed.runtime_cfg.store_root);
+        defer init.gpa.free(parsed.image);
+        var worker = try openRuntime(init.gpa, parsed.runtime_cfg);
+        defer worker.deinit(init.gpa);
+        try worker.push(io, init.gpa, .{ .image = parsed.image });
+        return;
+    }
     if (std.mem.eql(u8, sub, "rmi")) {
         const parsed = try parseRmiArgs(init.gpa, &args);
         defer parsed.deinit(init.gpa);
@@ -254,7 +263,7 @@ fn printUsage() void {
         \\
         \\  voila login [registry-url]
         \\  voila logout
-        \\  voila pull [-root <dir>] <image-ref>
+        \\  voila pull|push [-root <dir>] <image-ref>
         \\  voila run [-root <dir>] [-d] [--name NAME] [--rm] <image-ref> -- <cmd> [args...]
         \\  voila ps|logs|images|stop|kill|rm [-root <dir>] ...
         \\

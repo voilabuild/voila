@@ -52,6 +52,24 @@ pub fn decompressZstdPublic(allocator: std.mem.Allocator, compressed: []const u8
     return decompressZstd(allocator, compressed);
 }
 
+/// Stored on-disk bytes (compressed or raw) for registry upload.
+pub fn loadStoredBytes(allocator: std.mem.Allocator, voila_root: []const u8, chunk_hex: []const u8) ![]u8 {
+    if (chunk_hex.len != 64) return error.BadChunkHex;
+    const path = try chunkBlobPath(allocator, voila_root, chunk_hex);
+    defer allocator.free(path);
+    return posix_util.readFileAlloc(allocator, path, 16 * ChunkSize);
+}
+
+pub fn compressZstdPublic(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    const bound = zstd.ZSTD_compressBound(raw.len);
+    if (zstd.ZSTD_isError(bound) != 0) return error.ZstdEncode;
+    const out = try allocator.alloc(u8, bound);
+    errdefer allocator.free(out);
+    const n = zstd.ZSTD_compress(out.ptr, out.len, raw.ptr, raw.len, 3);
+    if (zstd.ZSTD_isError(n) != 0) return error.ZstdEncode;
+    return out[0..n];
+}
+
 /// Write raw chunk bytes to local store (chunkstore.LocalStore.Put semantics).
 pub fn putChunkRaw(allocator: std.mem.Allocator, voila_root: []const u8, chunk_hex: []const u8, raw: []const u8) !void {
     verifyChunkId(chunk_hex, raw) catch return error.ChunkIntegrity;

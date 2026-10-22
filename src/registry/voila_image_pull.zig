@@ -9,6 +9,7 @@ const voila_registry = @import("./voila_registry.zig");
 const ocireg = @import("./voila_ocireg.zig");
 const posix_util = @import("../sys/posix_util.zig");
 const voila_hub_import = @import("./voila_hub_import.zig");
+const voila_manifest_cache = @import("./voila_manifest_cache.zig");
 const voila_resolve = @import("../runtime/voila_resolve.zig");
 
 pub fn pullManifestOnce(
@@ -25,6 +26,8 @@ pub fn pullManifestOnce(
     const body = try voila_http.httpGet(io, allocator, url, cfg.token);
     defer allocator.free(body);
     const man = try voila_manifest_json.parse(allocator, body);
+    const store_ref = if (man.image_ref.len != 0) man.image_ref else ref;
+    try voila_manifest_cache.save(allocator, voila_root, store_ref, body);
     try persistManifest(allocator, voila_root, ref, man);
     return man;
 }

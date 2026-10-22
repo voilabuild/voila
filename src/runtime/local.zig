@@ -6,6 +6,7 @@ const container_exec = @import("./oci/container_exec.zig");
 const container_lifecycle = @import("./oci/container_lifecycle.zig");
 const registry_session = @import("../registry/registry_session.zig");
 const voila_image_pull = @import("../registry/voila_image_pull.zig");
+const voila_image_push = @import("../registry/voila_image_push.zig");
 const voila_resolve = @import("./voila_resolve.zig");
 const voila_registry = @import("../registry/voila_registry.zig");
 const voila_hub_import = @import("../registry/voila_hub_import.zig");
@@ -31,6 +32,7 @@ const vtable: iface.Runtime.VTable = .{
     .stop = stopImpl,
     .rm = rmImpl,
     .pull = pullImpl,
+    .push = pushImpl,
     .images = imagesImpl,
     .exec = execImpl,
     .rmi = rmiImpl,
@@ -89,6 +91,18 @@ fn pullImpl(ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: typ
         allocator.free(man.merged_root);
     }
     std.debug.print("pulled {s}\n", .{spec.image});
+}
+
+fn pushImpl(ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: types.PushSpec) !void {
+    const self: *Local = @ptrCast(@alignCast(ptr));
+    try registry_session.prepare(io, allocator, self.store_root);
+    const cfg = voila_registry.getConfigCopy(allocator) orelse return iface.Error.NoRegistry;
+    defer {
+        allocator.free(cfg.base_url);
+        allocator.free(cfg.token);
+        allocator.free(cfg.org);
+    }
+    try voila_image_push.pushImage(io, allocator, self.store_root, cfg, spec.image);
 }
 
 fn execImpl(ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: types.ExecSpec) !u8 {

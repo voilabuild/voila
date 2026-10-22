@@ -35,6 +35,89 @@ pub fn httpPostStatus(
     return @backingInt(result.status);
 }
 
+pub fn httpPostJson(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    bearer_token: []const u8,
+    body: []const u8,
+) ![]u8 {
+    var auth_buf: [8192]u8 = undefined;
+    const authorization: std.http.Client.Request.Headers.Value = if (bearer_token.len == 0)
+        .omit
+    else
+        .{ .override = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{bearer_token}) catch return error.HttpStatus };
+
+    var client: std.http.Client = .{
+        .allocator = allocator,
+        .io = io,
+    };
+    defer client.deinit();
+
+    var response: std.Io.Writer.Allocating = .init(allocator);
+    defer response.deinit();
+
+    const result = client.fetch(.{
+        .location = .{ .url = url },
+        .method = .POST,
+        .keep_alive = false,
+        .headers = .{
+            .user_agent = .{ .override = "voila-zig-registry/1.0" },
+            .authorization = authorization,
+            .content_type = .{ .override = "application/json" },
+        },
+        .payload = body,
+        .response_writer = &response.writer,
+    }) catch return error.HttpStatus;
+
+    const code: u16 = @backingInt(result.status);
+    if (code < 200 or code >= 300) return error.HttpStatus;
+    return response.toOwnedSlice();
+}
+
+pub fn httpPut(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    bearer_token: []const u8,
+    body: []const u8,
+    content_type: []const u8,
+    content_encoding: ?[]const u8,
+) !u16 {
+    var auth_buf: [8192]u8 = undefined;
+    const authorization: std.http.Client.Request.Headers.Value = if (bearer_token.len == 0)
+        .omit
+    else
+        .{ .override = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{bearer_token}) catch return error.HttpStatus };
+
+    var extra: [1]std.http.Header = undefined;
+    var extra_headers: []const std.http.Header = &.{};
+    if (content_encoding) |enc| {
+        extra[0] = .{ .name = "Content-Encoding", .value = enc };
+        extra_headers = extra[0..];
+    }
+
+    var client: std.http.Client = .{
+        .allocator = allocator,
+        .io = io,
+    };
+    defer client.deinit();
+
+    const result = client.fetch(.{
+        .location = .{ .url = url },
+        .method = .PUT,
+        .keep_alive = false,
+        .headers = .{
+            .user_agent = .{ .override = "voila-zig-registry/1.0" },
+            .authorization = authorization,
+            .content_type = .{ .override = content_type },
+        },
+        .extra_headers = extra_headers,
+        .payload = body,
+    }) catch return error.HttpStatus;
+    return @backingInt(result.status);
+}
+
 pub fn httpGet(
     io: std.Io,
     allocator: std.mem.Allocator,

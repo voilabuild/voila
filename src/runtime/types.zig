@@ -49,6 +49,10 @@ pub const PullSpec = struct {
     image: []const u8,
 };
 
+pub const PushSpec = struct {
+    image: []const u8,
+};
+
 pub const ImageInfo = struct {
     ref: []const u8,
 };

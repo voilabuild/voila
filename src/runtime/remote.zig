@@ -27,6 +27,7 @@ const vtable: iface.Runtime.VTable = .{
     .stop = stubStop,
     .rm = stubRm,
     .pull = stubPull,
+    .push = stubPush,
     .images = stubImages,
     .exec = stubExec,
     .rmi = stubRmi,
@@ -66,6 +67,11 @@ fn stubRm(ptr: *anyopaque, _: std.Io, _: std.mem.Allocator, _: types.ContextRef)
 }
 
 fn stubPull(ptr: *anyopaque, _: std.Io, _: std.mem.Allocator, _: types.PullSpec) !void {
+    _ = ptr;
+    return iface.Error.NotImplemented;
+}
+
+fn stubPush(ptr: *anyopaque, _: std.Io, _: std.mem.Allocator, _: types.PushSpec) !void {
     _ = ptr;
     return iface.Error.NotImplemented;
 }
