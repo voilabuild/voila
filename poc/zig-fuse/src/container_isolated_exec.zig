@@ -21,9 +21,12 @@ pub const Spec = struct {
 
 pub fn run(spec: Spec) !u8 {
     if (!container_bind.enterUserNamespaceOnly()) return error.UserNamespacesRequired;
-    if (!container_bind.attachPrivateMountRoot(spec.mount_dir)) return error.UserNamespacesRequired;
-    if (spec.opts.volumes.len > 0 and !container_bind.applyVolumeBinds(spec.mount_dir, spec.opts.volumes)) {
-        return error.UserNamespacesRequired;
+    const needs_mount_ns = spec.opts.volumes.len > 0;
+    if (needs_mount_ns) {
+        if (!container_bind.attachPrivateMountRoot(spec.mount_dir)) return error.UserNamespacesRequired;
+        if (!container_bind.applyVolumeBinds(spec.mount_dir, spec.opts.volumes)) {
+            return error.UserNamespacesRequired;
+        }
     }
     for (spec.opts.env) |e| {
         const key_z = std.heap.page_allocator.allocSentinel(u8, e.key.len, 0) catch return error.ExecFailed;
@@ -32,7 +35,7 @@ pub fn run(spec: Spec) !u8 {
         @memcpy(val_z, e.value);
         _ = setenv(key_z, val_z, 1);
     }
-    if (spec.opts.volumes.len > 0) {
+    if (needs_mount_ns) {
         container_chroot.enterRootfs(spec.mount_dir) catch return error.ExecFailed;
     } else {
         const root_z = allocZ(spec.mount_dir) catch return error.ExecFailed;
@@ -139,25 +142,27 @@ pub fn spawnAndWait(_: std.Io, allocator: std.mem.Allocator, spec: Spec, pty_mas
         std.Thread.spawn(.{}, container_pty.copyTerminalToMaster, .{pty_master}) catch null
     else
         null;
-    const deadline_ms = monotonicMs() + @as(i64, @intCast(timeout_ms));
+    const out_thread = if (pty_master >= 0)
+        std.Thread.spawn(.{}, container_pty.pumpMasterToStdout, .{pty_master}) catch null
+    else
+        null;
+    const deadline_ms: ?i64 = if (timeout_ms == 0) null else monotonicMs() + @as(i64, @intCast(timeout_ms));
     while (true) {
-        if (pty_master >= 0) {
-            var buf: [4096]u8 = undefined;
-            const n = std.c.read(pty_master, &buf, buf.len);
-            if (n > 0) _ = std.c.write(std.c.STDOUT_FILENO, buf[0..@intCast(n)].ptr, @intCast(n));
-        }
         const w = std.c.waitpid(pid, &status, std.c.W.NOHANG);
         if (w == pid) break;
         if (w < 0 and std.c.errno(-1) != .CHILD) return error.ForkFailed;
-        if (monotonicMs() > deadline_ms) {
-            _ = std.c.kill(pid, std.c.SIG.KILL);
-            while (std.c.waitpid(pid, &status, 0) < 0 and std.c.errno(-1) == .INTR) {}
-            if (in_thread) |t| t.join();
-            return error.ExecTimeout;
+        if (deadline_ms) |deadline| {
+            if (monotonicMs() > deadline) {
+                _ = std.c.kill(pid, std.c.SIG.KILL);
+                while (std.c.waitpid(pid, &status, 0) < 0 and std.c.errno(-1) == .INTR) {}
+                if (in_thread) |t| t.join();
+                return error.ExecTimeout;
+            }
         }
         sleepMs(10);
     }
     if (in_thread) |t| t.join();
+    if (out_thread) |t| t.join();
     const st: u32 = @bitCast(status);
     if (!std.c.W.IFEXITED(st)) return 1;
     const code: u8 = @intCast(std.c.W.EXITSTATUS(st));

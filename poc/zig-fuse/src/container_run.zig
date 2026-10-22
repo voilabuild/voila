@@ -16,12 +16,12 @@ const container_bind = @import("container_bind.zig");
 const container_chroot = @import("container_chroot.zig");
 const container_userns = @import("container_userns.zig");
 const container_isolated_exec = @import("container_isolated_exec.zig");
+const container_fuse_sibling = @import("container_fuse_sibling.zig");
 const container_ports = @import("container_ports.zig");
 const container_pty = @import("container_pty.zig");
 const run_cli_parse = @import("run_cli_parse.zig");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-
 const ServeCtx = struct {
     session: fuse_linux.Session,
     err: ?anyerror,
@@ -36,6 +36,10 @@ fn markExited(allocator: std.mem.Allocator, st: *container_store.State) void {
 fn setStatus(allocator: std.mem.Allocator, st: *container_store.State, status: []const u8) void {
     allocator.free(st.status);
     st.status = allocator.dupe(u8, status) catch status;
+}
+
+fn needsIsolationFromOpts(opts: container_run_opts.RunOpts) bool {
+    return opts.workdir.len > 0 or opts.volumes.len > 0 or opts.tty or opts.interactive or opts.ports.len > 0;
 }
 
 fn needsIsolation(spec: types.RunSpec) bool {
@@ -235,7 +239,7 @@ fn runMounted(
     cmd_argv: []const []const u8,
     opts: container_run_opts.RunOpts,
 ) !u8 {
-    const require_isolation = opts.workdir.len > 0 or opts.volumes.len > 0 or opts.tty or opts.interactive or opts.ports.len > 0;
+    const require_isolation = needsIsolationFromOpts(opts);
     if (require_isolation) {
         return runMountedIsolated(io, allocator, voila_root, image, mount_dir, log_path, cmd_argv, opts);
     }
@@ -286,24 +290,6 @@ fn runMounted(
     return result;
 }
 
-fn vfsArgv0ForRun(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    voila_root: []const u8,
-    image: []const u8,
-    argv0: []const u8,
-) ![]const u8 {
-    if (argv0.len > 0 and argv0[0] == '/') return allocator.dupe(u8, argv0);
-    voila_registry.setIo(io, allocator);
-    try voila_login_creds.loadIntoHub(allocator);
-    try voila_registry_creds.loadFromCredsFile(allocator, voila_root);
-    try voila_registry.loadFromEnv(allocator);
-    const tree = try voila_loader.loadTreeRoot(io, allocator, voila_root, image);
-    var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(allocator, tree) };
-    defer fuse_vfs.deinit();
-    return mount_exec.resolveArgv0VfsPath(allocator, &fuse_vfs, argv0);
-}
-
 fn runMountedIsolated(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -324,18 +310,8 @@ fn runMountedIsolated(
     defer fuse_vfs.deinit();
     const vfs_exec = try mount_exec.resolveArgv0VfsPath(allocator, &fuse_vfs, cmd_argv[0]);
     defer allocator.free(vfs_exec);
-    try posix_util.makePath(mount_dir);
-    var ctx: ServeCtx = .{
-        .session = try fuse_linux.mountSession(allocator, mount_dir, &fuse_vfs),
-        .err = null,
-    };
-    const thread = try std.Thread.spawn(.{}, struct {
-        fn serve(shared: *ServeCtx) void {
-            fuse_linux.serveSession(&shared.session) catch |e| {
-                shared.err = e;
-            };
-        }
-    }.serve, .{&ctx});
+    var fuse_server = try container_fuse_sibling.start(io, allocator, voila_root, image, mount_dir);
+    defer fuse_server.deinit();
     const forwarders = try container_ports.start(io, opts.ports);
     defer container_ports.stopAll(forwarders);
     try mount_exec.waitMountRootReady(mount_dir, io);
@@ -346,6 +322,7 @@ fn runMountedIsolated(
     const pty_master: std.posix.fd_t = if (pty) |p| p.master else -1;
     if (pty_master >= 0) container_pty.syncWindowSize(pty_master);
 
+    const timeout_ms: u64 = if (opts.ports.len > 0) 0 else 120_000;
     const result = container_isolated_exec.spawnAndWait(io, allocator, .{
         .mount_dir = mount_dir,
         .log_path = log_path,
@@ -354,21 +331,12 @@ fn runMountedIsolated(
         .opts = opts,
         .use_tty = use_tty,
         .pty_slave = if (pty) |p| p.slave else -1,
-    }, pty_master, 120_000) catch |e| {
-        ctx.session.stop();
-        fusermountU(allocator, mount_dir);
-        thread.join();
-        ctx.session.deinit();
+    }, pty_master, timeout_ms) catch |e| {
         if (pty) |*p| p.close();
         return e;
     };
 
     if (pty) |*p| p.close();
-    ctx.session.stop();
-    fusermountU(allocator, mount_dir);
-    thread.join();
-    ctx.session.deinit();
-    if (ctx.err) |e| return e;
 
     if (result == 127) {
         std.debug.print(

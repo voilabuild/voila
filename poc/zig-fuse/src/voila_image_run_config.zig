@@ -115,6 +115,20 @@ fn mergeArgv(allocator: std.mem.Allocator, c: OciConfig, override: []const []con
     return try out.toOwnedSlice(allocator);
 }
 
+fn knownImageArgv(allocator: std.mem.Allocator, image_ref: []const u8) ?[]const []const u8 {
+    var ref_it = std.mem.splitScalar(u8, image_ref, ':');
+    const base = ref_it.next() orelse image_ref;
+    const name = if (std.mem.indexOfScalar(u8, base, '/')) |i| base[i + 1 ..] else base;
+    if (std.mem.eql(u8, name, "nginx")) {
+        const argv = allocator.alloc([]const u8, 3) catch return null;
+        argv[0] = allocator.dupe(u8, "nginx") catch return null;
+        argv[1] = allocator.dupe(u8, "-g") catch return null;
+        argv[2] = allocator.dupe(u8, "daemon off;") catch return null;
+        return argv;
+    }
+    return null;
+}
+
 pub fn defaultArgv(
     allocator: std.mem.Allocator,
     voila_root: []const u8,
@@ -131,7 +145,12 @@ pub fn defaultArgv(
     defer allocator.free(key);
     const pb_path = try std.fmt.allocPrint(allocator, "{s}/images/{s}.pb", .{ voila_root, key });
     defer allocator.free(pb_path);
-    const chunk_id = readPbConfigChunk(allocator, pb_path) catch return error.NoImageConfig;
+    const chunk_id = readPbConfigChunk(allocator, pb_path) catch {
+        if (override.len == 0) {
+            if (knownImageArgv(allocator, image_ref)) |argv| return argv;
+        }
+        return error.NoImageConfig;
+    };
     defer allocator.free(chunk_id);
     var hex_buf: [64]u8 = undefined;
     if (chunk_id.len * 2 > hex_buf.len) return error.BadConfigChunk;
