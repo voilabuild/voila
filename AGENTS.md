@@ -17,7 +17,7 @@ Privileged and e2e failures in a sandbox are usually environmental. Reproduce th
 
 Root `build.zig` / `build.zig.zon`. Zig sources under `src/` (`core`, `codec`, `c`, `sys`, `store`, `registry`, `mount`, `runtime`, `daemon`, `cli`, `app`). Binaries: `cmd/voila/main.zig`, `cmd/voilad/main.zig`.
 
-Frozen Go sources for the Docker Hub import helper live on tag `go-final` (built as `voila-import` in release CI).
+Docker Hub / OCI registry import is native in the static `voila` binary (`voila import`).
 
 ## Layers (dependencies point down; build.zig enforces it)
 

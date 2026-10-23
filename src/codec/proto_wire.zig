@@ -72,3 +72,52 @@ pub fn readString(data: []const u8, off: *usize) Error![]const u8 {
     if (!std.unicode.utf8ValidateSlice(bytes)) return Error.BadUtf8;
     return bytes;
 }
+
+pub fn writeVarint(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: u64) !void {
+    var x = v;
+    while (x >= 0x80) {
+        try out.append(allocator, @as(u8, @truncate(x)) | 0x80);
+        x >>= 7;
+    }
+    try out.append(allocator, @as(u8, @truncate(x)));
+}
+
+pub fn writeTag(out: *std.ArrayList(u8), allocator: std.mem.Allocator, field: u32, wire: u3) !void {
+    const tag: u64 = (@as(u64, field) << 3) | wire;
+    try writeVarint(out, allocator, tag);
+}
+
+pub fn writeLenDelim(out: *std.ArrayList(u8), allocator: std.mem.Allocator, bytes: []const u8) !void {
+    try writeVarint(out, allocator, bytes.len);
+    try out.appendSlice(allocator, bytes);
+}
+
+pub fn writeU32(out: *std.ArrayList(u8), allocator: std.mem.Allocator, field: u32, v: u32) !void {
+    try writeTag(out, allocator, field, 0);
+    try writeVarint(out, allocator, v);
+}
+
+pub fn writeU64(out: *std.ArrayList(u8), allocator: std.mem.Allocator, field: u32, v: u64) !void {
+    try writeTag(out, allocator, field, 0);
+    try writeVarint(out, allocator, v);
+}
+
+pub fn writeBool(out: *std.ArrayList(u8), allocator: std.mem.Allocator, field: u32, v: bool) !void {
+    try writeTag(out, allocator, field, 0);
+    try writeVarint(out, allocator, if (v) 1 else 0);
+}
+
+pub fn writeString(out: *std.ArrayList(u8), allocator: std.mem.Allocator, field: u32, s: []const u8) !void {
+    try writeTag(out, allocator, field, 2);
+    try writeLenDelim(out, allocator, s);
+}
+
+pub fn writeBytes(out: *std.ArrayList(u8), allocator: std.mem.Allocator, field: u32, bytes: []const u8) !void {
+    try writeTag(out, allocator, field, 2);
+    try writeLenDelim(out, allocator, bytes);
+}
+
+pub fn writeSubmessage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, field: u32, sub: []const u8) !void {
+    try writeTag(out, allocator, field, 2);
+    try writeLenDelim(out, allocator, sub);
+}

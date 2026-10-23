@@ -245,21 +245,6 @@ if [ "$PREFIX/voila" != "$PREFIX/zig-fuse" ]; then
 	$SUDO ln -sf voila "$PREFIX/zig-fuse"
 fi
 
-IMPORT_BIN="voila-import_${VERSION}_linux_${ARCH}"
-IMPORT_LIB=""
-case "$PREFIX" in
-	/usr/local/bin|/usr/bin) IMPORT_LIB="/usr/local/lib/voila" ;;
-	*) IMPORT_LIB="${HOME}/.local/lib/voila" ;;
-esac
-log "installing voila-import helper into $IMPORT_LIB"
-if curl_auth -fsSL -o "$WORK/$IMPORT_BIN" \
-	"https://github.com/${REPO}/releases/download/${VERSION}/${IMPORT_BIN}" 2>/dev/null; then
-	$SUDO mkdir -p "$IMPORT_LIB"
-	$SUDO install -m 0755 "$WORK/$IMPORT_BIN" "$IMPORT_LIB/voila-import"
-else
-	warn "could not download $IMPORT_BIN — hub auto-import needs voila-import (re-run install or set VOILA_IMPORT_HELPER)"
-fi
-
 case "$PREFIX" in
 	/usr/local/bin|/usr/bin) VOILA_ROOT="/var/lib/voila" ;;
 	*) VOILA_ROOT="${HOME}/.local/share/voila" ;;
