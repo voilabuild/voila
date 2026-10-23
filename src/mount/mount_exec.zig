@@ -22,20 +22,10 @@ pub fn waitMountListed(mount_dir: []const u8, io: std.Io) !void {
     return error.MountNotReady;
 }
 
-/// Wait until the mount root is readable in this process (safe outside the FUSE server).
+/// Wait until the FUSE mount appears in /proc/mounts (do not stat the mountpoint here —
+/// a stuck FUSE handler would block forever in the same address space as the server thread).
 pub fn waitMountRootReady(mount_dir: []const u8, io: std.Io) !void {
     try waitMountListed(mount_dir, io);
-    for (0..30_000) |_| {
-        if (!posix_util.access(mount_dir)) {
-            try io.sleep(std.Io.Duration.fromMilliseconds(1), .awake);
-            continue;
-        }
-        const bin = std.fmt.allocPrint(std.heap.page_allocator, "{s}/bin", .{mount_dir}) catch continue;
-        defer std.heap.page_allocator.free(bin);
-        if (posix_util.access(bin)) return;
-        try io.sleep(std.Io.Duration.fromMilliseconds(1), .awake);
-    }
-    return error.MountNotReady;
 }
 
 /// Wait until a path under the mount is visible in this process (safe outside the FUSE server).

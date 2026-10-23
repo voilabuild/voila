@@ -4,6 +4,8 @@ const ocireg = @import("../registry/voila_ocireg.zig");
 const hex_util = @import("../core/hex_util.zig");
 const registry_ref = @import("../registry/voila_registry_ref.zig");
 const voila_login_creds = @import("../registry/voila_login_creds.zig");
+const voila_refkey = @import("../core/voila_refkey.zig");
+const voila_manifest_cache = @import("../registry/voila_manifest_cache.zig");
 
 pub const Error = error{
     SqliteOpen,
@@ -199,4 +201,30 @@ pub fn removeImage(allocator: std.mem.Allocator, voila_root: []const u8, image_r
     @memcpy(ref_z, image_ref);
     _ = sqlite.sqlite3_bind_text(stmt, 1, ref_z, -1, sqlite.SQLITE_STATIC);
     if (sqlite.sqlite3_step(stmt) != sqlite.SQLITE_DONE) return Error.SqliteStep;
+    try deleteImageSidecars(allocator, voila_root, image_ref);
+}
+
+fn deleteImageSidecars(allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) !void {
+    deleteSidecarsForRef(allocator, voila_root, image_ref);
+    const norm = registry_ref.normalizeUserRef(allocator, image_ref) catch return;
+    defer allocator.free(norm);
+    if (!std.mem.eql(u8, norm, image_ref)) deleteSidecarsForRef(allocator, voila_root, norm);
+}
+
+fn deleteSidecarsForRef(allocator: std.mem.Allocator, voila_root: []const u8, store_ref: []const u8) void {
+    const key = voila_refkey.refKey(allocator, store_ref) catch return;
+    defer allocator.free(key);
+    const pb = std.fmt.allocPrint(allocator, "{s}/images/{s}.pb", .{ voila_root, key }) catch return;
+    defer allocator.free(pb);
+    unlinkQuiet(pb);
+    const man = voila_manifest_cache.manifestPath(allocator, voila_root, store_ref) catch return;
+    defer allocator.free(man);
+    unlinkQuiet(man);
+}
+
+fn unlinkQuiet(path: []const u8) void {
+    const path_z = std.heap.page_allocator.allocSentinel(u8, path.len, 0) catch return;
+    defer std.heap.page_allocator.free(path_z);
+    @memcpy(path_z, path);
+    _ = std.c.unlink(path_z);
 }

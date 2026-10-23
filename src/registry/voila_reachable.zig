@@ -103,8 +103,6 @@ pub fn reachableHexes(
     while (it.next()) |k| {
         try out.append(allocator, try allocator.dupe(u8, k.*));
     }
-    var kit = reachable.keyIterator();
-    while (kit.next()) |k| allocator.free(k.*);
     reachable.deinit();
     return out.toOwnedSlice(allocator);
 }

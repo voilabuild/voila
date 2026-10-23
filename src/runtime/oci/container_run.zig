@@ -104,7 +104,10 @@ pub fn runWorker(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u
     defer allocator.free(log_path);
     const opts = try container_run_opts.readRunOpts(allocator, voila_root, container_id);
     defer opts.deinit(allocator);
-    const code = runMounted(io, allocator, voila_root, image, mount_dir, log_path, argv, opts) catch 1;
+    const code = runMounted(io, allocator, voila_root, image, mount_dir, log_path, argv, opts) catch |e| {
+        std.debug.print("voila: run failed: {}\n", .{e});
+        return 1;
+    };
     var st_exit = try container_store.readState(allocator, voila_root, container_id);
     defer container_store.freeState(allocator, st_exit);
     markExited(allocator, &st_exit);
@@ -253,41 +256,13 @@ fn runMounted(
     defer fuse_vfs.deinit();
     const vfs_exec = try mount_exec.resolveArgv0VfsPath(allocator, &fuse_vfs, cmd_argv[0]);
     defer allocator.free(vfs_exec);
-    try posix_util.makePath(mount_dir);
-    var ctx: ServeCtx = .{
-        .session = try fuse_linux.mountSession(allocator, mount_dir, &fuse_vfs),
-        .err = null,
-    };
-    const thread = try std.Thread.spawn(.{}, struct {
-        fn serve(shared: *ServeCtx) void {
-            fuse_linux.serveSession(&shared.session) catch |e| {
-                shared.err = e;
-            };
-        }
-    }.serve, .{&ctx});
+    var fuse_server = try container_fuse_sibling.start(io, allocator, voila_root, image, mount_dir);
+    defer fuse_server.deinit();
     const forwarders = try container_ports.start(io, opts.ports);
     defer container_ports.stopAll(forwarders);
+    try mount_exec.waitMountRootReady(mount_dir, io);
     const use_tty = opts.tty or opts.interactive;
-    const result = execChild(io, allocator, mount_dir, vfs_exec, log_path, cmd_argv, opts, use_tty, false, require_isolation) catch |e| {
-        ctx.session.stop();
-        fusermountU(allocator, mount_dir);
-        thread.join();
-        ctx.session.deinit();
-        return e;
-    };
-    ctx.session.stop();
-    fusermountU(allocator, mount_dir);
-    thread.join();
-    ctx.session.deinit();
-    if (ctx.err) |e| return e;
-    if (require_isolation and result == 127) {
-        std.debug.print(
-            "voila: -w, -v, -it, and -p need user namespaces (re-run install.sh for the AppArmor voila profile).\n",
-            .{},
-        );
-        return error.UserNamespacesRequired;
-    }
-    return result;
+    return execChild(io, allocator, mount_dir, vfs_exec, log_path, cmd_argv, opts, use_tty, false, false);
 }
 
 fn runMountedIsolated(

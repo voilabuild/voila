@@ -100,6 +100,7 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, sub, "run")) {
         const parsed = try parseRunArgs(init.gpa, &args);
         defer parsed.deinit(init.gpa);
+        try _registry_session.prepare(io, init.gpa, parsed.runtime_cfg.store_root);
         var worker = try openRuntime(init.gpa, parsed.runtime_cfg);
         defer worker.deinit(init.gpa);
         var argv = parsed.cmd;
