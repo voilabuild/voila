@@ -155,9 +155,9 @@ fn chunkFile(
     }
 }
 
-const PutChunkResult = struct { id: chunk_store.ChunkId, is_new: bool, stored_add: u64 };
+pub const PutChunkResult = struct { id: chunk_store.ChunkId, is_new: bool, stored_add: u64 };
 
-fn putChunk(
+pub fn putChunk(
     allocator: std.mem.Allocator,
     voila_root: []const u8,
     seen: *std.AutoHashMap(chunk_store.ChunkId, void),
@@ -175,7 +175,7 @@ fn putChunk(
     return .{ .id = id, .is_new = true, .stored_add = buf.len };
 }
 
-fn splitPath(clean: []const u8) struct { parent: []const u8, base: []const u8 } {
+pub fn splitPath(clean: []const u8) struct { parent: []const u8, base: []const u8 } {
     const parent = std.fs.path.dirname(clean) orelse "";
     const base = std.fs.path.basename(clean);
     return .{
@@ -184,7 +184,7 @@ fn splitPath(clean: []const u8) struct { parent: []const u8, base: []const u8 } 
     };
 }
 
-fn ensureDir(allocator: std.mem.Allocator, layer_tree: *tree_mod.LayerTree, dir_path: []const u8) *tree_mod.Node {
+pub fn ensureDir(allocator: std.mem.Allocator, layer_tree: *tree_mod.LayerTree, dir_path: []const u8) *tree_mod.Node {
     if (dir_path.len == 0) return layer_tree.root;
     if (layer_tree.lookup(dir_path)) |n| return n;
     const parts = splitPath(dir_path);
@@ -230,7 +230,7 @@ fn ensureDirEx(allocator: std.mem.Allocator, layer_tree: *tree_mod.LayerTree, cl
     return node;
 }
 
-fn attachChild(allocator: std.mem.Allocator, parent: *tree_mod.Node, base: []const u8, child: *tree_mod.Node) !void {
+pub fn attachChild(allocator: std.mem.Allocator, parent: *tree_mod.Node, base: []const u8, child: *tree_mod.Node) !void {
     const key = try allocator.dupe(u8, base);
     try parent.children.put(key, child);
 }
@@ -247,7 +247,7 @@ fn applyHeaderMeta(n: *tree_mod.Node, hdr: tar_mod.TarHeader, t: tree_mod.NodeTy
     }
 }
 
-fn recordWhiteout(layer_tree: *tree_mod.LayerTree, allocator: std.mem.Allocator, parent: []const u8, name: []const u8) void {
+pub fn recordWhiteout(layer_tree: *tree_mod.LayerTree, allocator: std.mem.Allocator, parent: []const u8, name: []const u8) void {
     _ = ensureDir(allocator, layer_tree, parent);
     layer_tree.whiteouts.append(allocator, .{
         .parent = allocator.dupe(u8, parent) catch return,
@@ -255,7 +255,7 @@ fn recordWhiteout(layer_tree: *tree_mod.LayerTree, allocator: std.mem.Allocator,
     }) catch {};
 }
 
-fn recordOpaque(layer_tree: *tree_mod.LayerTree, allocator: std.mem.Allocator, dir: []const u8) void {
+pub fn recordOpaque(layer_tree: *tree_mod.LayerTree, allocator: std.mem.Allocator, dir: []const u8) void {
     _ = ensureDir(allocator, layer_tree, dir);
     layer_tree.opaque_dirs.append(allocator, allocator.dupe(u8, dir) catch return) catch {};
 }
