@@ -83,7 +83,8 @@ fn blobBridge(ptr: *anyopaque, ref: ocireg.Ref, digest: []const u8) anyerror![]u
     return self.blob(ref, digest);
 }
 
-fn buildManifestJson(allocator: std.mem.Allocator, res: ingest_build.Result) ![]u8 {
+/// ImageManifest JSON (as served by the registry) for an ingest result.
+pub fn buildManifestJson(allocator: std.mem.Allocator, res: ingest_build.Result) ![]u8 {
     var layers_parts: std.ArrayList([]const u8) = .empty;
     for (res.layers) |layer| {
         const hex = chunk_store.idToHex(layer.root_manifest_chunk);

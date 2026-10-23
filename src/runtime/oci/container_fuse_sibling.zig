@@ -43,12 +43,28 @@ pub const Handle = struct {
     }
 };
 
+pub const Options = struct {
+    /// Present image uid/gid 0 as the calling user (rootless writes through overlayfs).
+    map_root: bool = false,
+};
+
 pub fn start(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    voila_root: []const u8,
+    image: []const u8,
+    mount_dir: []const u8,
+) !Handle {
+    return startWith(io, allocator, voila_root, image, mount_dir, .{});
+}
+
+pub fn startWith(
     _: std.Io,
     allocator: std.mem.Allocator,
     voila_root: []const u8,
     image: []const u8,
     mount_dir: []const u8,
+    opts: Options,
 ) !Handle {
     var ready: [2]std.posix.fd_t = undefined;
     var stop: [2]std.posix.fd_t = undefined;
@@ -72,7 +88,7 @@ pub fn start(
         _ = std.c.close(ready[0]);
         _ = std.c.close(stop[1]);
         closeInheritedFds(ready[1], stop[0], -1);
-        execFuseServe(exe, voila_root, image, mount_dir, ready[1], stop[0]);
+        execFuseServe(exe, voila_root, image, mount_dir, ready[1], stop[0], opts.map_root);
         std.c._exit(127);
     }
     _ = std.c.close(ready[1]);
@@ -99,15 +115,8 @@ pub fn start(
     };
 }
 
-pub fn runServe(
-    io: std.Io,
-    voila_root: []const u8,
-    image: []const u8,
-    mount_dir: []const u8,
-    ready_w: std.posix.fd_t,
-    stop_r: std.posix.fd_t,
-) void {
-    serveChild(io, voila_root, image, mount_dir, ready_w, stop_r);
+pub fn runServe(io: std.Io, cli: ServeCli) void {
+    serveChild(io, cli.root, cli.image, cli.mount, cli.ready_fd, cli.stop_fd, cli.map_root);
 }
 
 fn execFuseServe(
@@ -117,13 +126,14 @@ fn execFuseServe(
     mount_dir: []const u8,
     ready_w: std.posix.fd_t,
     stop_r: std.posix.fd_t,
+    map_root: bool,
 ) void {
     const allocator = std.heap.page_allocator;
     const rw = std.fmt.allocPrint(allocator, "{d}", .{ready_w}) catch return;
     const sw = std.fmt.allocPrint(allocator, "{d}", .{stop_r}) catch return;
     const parts = [_][]const u8{
-        exe,          "container-fuse-serve", "-root",     voila_root, "-image", image, "-mount", mount_dir,
-        "--ready-fd", rw,                     "--stop-fd", sw,
+        exe,          "container-fuse-serve", "-root",     voila_root, "-image",                                        image, "-mount", mount_dir,
+        "--ready-fd", rw,                     "--stop-fd", sw,         if (map_root) "--map-root" else "--no-map-root",
     };
     var zargs: [parts.len][:0]const u8 = undefined;
     for (parts, 0..) |s, i| {
@@ -144,6 +154,7 @@ fn serveChild(
     mount_dir: []const u8,
     ready_w: std.posix.fd_t,
     stop_r: std.posix.fd_t,
+    map_root: bool,
 ) void {
     const allocator = std.heap.page_allocator;
     if (!fuse_linux.canUseFuse()) return;
@@ -156,6 +167,7 @@ fn serveChild(
     const tree = voila_loader.loadTreeRoot(io, allocator, voila_root, image) catch return;
     var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(allocator, tree) };
     defer fuse_vfs.deinit();
+    if (map_root) fuse_vfs.voila.root_owner = .{ .uid = std.c.getuid(), .gid = std.c.getgid() };
     posix_util.makePath(mount_dir) catch return;
     var ctx: ServeCtx = .{
         .session = fuse_linux.mountSession(allocator, mount_dir, &fuse_vfs) catch return,
@@ -216,6 +228,7 @@ pub const ServeCli = struct {
     mount: []const u8,
     ready_fd: std.posix.fd_t,
     stop_fd: std.posix.fd_t,
+    map_root: bool = false,
 };
 
 pub fn parseServeCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !ServeCli {
@@ -224,6 +237,7 @@ pub fn parseServeCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.I
     var mount: ?[]const u8 = null;
     var ready_fd: std.posix.fd_t = -1;
     var stop_fd: std.posix.fd_t = -1;
+    var map_root = false;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "-root")) {
             root = try allocator.dupe(u8, args.next() orelse return error.BadArgs);
@@ -237,6 +251,10 @@ pub fn parseServeCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.I
         } else if (std.mem.eql(u8, arg, "--stop-fd")) {
             const n = args.next() orelse return error.BadArgs;
             stop_fd = @intCast(std.fmt.parseInt(i32, n, 10) catch return error.BadArgs);
+        } else if (std.mem.eql(u8, arg, "--map-root")) {
+            map_root = true;
+        } else if (std.mem.eql(u8, arg, "--no-map-root")) {
+            map_root = false;
         } else {
             return error.BadArgs;
         }
@@ -248,6 +266,7 @@ pub fn parseServeCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.I
         .mount = mount.?,
         .ready_fd = ready_fd,
         .stop_fd = stop_fd,
+        .map_root = map_root,
     };
 }
 
