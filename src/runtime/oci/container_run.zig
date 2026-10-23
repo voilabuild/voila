@@ -17,6 +17,7 @@ const container_chroot = @import("./container_chroot.zig");
 const container_userns = @import("./container_userns.zig");
 const container_isolated_exec = @import("./container_isolated_exec.zig");
 const container_fuse_sibling = @import("./container_fuse_sibling.zig");
+const voila_image_pull = @import("../../registry/voila_image_pull.zig");
 const container_ports = @import("./container_ports.zig");
 const container_pty = @import("./container_pty.zig");
 const run_cli_parse = @import("../../cli/run_cli_parse.zig");
@@ -251,6 +252,8 @@ fn runMounted(
     try voila_login_creds.loadIntoHub(allocator);
     try voila_registry_creds.loadFromCredsFile(allocator, voila_root);
     try voila_registry.loadFromEnv(allocator);
+    _ = try voila_loader.loadTreeRoot(io, allocator, voila_root, image);
+    try voila_image_pull.warmRunChunks(io, allocator, voila_root, image);
     const tree = try voila_loader.loadTreeRoot(io, allocator, voila_root, image);
     var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(allocator, tree) };
     defer fuse_vfs.deinit();
@@ -261,8 +264,59 @@ fn runMounted(
     const forwarders = try container_ports.start(io, opts.ports);
     defer container_ports.stopAll(forwarders);
     try mount_exec.waitMountRootReady(mount_dir, io);
+    if (!fuse_server.alive()) return error.FuseServerFailed;
     const use_tty = opts.tty or opts.interactive;
-    return execChild(io, allocator, mount_dir, vfs_exec, log_path, cmd_argv, opts, use_tty, false, false);
+    if (use_tty) {
+        return execChild(io, allocator, mount_dir, vfs_exec, log_path, cmd_argv, opts, use_tty, false, false);
+    }
+    const host_argv0 = try mount_exec.hostPathForVfsExec(allocator, mount_dir, vfs_exec);
+    defer allocator.free(host_argv0);
+    try mount_exec.waitMountListed(mount_dir, io);
+    sleepMs(250);
+    return spawnFuseCommand(io, allocator, log_path, host_argv0, cmd_argv);
+}
+
+fn spawnFuseCommand(
+    _: std.Io,
+    allocator: std.mem.Allocator,
+    log_path: []const u8,
+    host_argv0: []const u8,
+    cmd_argv: []const []const u8,
+) !u8 {
+    var script = try std.fmt.allocPrint(allocator, "exec {s}", .{host_argv0});
+    defer allocator.free(script);
+    for (cmd_argv[1..]) |arg| {
+        const next = try std.fmt.allocPrint(allocator, "{s} {s}", .{ script, arg });
+        allocator.free(script);
+        script = next;
+    }
+    const sh_z = try allocSentinel(allocator, "/bin/sh");
+    const dashc_z = try allocSentinel(allocator, "-c");
+    const script_z = try allocSentinel(allocator, script);
+    const argv_z = [_][*:0]const u8{ sh_z.ptr, dashc_z.ptr, script_z.ptr };
+    var cargv = [_]?[*:0]const u8{ argv_z[0], argv_z[1], argv_z[2], null };
+
+    const log_fd = openLogAppend(log_path);
+    const pid = std.c.fork();
+    if (pid == 0) {
+        closeInheritedFds(log_fd, -1, -1);
+        if (log_fd >= 0) {
+            _ = std.c.dup2(log_fd, std.c.STDOUT_FILENO);
+            _ = std.c.dup2(log_fd, std.c.STDERR_FILENO);
+            _ = std.c.close(log_fd);
+        }
+        _ = std.c.execve(sh_z.ptr, @ptrCast(&cargv), std.c.environ);
+        std.c._exit(127);
+    }
+    if (pid < 0) return error.ForkFailed;
+
+    var status: i32 = 0;
+    while (std.c.waitpid(pid, &status, 0) < 0 and std.c.errno(-1) == .INTR) {}
+    if (log_fd >= 0) _ = std.c.close(log_fd);
+    try printLogFile(log_path);
+    const st: u32 = @bitCast(status);
+    if (!std.c.W.IFEXITED(st)) return 1;
+    return @intCast(std.c.W.EXITSTATUS(st));
 }
 
 fn runMountedIsolated(

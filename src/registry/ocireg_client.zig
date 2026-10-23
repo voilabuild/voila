@@ -444,9 +444,7 @@ fn parseWwwAuthenticate(challenge: []const u8, realm: *[]const u8, service: *[]c
             val = std.mem.trim(u8, s[0..end], " \t");
             s = if (end < s.len) s[end + 1 ..] else "";
         }
-        if (std.ascii.eqlIgnoreCase(key, "realm")) realm.* = val
-        else if (std.ascii.eqlIgnoreCase(key, "service")) service.* = val
-        else if (std.ascii.eqlIgnoreCase(key, "scope")) scope.* = val;
+        if (std.ascii.eqlIgnoreCase(key, "realm")) realm.* = val else if (std.ascii.eqlIgnoreCase(key, "service")) service.* = val else if (std.ascii.eqlIgnoreCase(key, "scope")) scope.* = val;
         s = std.mem.trim(u8, s, " \t,");
     }
 }

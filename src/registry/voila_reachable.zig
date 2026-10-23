@@ -1,6 +1,7 @@
 const std = @import("std");
 const voila_manifest_proto = @import("../codec/voila_manifest_proto.zig");
 const voila_store = @import("../store/voila_store.zig");
+const voila_chunk_load = @import("../store/voila_chunk_load.zig");
 const voila_chunk_index = @import("../store/voila_chunk_index.zig");
 const hex_util = @import("../core/hex_util.zig");
 
@@ -17,6 +18,7 @@ fn addHex(set: *std.StringHashMap(void), allocator: std.mem.Allocator, hex: []co
 }
 
 fn walkManifestChunk(
+    io: ?std.Io,
     allocator: std.mem.Allocator,
     voila_root: []const u8,
     id: [32]u8,
@@ -32,7 +34,10 @@ fn walkManifestChunk(
     const algo = voila_chunk_index.compAlgoForChunk(voila_root, &id) catch voila_store.AlgoRaw;
     const hex_owned = try allocator.dupe(u8, hex);
     defer allocator.free(hex_owned);
-    const raw = voila_store.loadChunkRaw(allocator, voila_root, hex_owned, algo) catch return error.MissingChunk;
+    const raw = if (io) |i|
+        voila_chunk_load.loadChunkRaw(i, allocator, voila_root, hex_owned, algo) catch return error.MissingChunk
+    else
+        voila_store.loadChunkRaw(allocator, voila_root, hex_owned, algo) catch return error.MissingChunk;
     defer allocator.free(raw);
 
     var m = voila_manifest_proto.decodeManifest(allocator, raw) catch return error.BadManifest;
@@ -57,6 +62,15 @@ fn walkManifestChunk(
 }
 
 pub fn reachableHexes(
+    allocator: std.mem.Allocator,
+    voila_root: []const u8,
+    manifest_json: []const u8,
+) ![]const []const u8 {
+    return reachableHexesIo(null, allocator, voila_root, manifest_json);
+}
+
+pub fn reachableHexesIo(
+    io: ?std.Io,
     allocator: std.mem.Allocator,
     voila_root: []const u8,
     manifest_json: []const u8,
@@ -95,7 +109,7 @@ pub fn reachableHexes(
     }
 
     while (manifest_queue.pop()) |id| {
-        try walkManifestChunk(allocator, voila_root, id, &reachable, &manifest_queue);
+        try walkManifestChunk(io, allocator, voila_root, id, &reachable, &manifest_queue);
     }
 
     var out: std.ArrayList([]const u8) = .empty;

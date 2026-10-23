@@ -12,6 +12,9 @@ const voila_hub_import = @import("./voila_hub_import.zig");
 const voila_manifest_cache = @import("./voila_manifest_cache.zig");
 const voila_resolve = @import("../runtime/voila_resolve.zig");
 const proto_wire = @import("../codec/proto_wire.zig");
+const voila_reachable = @import("./voila_reachable.zig");
+const voila_chunk_load = @import("../store/voila_chunk_load.zig");
+const voila_store = @import("../store/voila_store.zig");
 
 pub fn pullManifestOnce(
     io: std.Io,
@@ -67,6 +70,25 @@ pub fn pullManifest(
     }
     if (last_err) |e| return e;
     return error.HttpStatus;
+}
+
+/// Ensure manifest-reachable chunks are local (registry fetch when missing).
+pub fn warmRunChunks(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    voila_root: []const u8,
+    image_ref: []const u8,
+) !void {
+    const body = voila_manifest_cache.load(allocator, voila_root, image_ref) catch return;
+    defer allocator.free(body);
+    const hexes = voila_reachable.reachableHexesIo(io, allocator, voila_root, body) catch return;
+    defer {
+        for (hexes) |h| allocator.free(h);
+        allocator.free(hexes);
+    }
+    for (hexes) |hex| {
+        _ = voila_chunk_load.loadChunkRaw(io, allocator, voila_root, hex, voila_store.AlgoRaw) catch {};
+    }
 }
 
 pub fn autoPull(
