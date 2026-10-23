@@ -105,7 +105,7 @@ pub fn main(init: std.process.Init) !void {
         var argv = parsed.cmd;
         var default_argv: ?[]const []const u8 = null;
         if (argv.len == 0) {
-            default_argv = try voila_image_run_config.defaultArgv(init.gpa, parsed.runtime_cfg.store_root, parsed.image, &.{});
+            default_argv = try voila_image_run_config.defaultArgv(io, init.gpa, parsed.runtime_cfg.store_root, parsed.image, &.{});
             argv = default_argv.?;
         }
         defer if (default_argv) |a| {

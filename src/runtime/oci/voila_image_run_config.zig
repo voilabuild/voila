@@ -6,6 +6,8 @@ const voila_chunk_index = @import("../../store/voila_chunk_index.zig");
 const voila_store = @import("../../store/voila_store.zig");
 const hex_util = @import("../../core/hex_util.zig");
 const posix_util = @import("../../sys/posix_util.zig");
+const registry_ref = @import("../../registry/voila_registry_ref.zig");
+const voila_image_pull = @import("../../registry/voila_image_pull.zig");
 
 const OciConfig = struct {
     entrypoint: []const []const u8,
@@ -130,11 +132,16 @@ fn knownImageArgv(allocator: std.mem.Allocator, image_ref: []const u8) ?[]const 
 }
 
 pub fn defaultArgv(
+    io: std.Io,
     allocator: std.mem.Allocator,
     voila_root: []const u8,
     image_ref: []const u8,
     override: []const []const u8,
 ) ![]const []const u8 {
+    const ref_norm = try registry_ref.normalizeUserRef(allocator, image_ref);
+    defer allocator.free(ref_norm);
+    _ = voila_image_pull.autoPull(io, allocator, voila_root, ref_norm) catch {};
+
     const rec = try voila_resolve.resolveImage(allocator, voila_root, image_ref);
     defer {
         allocator.free(rec.ref);
