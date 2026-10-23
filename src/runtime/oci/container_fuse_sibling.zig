@@ -7,6 +7,7 @@ const voila_loader = @import("../../store/voila_loader.zig");
 const voila_registry = @import("../../registry/voila_registry.zig");
 const voila_registry_creds = @import("../../registry/voila_registry_creds.zig");
 const voila_login_creds = @import("../../registry/voila_login_creds.zig");
+const voila_image_pull = @import("../../registry/voila_image_pull.zig");
 const mount_exec = @import("../../mount/mount_exec.zig");
 const posix_util = @import("../../sys/posix_util.zig");
 
@@ -31,6 +32,14 @@ pub const Handle = struct {
             self.pid = 0;
         }
         fusermountU(self.allocator, self.mount_dir);
+    }
+
+    pub fn alive(self: *const Handle) bool {
+        if (self.pid <= 0) return false;
+        var status: i32 = 0;
+        const r = std.c.waitpid(self.pid, &status, std.c.W.NOHANG);
+        if (r == self.pid) return false;
+        return true;
     }
 };
 
@@ -75,6 +84,11 @@ pub fn start(
         _ = std.c.close(stop[1]);
         var st: i32 = 0;
         _ = std.c.waitpid(pid, &st, 0);
+        return error.FuseServerFailed;
+    }
+    var early_status: i32 = 0;
+    if (std.c.waitpid(pid, &early_status, std.c.W.NOHANG) == pid) {
+        _ = std.c.close(stop[1]);
         return error.FuseServerFailed;
     }
     return .{
@@ -137,6 +151,8 @@ fn serveChild(
     voila_login_creds.loadIntoHub(allocator) catch return;
     voila_registry_creds.loadFromCredsFile(allocator, voila_root) catch return;
     voila_registry.loadFromEnv(allocator) catch return;
+    _ = voila_loader.loadTreeRoot(io, allocator, voila_root, image) catch return;
+    voila_image_pull.warmRunChunks(io, allocator, voila_root, image) catch {};
     const tree = voila_loader.loadTreeRoot(io, allocator, voila_root, image) catch return;
     var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(allocator, tree) };
     defer fuse_vfs.deinit();
@@ -145,25 +161,20 @@ fn serveChild(
         .session = fuse_linux.mountSession(allocator, mount_dir, &fuse_vfs) catch return,
         .err = null,
     };
-    const thread = std.Thread.spawn(.{}, struct {
-        fn serve(shared: *ServeCtx) void {
-            fuse_linux.serveSession(&shared.session) catch |e| {
-                shared.err = e;
-            };
-        }
-    }.serve, .{&ctx}) catch return;
     for (0..10_000) |_| {
         if (mount_exec.mountListed(mount_dir)) break;
         sleepMs(1);
     }
     _ = std.c.write(ready_w, &[_]u8{1}, 1);
+    _ = std.c.close(ready_w);
+    fuse_linux.serveSession(&ctx.session) catch |e| {
+        ctx.err = e;
+    };
     var buf: [1]u8 = .{0};
     while (std.c.read(stop_r, &buf, 1) > 0) {}
     ctx.session.stop();
     fusermountU(allocator, mount_dir);
-    thread.join();
     ctx.session.deinit();
-    _ = std.c.close(ready_w);
     _ = std.c.close(stop_r);
 }
 
@@ -191,7 +202,7 @@ fn closeInheritedFds(keep_a: std.posix.fd_t, keep_b: std.posix.fd_t, keep_c: std
 }
 
 fn fusermountU(allocator: std.mem.Allocator, mount_dir: []const u8) void {
-    const cmd = std.fmt.allocPrint(allocator, "fusermount3 -u {s} 2>/dev/null || umount {s} 2>/dev/null", .{ mount_dir, mount_dir }) catch return;
+    const cmd = std.fmt.allocPrint(allocator, "fusermount3 -uz {s} 2>/dev/null || fusermount3 -u {s} 2>/dev/null || umount -l {s} 2>/dev/null", .{ mount_dir, mount_dir, mount_dir }) catch return;
     defer allocator.free(cmd);
     const cmd_z = allocator.allocSentinel(u8, cmd.len, 0) catch return;
     defer allocator.free(cmd_z);
