@@ -51,8 +51,6 @@ pub const Node = struct {
         if (self.name.len != 0 and self.node_type != .dir) self.allocator.free(self.name);
         var cit = self.children.iterator();
         while (cit.next()) |e| {
-            e.value_ptr.*.deinit();
-            self.allocator.destroy(e.value_ptr.*);
             self.allocator.free(e.key_ptr.*);
         }
         self.children.deinit();
