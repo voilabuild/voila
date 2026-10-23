@@ -43,7 +43,7 @@ pub fn importImage(
         allocator.free(man.image_digest);
         allocator.free(man.merged_root);
     }
-    try voila_image_pull.persistManifest(allocator, voila_root, push_ref, man);
+    try voila_image_pull.persistManifest(allocator, voila_root, push_ref, manifest_json, man);
 
     std.debug.print("imported {s} from {s}\n", .{ push_ref, hub_ref });
     std.debug.print("  bytes in: {d}, chunks: {d}\n", .{ res.bytes_in, res.chunk_count });

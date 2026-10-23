@@ -4,6 +4,8 @@ const voila_refkey = @import("../../core/voila_refkey.zig");
 const voila_resolve = @import("../voila_resolve.zig");
 const voila_chunk_index = @import("../../store/voila_chunk_index.zig");
 const voila_store = @import("../../store/voila_store.zig");
+const voila_chunk_load = @import("../../store/voila_chunk_load.zig");
+const voila_manifest_cache = @import("../../registry/voila_manifest_cache.zig");
 const hex_util = @import("../../core/hex_util.zig");
 const posix_util = @import("../../sys/posix_util.zig");
 const registry_ref = @import("../../registry/voila_registry_ref.zig");
@@ -14,6 +16,18 @@ const OciConfig = struct {
     cmd: []const []const u8,
     workdir: []const u8,
 };
+
+fn configChunkFromManifestJson(allocator: std.mem.Allocator, voila_root: []const u8, store_ref: []const u8) ![]u8 {
+    const body = try voila_manifest_cache.load(allocator, voila_root, store_ref);
+    defer allocator.free(body);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    const cc = parsed.value.object.get("config_chunk") orelse return error.NoConfigChunk;
+    if (cc != .string or cc.string.len != 64) return error.NoConfigChunk;
+    var id: [32]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&id, cc.string);
+    return allocator.dupe(u8, &id);
+}
 
 fn readPbConfigChunk(allocator: std.mem.Allocator, pb_path: []const u8) ![]u8 {
     const data = try posix_util.readFileAlloc(allocator, pb_path, 4 * 1024 * 1024);
@@ -152,19 +166,14 @@ pub fn defaultArgv(
     defer allocator.free(key);
     const pb_path = try std.fmt.allocPrint(allocator, "{s}/images/{s}.pb", .{ voila_root, key });
     defer allocator.free(pb_path);
-    const chunk_id = readPbConfigChunk(allocator, pb_path) catch {
-        if (override.len == 0) {
-            if (knownImageArgv(allocator, image_ref)) |argv| return argv;
-        }
-        return error.NoImageConfig;
-    };
+    const chunk_id = readPbConfigChunk(allocator, pb_path) catch try configChunkFromManifestJson(allocator, voila_root, rec.ref);
     defer allocator.free(chunk_id);
     var hex_buf: [64]u8 = undefined;
     if (chunk_id.len * 2 > hex_buf.len) return error.BadConfigChunk;
     hex_util.encodeHexLower(hex_buf[0 .. chunk_id.len * 2], chunk_id);
     const chunk_hex = hex_buf[0 .. chunk_id.len * 2];
     const algo = voila_chunk_index.compAlgoForChunk(voila_root, chunk_id) catch voila_store.AlgoRaw;
-    const raw = try voila_store.loadChunkRaw(allocator, voila_root, chunk_hex, algo);
+    const raw = try voila_chunk_load.loadChunkRaw(io, allocator, voila_root, chunk_hex, algo);
     defer allocator.free(raw);
     const oci = try parseOciConfig(allocator, raw);
     defer freeOci(allocator, oci);

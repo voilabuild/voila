@@ -11,6 +11,7 @@ const posix_util = @import("../sys/posix_util.zig");
 const voila_hub_import = @import("./voila_hub_import.zig");
 const voila_manifest_cache = @import("./voila_manifest_cache.zig");
 const voila_resolve = @import("../runtime/voila_resolve.zig");
+const proto_wire = @import("../codec/proto_wire.zig");
 
 pub fn pullManifestOnce(
     io: std.Io,
@@ -28,7 +29,7 @@ pub fn pullManifestOnce(
     const man = try voila_manifest_json.parse(allocator, body);
     const store_ref = if (man.image_ref.len != 0) man.image_ref else ref;
     try voila_manifest_cache.save(allocator, voila_root, store_ref, body);
-    try persistManifest(allocator, voila_root, ref, man);
+    try persistManifest(allocator, voila_root, ref, body, man);
     return man;
 }
 
@@ -86,31 +87,34 @@ pub fn autoPull(
         defer allocator.free(rec.ref);
         defer allocator.free(rec.image_digest);
         defer allocator.free(rec.merged_root_manifest);
-        if (rec.merged_root_manifest.len == 32) {
-            var hex_buf: [64]u8 = undefined;
-            const hex = std.fmt.bytesToHex(rec.merged_root_manifest[0..32], .lower);
-            @memcpy(hex_buf[0..64], &hex);
-            const chunk_path = try std.fmt.allocPrint(allocator, "{s}/chunks/{s}", .{ voila_root, hex_buf[0..64] });
-            defer allocator.free(chunk_path);
-            if (posix_util.access(chunk_path)) return error.Skip;
-        } else {
-            return error.Skip;
-        }
+        if (try imageArtifactsPresent(allocator, voila_root, rec.ref)) return error.Skip;
     } else |_| {}
     return pullManifest(io, allocator, voila_root, cfg, query);
+}
+
+fn imageArtifactsPresent(allocator: std.mem.Allocator, voila_root: []const u8, store_ref: []const u8) !bool {
+    const key = try voila_refkey.refKey(allocator, store_ref);
+    defer allocator.free(key);
+    const pb_path = try std.fmt.allocPrint(allocator, "{s}/images/{s}.pb", .{ voila_root, key });
+    defer allocator.free(pb_path);
+    if (!posix_util.access(pb_path)) return false;
+    const man_path = try voila_manifest_cache.manifestPath(allocator, voila_root, store_ref);
+    defer allocator.free(man_path);
+    return posix_util.access(man_path);
 }
 
 pub fn persistManifest(
     allocator: std.mem.Allocator,
     voila_root: []const u8,
     ref: []const u8,
+    manifest_json: []const u8,
     man: voila_manifest_json.Manifest,
 ) !void {
     var store_ref = man.image_ref;
     if (store_ref.len == 0) store_ref = ref;
 
     try upsertImagesDb(allocator, voila_root, store_ref, man);
-    try writeManifestPbStub(allocator, voila_root, store_ref, man);
+    try writeManifestPbStub(allocator, voila_root, store_ref, manifest_json);
 }
 
 fn upsertImagesDb(
@@ -174,23 +178,44 @@ fn upsertImagesDb(
     if (sqlite.sqlite3_step(stmt) != sqlite.SQLITE_DONE) return error.SqliteStep;
 }
 
-/// Best-effort empty images dir + ref key path (CLI may read .pb later).
+/// Write minimal ImageManifest protobuf (config_chunk field) for defaultArgv.
 fn writeManifestPbStub(
     allocator: std.mem.Allocator,
     voila_root: []const u8,
     store_ref: []const u8,
-    _: voila_manifest_json.Manifest,
+    manifest_json: []const u8,
 ) !void {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, manifest_json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    const cc = parsed.value.object.get("config_chunk") orelse return;
+    if (cc != .string or cc.string.len != 64) return;
+    var config_id: [32]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&config_id, cc.string);
+
+    var pb: std.ArrayList(u8) = .empty;
+    try proto_wire.writeBytes(&pb, allocator, 3, &config_id);
+    const bytes = try pb.toOwnedSlice(allocator);
+    defer allocator.free(bytes);
+
     const img_dir = try std.fmt.allocPrint(allocator, "{s}/images", .{voila_root});
     defer allocator.free(img_dir);
-    const mkdir_cmd = try std.fmt.allocPrint(allocator, "mkdir -p {s}", .{img_dir});
-    defer allocator.free(mkdir_cmd);
-    const mkdir_z = try allocator.allocSentinel(u8, mkdir_cmd.len, 0);
-    defer allocator.free(mkdir_z);
-    @memcpy(mkdir_z, mkdir_cmd);
-    _ = posix_util.shell(mkdir_z);
+    try posix_util.makePath(img_dir);
     const key = try voila_refkey.refKey(allocator, store_ref);
     defer allocator.free(key);
+    const path = try std.fmt.allocPrint(allocator, "{s}/images/{s}.pb", .{ voila_root, key });
+    defer allocator.free(path);
+    const path_z = try allocator.allocSentinel(u8, path.len, 0);
+    defer allocator.free(path_z);
+    @memcpy(path_z, path);
+    const fd = std.c.open(path_z, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o644));
+    if (fd < 0) return error.FileOpenFailed;
+    defer _ = std.c.close(fd);
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const n = std.c.write(fd, bytes[off..].ptr, bytes.len - off);
+        if (n <= 0) return error.FileWriteFailed;
+        off += @intCast(n);
+    }
 }
 
 pub const Error = error{
@@ -199,4 +224,6 @@ pub const Error = error{
     SqliteOpen,
     SqlitePrepare,
     SqliteStep,
+    FileOpenFailed,
+    FileWriteFailed,
 };
