@@ -286,7 +286,7 @@ fn printUsage() void {
         \\
         \\  voila login [registry-url]
         \\  voila logout
-        \\  voila pull|push [-root <dir>] <image-ref>
+        \\  voila pull|push|import [-root <dir>] <image-ref>
         \\  voila run [-root <dir>] [-d] [--name NAME] [--rm] <image-ref> -- <cmd> [args...]
         \\  voila ps|logs|images|stop|kill|rm [-root <dir>] ...
         \\

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Seed common Docker Hub images into drift under $VOILA_ORG (fallback when voila-import is unavailable).
+# Seed common Docker Hub images into drift under $VOILA_ORG via `voila import`.
 set -euo pipefail
 
 : "${VOILA_REGISTRY:?set VOILA_REGISTRY (…/registry)}"
 : "${VOILA_REGISTRY_TOKEN:?set VOILA_REGISTRY_TOKEN}"
 : "${VOILA_ORG:?set VOILA_ORG}"
 
-HELPER="${VOILA_IMPORT_HELPER:-${HOME}/.local/lib/voila/voila-import}"
-if ! command -v "$HELPER" >/dev/null 2>&1 && [ ! -x "$HELPER" ]; then
-	die() { echo "seed-drift-images: $*" >&2; exit 1; }
-	die "missing voila-import at $HELPER (install via install.sh or set VOILA_IMPORT_HELPER)"
+VOILA="${VOILA:-voila}"
+if ! command -v "$VOILA" >/dev/null 2>&1; then
+	echo "seed-drift-images: missing voila in PATH (set VOILA=…)" >&2
+	exit 1
 fi
 
 IMAGES=(
@@ -30,5 +30,5 @@ mkdir -p "$ROOT"
 for img in "${IMAGES[@]}"; do
 	echo "==> $img"
 	VOILA_REGISTRY="$VOILA_REGISTRY" VOILA_REGISTRY_TOKEN="$VOILA_REGISTRY_TOKEN" VOILA_ORG="$VOILA_ORG" \
-		"$HELPER" import "$img" -push "${VOILA_ORG}/${img}" -root "$ROOT" -registry "$VOILA_REGISTRY"
+		"$VOILA" import -root "$ROOT" "$img"
 done
