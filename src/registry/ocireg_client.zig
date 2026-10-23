@@ -50,8 +50,6 @@ pub const Client = struct {
 
     pub fn resolve(self: *Client, ref: ocireg.Ref, platform: []const u8) !Manifest {
         var fetched = try self.fetchManifest(ref, false);
-        defer self.allocator.free(fetched.media_type);
-
         if (isIndexMediaType(fetched.media_type)) {
             const desc = try selectDescriptor(self.allocator, fetched.body, platform);
             defer self.allocator.free(desc.digest);
@@ -60,8 +58,12 @@ pub const Client = struct {
             dref.is_digest = true;
             dref.tag = "";
             self.allocator.free(fetched.body);
+            self.allocator.free(fetched.media_type);
             fetched = try self.fetchManifest(dref, false);
-            defer self.allocator.free(fetched.media_type);
+        }
+        defer {
+            self.allocator.free(fetched.body);
+            self.allocator.free(fetched.media_type);
         }
 
         const digest = if (fetched.header_digest.len != 0)
@@ -92,7 +94,7 @@ pub const Client = struct {
             "application/vnd.oci.image.manifest.v1+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json";
         const resp = try self.httpGetWithHeaders(url, ref, reauth, accept);
         if (resp.status == 401 and !reauth) {
-            self.invalidateToken(ref);
+            try self.acquireBearerToken(ref, resp.www_authenticate);
             resp.deinit(self.allocator);
             return self.fetchManifest(ref, true);
         }
@@ -100,9 +102,13 @@ pub const Client = struct {
             resp.deinit(self.allocator);
             return error.HttpStatus;
         }
+        const media_type = if (resp.content_type.len != 0)
+            resp.content_type
+        else
+            try inferManifestMediaType(self.allocator, resp.body);
         return .{
             .body = resp.body,
-            .media_type = resp.content_type,
+            .media_type = media_type,
             .header_digest = resp.docker_digest,
         };
     }
@@ -139,18 +145,20 @@ pub const Client = struct {
         body: []const u8,
         content_type: []const u8,
         docker_digest: []const u8,
+        www_authenticate: []const u8,
 
         fn deinit(self: RawResponse, allocator: std.mem.Allocator) void {
             allocator.free(self.body);
-            allocator.free(self.content_type);
-            allocator.free(self.docker_digest);
+            if (self.content_type.len != 0) allocator.free(self.content_type);
+            if (self.docker_digest.len != 0) allocator.free(self.docker_digest);
+            if (self.www_authenticate.len != 0) allocator.free(self.www_authenticate);
         }
     };
 
     fn httpGet(self: *Client, url: []const u8, ref: ocireg.Ref, reauth: bool) ![]u8 {
         const resp = try self.httpGetWithHeaders(url, ref, reauth, null);
         if (resp.status == 401 and !reauth) {
-            self.invalidateToken(ref);
+            try self.acquireBearerToken(ref, resp.www_authenticate);
             resp.deinit(self.allocator);
             return self.httpGet(url, ref, true);
         }
@@ -160,8 +168,9 @@ pub const Client = struct {
         }
         const body = try self.allocator.dupe(u8, resp.body);
         self.allocator.free(resp.body);
-        self.allocator.free(resp.content_type);
-        self.allocator.free(resp.docker_digest);
+        if (resp.content_type.len != 0) self.allocator.free(resp.content_type);
+        if (resp.docker_digest.len != 0) self.allocator.free(resp.docker_digest);
+        if (resp.www_authenticate.len != 0) self.allocator.free(resp.www_authenticate);
         return body;
     }
 
@@ -204,12 +213,65 @@ pub const Client = struct {
             .body = body,
             .content_type = "",
             .docker_digest = "",
+            .www_authenticate = "",
         };
     }
 
     fn ensureAuth(self: *Client, ref: ocireg.Ref, force: bool) void {
         if (!force and self.tokenFor(ref).len != 0) return;
-        if (self.creds.username.len != 0 or self.creds.password.len != 0) return;
+    }
+
+    fn acquireBearerToken(self: *Client, ref: ocireg.Ref, www_authenticate: []const u8) !void {
+        self.invalidateToken(ref);
+        var realm: []const u8 = "";
+        var service: []const u8 = "";
+        var scope: []const u8 = "";
+        parseWwwAuthenticate(www_authenticate, &realm, &service, &scope);
+        if (realm.len == 0 and std.mem.eql(u8, ref.host, ocireg.default_host)) {
+            realm = "https://auth.docker.io/token";
+            service = "registry.docker.io";
+        }
+        if (realm.len == 0) return error.HttpStatus;
+
+        const pull_scope = if (scope.len != 0)
+            scope
+        else
+            try std.fmt.allocPrint(self.allocator, "repository:{s}:pull", .{ref.repo});
+        defer if (scope.len == 0) self.allocator.free(pull_scope);
+
+        const token_url = if (service.len != 0)
+            try std.fmt.allocPrint(self.allocator, "{s}?service={s}&scope={s}", .{ realm, service, pull_scope })
+        else
+            try std.fmt.allocPrint(self.allocator, "{s}?scope={s}", .{ realm, pull_scope });
+        defer self.allocator.free(token_url);
+
+        var client: std.http.Client = .{ .allocator = self.allocator, .io = self.io };
+        defer client.deinit();
+        var response: std.Io.Writer.Allocating = .init(self.allocator);
+        const result = client.fetch(.{
+            .location = .{ .url = token_url },
+            .method = .GET,
+            .keep_alive = false,
+            .headers = .{
+                .user_agent = .{ .override = "voila-ocireg/1.0" },
+                .authorization = .omit,
+            },
+            .response_writer = &response.writer,
+        }) catch return error.HttpStatus;
+        const code: u16 = @backingInt(result.status);
+        const body = try response.toOwnedSlice();
+        defer self.allocator.free(body);
+        if (code != 200) return error.HttpStatus;
+
+        const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, body, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        const tok = parsed.value.object.get("token") orelse parsed.value.object.get("access_token") orelse return error.HttpStatus;
+        if (tok != .string or tok.string.len == 0) return error.HttpStatus;
+
+        const key = try tokenKey(self.allocator, ref);
+        const val = try self.allocator.dupe(u8, tok.string);
+        if (self.tokens.fetchRemove(key)) |kv| self.allocator.free(kv.value);
+        try self.tokens.put(key, val);
     }
 
     fn tokenFor(self: *Client, ref: ocireg.Ref) []const u8 {
@@ -354,6 +416,39 @@ fn jsonStr(v: ?std.json.Value) []const u8 {
     const val = v orelse return "";
     if (val != .string) return "";
     return val.string;
+}
+
+/// Parse `Bearer realm="...",service="...",scope="..."` from a registry 401.
+fn inferManifestMediaType(allocator: std.mem.Allocator, body: []const u8) ![]const u8 {
+    if (std.mem.indexOf(u8, body, "\"manifests\"") != null) {
+        return allocator.dupe(u8, "application/vnd.docker.distribution.manifest.list.v2+json");
+    }
+    return allocator.dupe(u8, "application/vnd.docker.distribution.manifest.v2+json");
+}
+
+fn parseWwwAuthenticate(challenge: []const u8, realm: *[]const u8, service: *[]const u8, scope: *[]const u8) void {
+    var s = std.mem.trim(u8, challenge, " \t\r\n");
+    if (std.mem.startsWith(u8, s, "Bearer ") or std.mem.startsWith(u8, s, "bearer ")) s = s["Bearer ".len..];
+    while (s.len > 0) {
+        const key_end = std.mem.indexOfScalar(u8, s, '=') orelse break;
+        const key = std.mem.trim(u8, s[0..key_end], " \t");
+        s = s[key_end + 1 ..];
+        var val: []const u8 = "";
+        if (s.len > 0 and s[0] == '"') {
+            s = s[1..];
+            const end = std.mem.indexOfScalar(u8, s, '"') orelse break;
+            val = s[0..end];
+            s = s[end + 1 ..];
+        } else {
+            const end = std.mem.indexOfScalar(u8, s, ',') orelse s.len;
+            val = std.mem.trim(u8, s[0..end], " \t");
+            s = if (end < s.len) s[end + 1 ..] else "";
+        }
+        if (std.ascii.eqlIgnoreCase(key, "realm")) realm.* = val
+        else if (std.ascii.eqlIgnoreCase(key, "service")) service.* = val
+        else if (std.ascii.eqlIgnoreCase(key, "scope")) scope.* = val;
+        s = std.mem.trim(u8, s, " \t,");
+    }
 }
 
 pub const Error = error{

@@ -83,10 +83,19 @@ pub fn autoPull(
     if (query.len == 0) return error.Skip;
     if (!voila_refkey.looksLikeRef(query)) return error.Skip;
     if (voila_resolve.resolveImage(allocator, voila_root, query)) |rec| {
-        allocator.free(rec.ref);
-        allocator.free(rec.image_digest);
-        allocator.free(rec.merged_root_manifest);
-        return error.Skip;
+        defer allocator.free(rec.ref);
+        defer allocator.free(rec.image_digest);
+        defer allocator.free(rec.merged_root_manifest);
+        if (rec.merged_root_manifest.len == 32) {
+            var hex_buf: [64]u8 = undefined;
+            const hex = std.fmt.bytesToHex(rec.merged_root_manifest[0..32], .lower);
+            @memcpy(hex_buf[0..64], &hex);
+            const chunk_path = try std.fmt.allocPrint(allocator, "{s}/chunks/{s}", .{ voila_root, hex_buf[0..64] });
+            defer allocator.free(chunk_path);
+            if (posix_util.access(chunk_path)) return error.Skip;
+        } else {
+            return error.Skip;
+        }
     } else |_| {}
     return pullManifest(io, allocator, voila_root, cfg, query);
 }
