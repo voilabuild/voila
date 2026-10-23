@@ -1,4 +1,4 @@
-# release-zig-cli.yml — static musl voila CLI (+ voila-import helper from go-final) on v* tags.
+# release-zig-cli.yml — static musl voila CLI on v* tags.
 
 name: release-zig-cli
 
@@ -21,12 +21,10 @@ jobs:
             arch: amd64
             zig_target: x86_64-linux-musl
             zig_archive: zig-x86_64-linux-0.17.0
-            goarch: amd64
           - runner: ubuntu-24.04-arm
             arch: arm64
             zig_target: aarch64-linux-musl
             zig_archive: zig-aarch64-linux-0.17.0
-            goarch: arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
@@ -56,38 +54,21 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version: stable
-
-      - name: Build voila-import from go-final
-        run: |
-          set -euo pipefail
-          git fetch --depth 1 origin tag go-final
-          work="$(mktemp -d)"
-          git archive go-final | tar -x -C "$work"
-          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} \
-            go -C "$work" build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/voila-import" ./cmd/voila
-
       - name: Package release binaries
         env:
           TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('workflow-{0}', github.run_id) }}
         run: |
           set -euo pipefail
           voila_asset="voila_${TAG}_linux_${{ matrix.arch }}"
-          import_asset="voila-import_${TAG}_linux_${{ matrix.arch }}"
           cp zig-out/bin/voila "$voila_asset"
-          cp voila-import "$import_asset"
-          sha256sum "$voila_asset" "$import_asset" > "checksums_${{ matrix.arch }}.txt"
+          sha256sum "$voila_asset" > "checksums_${{ matrix.arch }}.txt"
           echo "VOILA_ASSET=$voila_asset" >> "$GITHUB_ENV"
-          echo "IMPORT_ASSET=$import_asset" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
           name: voila-${{ matrix.arch }}
           path: |
             voila_*_linux_${{ matrix.arch }}
-            voila-import_*_linux_${{ matrix.arch }}
             checksums_${{ matrix.arch }}.txt
 
   release:
@@ -115,7 +96,5 @@ jobs:
           files: |
             dist/voila_*_linux_amd64
             dist/voila_*_linux_arm64
-            dist/voila-import_*_linux_amd64
-            dist/voila-import_*_linux_arm64
             dist/voila-checksums.txt
           fail_on_unmatched_files: true

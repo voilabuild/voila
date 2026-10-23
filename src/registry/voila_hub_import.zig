@@ -1,9 +1,9 @@
 const std = @import("std");
-const posix_util = @import("../sys/posix_util.zig");
 const registry_ref = @import("./voila_registry_ref.zig");
 const voila_registry_hub = @import("./voila_registry_hub.zig");
+const voila_image_import = @import("./voila_image_import.zig");
 
-/// Import a Docker Hub image into drift via the `voila-import` helper binary.
+/// Import a Docker Hub image into drift via native Zig ingest.
 pub fn tryImportFromHub(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -18,10 +18,7 @@ pub fn tryImportFromHub(
     const push_ref = try registry_ref.hubPushRef(allocator, hub_ref, cfg.org);
     defer allocator.free(push_ref);
 
-    const helper = try findImportHelper(allocator) orelse return error.ImportHelperMissing;
-    defer allocator.free(helper);
-
-    try runImportHelper(io, allocator, cfg, helper, hub_ref, push_ref, voila_root);
+    try voila_image_import.importImage(io, allocator, voila_root, cfg, hub_ref, push_ref);
 }
 
 fn shouldImportFromDockerHub(user_ref: []const u8, org: []const u8) bool {
@@ -29,59 +26,6 @@ fn shouldImportFromDockerHub(user_ref: []const u8, org: []const u8) bool {
     if (user_ref.len > org.len + 1 and std.mem.startsWith(u8, user_ref, org) and user_ref[org.len] == '/') return false;
     if (std.mem.startsWith(u8, user_ref, "test/")) return false;
     return true;
-}
-
-fn runImportHelper(
-    io: std.Io,
-    allocator: std.mem.Allocator,
-    cfg: voila_registry_hub.Config,
-    helper: []const u8,
-    hub_ref: []const u8,
-    push_ref: []const u8,
-    root: []const u8,
-) !void {
-    const argv = [_][]const u8{
-        helper,
-        "import",
-        hub_ref,
-        "-push",
-        push_ref,
-        "-root",
-        root,
-        "-registry",
-        cfg.base_url,
-    };
-    const env = [_]posix_util.EnvPair{
-        .{ .name = "VOILA_REGISTRY", .value = cfg.base_url },
-        .{ .name = "VOILA_REGISTRY_TOKEN", .value = cfg.token },
-        .{ .name = "VOILA_ORG", .value = cfg.org },
-    };
-    posix_util.runArgvWithEnv(io, allocator, &argv, &env) catch return error.ImportFailed;
-}
-
-fn findImportHelper(allocator: std.mem.Allocator) !?[]const u8 {
-    if (std.c.getenv("VOILA_IMPORT_HELPER")) |p| return try allocator.dupe(u8, std.mem.span(p));
-
-    const exe = try selfExePath(allocator);
-    defer allocator.free(exe);
-    const dir = std.fs.path.dirname(exe) orelse return null;
-    const sibling = try std.fmt.allocPrint(allocator, "{s}/voila-import", .{dir});
-    if (posix_util.access(sibling)) return sibling;
-    allocator.free(sibling);
-
-    const home = std.c.getenv("HOME") orelse return null;
-    const lib = try std.fmt.allocPrint(allocator, "{s}/.local/lib/voila/voila-import", .{std.mem.span(home)});
-    if (posix_util.access(lib)) return lib;
-    allocator.free(lib);
-
-    return null;
-}
-
-fn selfExePath(allocator: std.mem.Allocator) ![]const u8 {
-    var buf: [4096]u8 = undefined;
-    const n = std.c.readlink("/proc/self/exe", &buf, buf.len);
-    if (n <= 0) return error.ExePathFailed;
-    return allocator.dupe(u8, buf[0..@intCast(n)]);
 }
 
 pub fn formatMissingImageHelp(
@@ -98,15 +42,12 @@ pub fn formatMissingImageHelp(
     defer allocator.free(push_ref);
     return std.fmt.allocPrint(
         allocator,
-        "image not found on the voila registry. Import from Docker Hub, then retry:\n  voila-import import {s} -push {s}\n(Install voila-import via install.sh, or set VOILA_IMPORT_HELPER.)",
-        .{ hub_ref, push_ref },
+        "image not found on the voila registry. Import from Docker Hub, then retry:\n  voila import {s}\n(set VOILA_ORG and VOILA_REGISTRY to push to your org after import)",
+        .{hub_ref},
     );
 }
 
 pub const Error = error{
     NoOrg,
     SkipDockerImport,
-    ImportHelperMissing,
-    ImportFailed,
-    ExePathFailed,
 };

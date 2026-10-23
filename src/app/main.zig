@@ -22,6 +22,8 @@ const container_fuse_sibling = @import("../runtime/oci/container_fuse_sibling.zi
 const voila_paths = @import("../core/voila_paths.zig");
 const voila_login_creds = @import("../registry/voila_login_creds.zig");
 const run_cli_parse = @import("../cli/run_cli_parse.zig");
+const voila_image_import = @import("../registry/voila_image_import.zig");
+const registry_ref_mod = @import("../registry/voila_registry_ref.zig");
 
 pub const std_options_debug_io = zio.debug_io;
 
@@ -178,6 +180,27 @@ pub fn main(init: std.process.Init) !void {
         try worker.push(io, init.gpa, .{ .image = parsed.image });
         return;
     }
+    if (std.mem.eql(u8, sub, "import")) {
+        const parsed = try parsePullArgs(init.gpa, &args);
+        defer init.gpa.free(parsed.runtime_cfg.store_root);
+        defer init.gpa.free(parsed.image);
+        try _registry_session.prepare(io, init.gpa, parsed.runtime_cfg.store_root);
+        const cfg = voila_registry.getConfigCopy(init.gpa) orelse return error.NoRegistry;
+        defer {
+            init.gpa.free(cfg.base_url);
+            init.gpa.free(cfg.token);
+            init.gpa.free(cfg.org);
+        }
+        const hub_ref = try registry_ref_mod.normalizeUserRef(init.gpa, parsed.image);
+        defer init.gpa.free(hub_ref);
+        const push_ref = if (cfg.org.len != 0)
+            try registry_ref_mod.hubPushRef(init.gpa, hub_ref, cfg.org)
+        else
+            try init.gpa.dupe(u8, hub_ref);
+        defer init.gpa.free(push_ref);
+        try voila_image_import.importImage(io, init.gpa, parsed.runtime_cfg.store_root, cfg, hub_ref, push_ref);
+        return;
+    }
     if (std.mem.eql(u8, sub, "rmi")) {
         const parsed = try parseRmiArgs(init.gpa, &args);
         defer parsed.deinit(init.gpa);
@@ -263,7 +286,7 @@ fn printUsage() void {
         \\
         \\  voila login [registry-url]
         \\  voila logout
-        \\  voila pull|push [-root <dir>] <image-ref>
+        \\  voila pull|push|import [-root <dir>] <image-ref>
         \\  voila run [-root <dir>] [-d] [--name NAME] [--rm] <image-ref> -- <cmd> [args...]
         \\  voila ps|logs|images|stop|kill|rm [-root <dir>] ...
         \\

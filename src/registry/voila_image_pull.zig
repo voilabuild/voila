@@ -91,7 +91,7 @@ pub fn autoPull(
     return pullManifest(io, allocator, voila_root, cfg, query);
 }
 
-fn persistManifest(
+pub fn persistManifest(
     allocator: std.mem.Allocator,
     voila_root: []const u8,
     ref: []const u8,

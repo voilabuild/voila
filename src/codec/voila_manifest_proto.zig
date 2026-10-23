@@ -325,3 +325,147 @@ pub fn decodeManifest(allocator: std.mem.Allocator, data: []const u8) !ManifestM
     msg.dirs = try dirs.toOwnedSlice(allocator);
     return msg;
 }
+
+pub fn encodeBlock(allocator: std.mem.Allocator, b: BlockMsg) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try wire.writeU64(&out, allocator, 1, b.offset);
+    try wire.writeBytes(&out, allocator, 2, b.chunk_id);
+    try wire.writeU64(&out, allocator, 3, b.logical_len);
+    return out.toOwnedSlice(allocator);
+}
+
+pub fn encodeFile(allocator: std.mem.Allocator, f: FileMsg) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try wire.writeU64(&out, allocator, 1, f.inode);
+    try wire.writeU32(&out, allocator, 2, f.mode);
+    try wire.writeU32(&out, allocator, 3, f.uid);
+    try wire.writeU32(&out, allocator, 4, f.gid);
+    try wire.writeU64(&out, allocator, 5, f.size);
+    try wire.writeU64(&out, allocator, 6, f.mtime_ns);
+    try wire.writeU32(&out, allocator, 7, f.nlink);
+    var xit = f.xattrs.iterator();
+    while (xit.next()) |e| {
+        var pair: std.ArrayList(u8) = .empty;
+        try wire.writeString(&pair, allocator, 1, e.key_ptr.*);
+        try wire.writeBytes(&pair, allocator, 2, e.value_ptr.*);
+        const sub = try pair.toOwnedSlice(allocator);
+        defer allocator.free(sub);
+        try wire.writeSubmessage(&out, allocator, 8, sub);
+    }
+    for (f.blocks) |blk| {
+        const sub = try encodeBlock(allocator, blk);
+        defer allocator.free(sub);
+        try wire.writeSubmessage(&out, allocator, 9, sub);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+pub fn encodeDir(allocator: std.mem.Allocator, d: DirMsg) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try wire.writeU64(&out, allocator, 1, d.inode);
+    try wire.writeU32(&out, allocator, 2, d.mode);
+    try wire.writeU32(&out, allocator, 3, d.uid);
+    try wire.writeU32(&out, allocator, 4, d.gid);
+    try wire.writeU64(&out, allocator, 5, d.mtime_ns);
+    var eit = d.entries.iterator();
+    while (eit.next()) |e| {
+        var pair: std.ArrayList(u8) = .empty;
+        try wire.writeString(&pair, allocator, 1, e.key_ptr.*);
+        try wire.writeU64(&pair, allocator, 2, e.value_ptr.*);
+        const sub = try pair.toOwnedSlice(allocator);
+        defer allocator.free(sub);
+        try wire.writeSubmessage(&out, allocator, 6, sub);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+pub fn encodeSymlink(allocator: std.mem.Allocator, s: SymlinkMsg) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try wire.writeU64(&out, allocator, 1, s.inode);
+    try wire.writeString(&out, allocator, 2, s.target);
+    try wire.writeU32(&out, allocator, 3, s.uid);
+    try wire.writeU32(&out, allocator, 4, s.gid);
+    return out.toOwnedSlice(allocator);
+}
+
+pub fn encodeDevice(allocator: std.mem.Allocator, d: DeviceMsg) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try wire.writeU64(&out, allocator, 1, d.inode);
+    try wire.writeU32(&out, allocator, 2, d.mode);
+    try wire.writeU32(&out, allocator, 3, d.uid);
+    try wire.writeU32(&out, allocator, 4, d.gid);
+    try wire.writeU32(&out, allocator, 5, d.rdev_major);
+    try wire.writeU32(&out, allocator, 6, d.rdev_minor);
+    try wire.writeBool(&out, allocator, 7, d.is_char);
+    return out.toOwnedSlice(allocator);
+}
+
+pub fn encodeManifest(allocator: std.mem.Allocator, m: ManifestMsg) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    const sorted_dirs = try allocator.alloc(DirMsg, m.dirs.len);
+    @memcpy(sorted_dirs, m.dirs);
+    std.mem.sort(DirMsg, sorted_dirs, {}, struct {
+        fn less(_: void, a: DirMsg, b: DirMsg) bool {
+            return a.inode < b.inode;
+        }
+    }.less);
+    for (sorted_dirs) |d| {
+        const sub = try encodeDir(allocator, d);
+        defer allocator.free(sub);
+        try wire.writeSubmessage(&out, allocator, 1, sub);
+    }
+    allocator.free(sorted_dirs);
+
+    var file_keys: std.ArrayList(u64) = .empty;
+    var fit = m.files.iterator();
+    while (fit.next()) |e| try file_keys.append(allocator, e.key_ptr.*);
+    std.mem.sort(u64, file_keys.items, {}, std.sort.asc(u64));
+    for (file_keys.items) |ino| {
+        const f = m.files.get(ino) orelse continue;
+        var entry: std.ArrayList(u8) = .empty;
+        try wire.writeU64(&entry, allocator, 1, ino);
+        const fbytes = try encodeFile(allocator, f);
+        defer allocator.free(fbytes);
+        try wire.writeSubmessage(&entry, allocator, 2, fbytes);
+        const sub = try entry.toOwnedSlice(allocator);
+        defer allocator.free(sub);
+        try wire.writeSubmessage(&out, allocator, 2, sub);
+    }
+    file_keys.deinit(allocator);
+
+    var sit = m.symlinks.iterator();
+    var skeys: std.ArrayList(u64) = .empty;
+    while (sit.next()) |e| try skeys.append(allocator, e.key_ptr.*);
+    std.mem.sort(u64, skeys.items, {}, std.sort.asc(u64));
+    for (skeys.items) |ino| {
+        const s = m.symlinks.get(ino) orelse continue;
+        var entry: std.ArrayList(u8) = .empty;
+        try wire.writeU64(&entry, allocator, 1, ino);
+        const sbytes = try encodeSymlink(allocator, s);
+        defer allocator.free(sbytes);
+        try wire.writeSubmessage(&entry, allocator, 2, sbytes);
+        const sub = try entry.toOwnedSlice(allocator);
+        defer allocator.free(sub);
+        try wire.writeSubmessage(&out, allocator, 3, sub);
+    }
+    skeys.deinit(allocator);
+
+    var dit = m.devices.iterator();
+    var dkeys: std.ArrayList(u64) = .empty;
+    while (dit.next()) |e| try dkeys.append(allocator, e.key_ptr.*);
+    std.mem.sort(u64, dkeys.items, {}, std.sort.asc(u64));
+    for (dkeys.items) |ino| {
+        const d = m.devices.get(ino) orelse continue;
+        var entry: std.ArrayList(u8) = .empty;
+        try wire.writeU64(&entry, allocator, 1, ino);
+        const dbytes = try encodeDevice(allocator, d);
+        defer allocator.free(dbytes);
+        try wire.writeSubmessage(&entry, allocator, 2, dbytes);
+        const sub = try entry.toOwnedSlice(allocator);
+        defer allocator.free(sub);
+        try wire.writeSubmessage(&out, allocator, 4, sub);
+    }
+    dkeys.deinit(allocator);
+
+    return out.toOwnedSlice(allocator);
+}
