@@ -10,4 +10,5 @@ pub fn main(init: std.process.Init) !void {
 
 test {
     _ = app_main;
+    _ = @import("all_tests.zig");
 }
