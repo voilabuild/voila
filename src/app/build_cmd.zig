@@ -5,6 +5,7 @@ const voila_paths = @import("../core/voila_paths.zig");
 const dockerfile = @import("../core/dockerfile.zig");
 const driver = @import("../runtime/build/driver.zig");
 const run_step = @import("../runtime/build/run_step.zig");
+const userns_ids = @import("../runtime/oci/userns_ids.zig");
 const registry_session = @import("../registry/registry_session.zig");
 const voila_registry = @import("../registry/voila_registry.zig");
 const voila_image_push = @import("../registry/voila_image_push.zig");
@@ -80,7 +81,8 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, it: *std.process.Args.Iterator) !
     };
     registry_session.prepare(io, gpa, args.root) catch {};
 
-    var runner: run_step.NamespaceRunner = .{ .allocator = gpa };
+    var ns_runner: run_step.NamespaceRunner = .{ .allocator = gpa, .ids = userns_ids.detect(a, .{}) };
+    var runner: WarnOnce = .{ .inner = ns_runner.runner() };
     var printer: Printer = .{};
     var diag: driver.Diagnostic = .{};
     const t0 = monotonic();
@@ -116,6 +118,9 @@ fn reportError(df_path: []const u8, e: anyerror, diag: driver.Diagnostic) void {
     const what: []const u8 = switch (e) {
         error.RunFailed => "RUN command failed",
         error.OverlayFailed, error.UserNamespacesRequired => "could not set up the RUN sandbox (needs unprivileged user namespaces and overlayfs; re-run install.sh for the AppArmor profile)",
+        error.UnknownUser => "USER names a user missing from the image's /etc/passwd",
+        error.UnknownGroup => "USER names a group missing from the image's /etc/group",
+        error.UserSwitchFailed => "could not switch to the USER for RUN",
         error.MountFailed => "could not FUSE-mount the image for RUN (is /dev/fuse available?)",
         error.BaseImageNotFound => "base image not found locally or on the registry (try `voila import <ref>` first)",
         error.CopySourceMissing => "COPY source not found in the build context",
@@ -141,6 +146,26 @@ fn reportError(df_path: []const u8, e: anyerror, diag: driver.Diagnostic) void {
         std.debug.print("{s}:{d}: {s}\n", .{ df_path, diag.line, what });
     }
 }
+
+/// Prints one warning per build when `USER` could not be applied to a RUN step.
+const WarnOnce = struct {
+    inner: driver.StepRunner,
+    warned: bool = false,
+
+    fn runner(self: *WarnOnce) driver.StepRunner {
+        return .{ .ptr = self, .runFn = runStep };
+    }
+
+    fn runStep(ptr: *anyopaque, io: std.Io, req: driver.RunRequest) driver.steps.RunnerError!driver.steps.RunResult {
+        const self: *WarnOnce = @ptrCast(@alignCast(ptr));
+        const res = try self.inner.run(io, req);
+        if (res.user_not_applied and !self.warned) {
+            self.warned = true;
+            std.debug.print("warning: USER {s} is not applied to RUN: install uidmap (newuidmap/newgidmap) to run as non-root\n", .{req.user});
+        }
+        return res;
+    }
+};
 
 const Printer = struct {
     fn progress(self: *Printer) driver.Progress {

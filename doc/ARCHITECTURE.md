@@ -89,9 +89,15 @@ everything afterwards is lazy.
 
 **Build** (`voila build`): a Dockerfile becomes a regular voila
 image without tarballs or OCI blobs. The base image is mounted read-only with
-the FUSE backend (image root shown as the build user), an unprivileged
-overlayfs on top captures each `RUN`'s writes in an upper dir, and the command
-runs in the rootless sandbox described below. The upper dir is walked straight
+the FUSE backend (image ids shown as the host ids they map to when a subuid
+range is available), an unprivileged overlayfs on top captures each `RUN`'s
+writes in an upper dir, and the command runs in the rootless sandbox described
+below. The namespace maps 0 to the build user and 1..N to its `/etc/subuid`
+range (`newuidmap`/`newgidmap`, run by the parent while the child waits on a
+pipe), else just 0. After the command, the sandbox records the owner of every
+non-root upper entry in an owners file and chowns it back to the build user so
+the host can read it; the walk restores those owners and maps the remaining host
+ids back (`core/idmap.zig`). The upper dir is walked straight
 into a layer tree with the same chunking as ingest (0/0 char devices become
 whiteouts, `user.overlay.opaque` marks opaque dirs) and merged over the
 current tree; `COPY` walks the context the same way and needs no sandbox.

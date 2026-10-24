@@ -59,10 +59,20 @@ like any imported image, so `voila run` and `voila push` work on it unchanged.
   stage's root chunk and paths. A rebuild with no changes does no work;
   `--no-cache` ignores the cache.
 - `RUN` is rootless: it needs `/dev/fuse` and unprivileged user namespaces
-  (on Ubuntu 24.04+, the AppArmor profile installed by `install.sh`). It runs
-  as root inside a single-uid user namespace, so commands that switch to
-  another user (`su`, `apt-get`'s `_apt` sandbox) or `chown` to other ids
-  fail; `USER` only sets the image's default user.
+  (on Ubuntu 24.04+, the AppArmor profile installed by `install.sh`). Like
+  rootless Podman, the user namespace maps 0 to you and 1..N to your
+  `/etc/subuid` / `/etc/subgid` range, written with `newuidmap` /
+  `newgidmap` from `/usr/bin` (package `uidmap`). Then `su`, `apt-get`'s
+  `_apt` sandbox and `chown` to other ids work, and layers keep those owners.
+  Without the helpers or a subid entry, `RUN` falls back to a single-uid
+  namespace (root only): switching users and `chown` to other ids fail.
+- `USER` applies to later `RUN` steps: `user[:group]` names are looked up in
+  the image's `/etc/passwd` and `/etc/group`, numeric ids always work (gid
+  defaults to the user's group, or 0), and `HOME` is set from `/etc/passwd`
+  when unset. Without the subid range, a non-root `USER` is not applied to
+  `RUN` (it runs as root, as before) and `voila build` prints one warning.
+- Each `RUN` command is pid 1 of its own PID namespace; background processes
+  it leaves behind are killed when it exits.
 
 ## Running containers
 

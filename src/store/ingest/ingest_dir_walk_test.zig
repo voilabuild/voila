@@ -6,6 +6,7 @@ const from_manifest = @import("ingest_from_manifest.zig");
 const manifest_mod = @import("ingest_manifest.zig");
 const merge_mod = @import("ingest_merge.zig");
 const tree_mod = @import("ingest_tree.zig");
+const idmap = @import("../../core/idmap.zig");
 
 const mtime = 1_700_000_000;
 
@@ -211,11 +212,47 @@ test "overlay mode maps the host build user to root" {
     const st = try fs.lstat(fx.path("upper/f"));
     var w = try dir_walk.Walker.init(fx.arena.allocator(), fx.path("store"), .{
         .mode = .overlay_upper,
-        .host_root = .{ .uid = st.uid, .gid = st.gid },
+        .ids = idmap.Mapping.single(st.uid, st.gid),
     });
     defer w.deinit();
     try w.add(fx.path("upper"), "");
     const node = (try w.finish()).tree.lookup("f").?;
     try std.testing.expectEqual(@as(u32, 0), node.uid);
     try std.testing.expectEqual(@as(u32, 0), node.gid);
+}
+
+test "overlay mode maps subordinate ids and honors recorded owners" {
+    var fx = try Fixture.init(std.testing.allocator);
+    defer fx.deinit();
+    const a = fx.arena.allocator();
+    try fx.dir("store");
+    try fx.dir("upper");
+    try fx.dir("upper/home");
+    try fx.file("upper/home/f", "x", 0o644);
+    try fx.file("upper/g", "y", 0o600);
+    const st = try fs.lstat(fx.path("upper/home/f"));
+    const ids: idmap.Mapping = .{
+        .uid = .{ .host = st.uid, .sub = .{ .start = 100000, .count = 65536 } },
+        .gid = .{ .host = st.gid, .sub = .{ .start = 100000, .count = 65536 } },
+    };
+    var sub = st;
+    sub.uid = 101233;
+    sub.gid = 100041;
+    try std.testing.expectEqual(dir_walk.Owner{ .uid = 1234, .gid = 42 }, dir_walk.upperOwner(ids, sub));
+    try std.testing.expectEqual(dir_walk.Owner{ .uid = 0, .gid = 0 }, dir_walk.upperOwner(ids, st));
+
+    var rec: std.ArrayList(u8) = .empty;
+    try dir_walk.appendOwner(a, &rec, "home/f", .{ .uid = 1234, .gid = 1234 });
+    try dir_walk.appendOwner(a, &rec, "odd name", .{ .uid = 7, .gid = 8 });
+    var owners = try dir_walk.parseOwners(a, rec.items);
+    try std.testing.expectEqual(dir_walk.Owner{ .uid = 7, .gid = 8 }, owners.get("odd name").?);
+    try std.testing.expectError(error.BadOwners, dir_walk.parseOwners(a, "x 1 p\x00"));
+
+    var w = try dir_walk.Walker.init(a, fx.path("store"), .{ .mode = .overlay_upper, .ids = ids, .owners = &owners });
+    defer w.deinit();
+    try w.add(fx.path("upper"), "");
+    const tree = (try w.finish()).tree;
+    try std.testing.expectEqual(@as(u32, 1234), tree.lookup("home/f").?.uid);
+    try std.testing.expectEqual(@as(u32, 0), tree.lookup("home").?.uid);
+    try std.testing.expectEqual(@as(u32, 0), tree.lookup("g").?.gid);
 }

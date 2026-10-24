@@ -4,6 +4,7 @@ const fs = @import("../../sys/fs.zig");
 const tree_mod = @import("ingest_tree.zig");
 const layer_walk = @import("ingest_layer_walk.zig");
 const chunk_store = @import("ingest_chunk_store.zig");
+const idmap = @import("../../core/idmap.zig");
 const voila_store = @import("../voila_store.zig");
 
 pub const Mode = enum { copy, overlay_upper };
@@ -20,8 +21,11 @@ pub const Options = struct {
     mode: Mode,
     /// copy: owner of every entry (Docker COPY defaults to root:root).
     owner: Owner = .{ .uid = 0, .gid = 0 },
-    /// overlay_upper: host ids that are root inside the build user namespace.
-    host_root: ?Owner = null,
+    /// overlay_upper: the build user namespace's id map, used to turn host ids back
+    /// into image ids. Unmapped ids are kept as is.
+    ids: ?idmap.Mapping = null,
+    /// overlay_upper: image-path owners that win over the on-disk ids (`parseOwners`).
+    owners: ?*const Owners = null,
     skip: ?Skip = null,
     /// copy: permission bits for every entry instead of the source's.
     chmod: ?u32 = null,
@@ -187,9 +191,13 @@ pub const Walker = struct {
                 };
             },
             .overlay_upper => {
-                const hr = self.opts.host_root;
-                node.uid = if (hr != null and st.uid == hr.?.uid) 0 else st.uid;
-                node.gid = if (hr != null and st.gid == hr.?.gid) 0 else st.gid;
+                const o = upperOwner(self.opts.ids, st);
+                node.uid = o.uid;
+                node.gid = o.gid;
+                if (self.opts.owners) |m| if (m.get(node.path)) |ow| {
+                    node.uid = ow.uid;
+                    node.gid = ow.gid;
+                };
             },
         }
     }
@@ -213,6 +221,34 @@ pub const Walker = struct {
         node.size = offset;
     }
 };
+
+/// Image owner of an upper-dir entry stat'ed on the host.
+pub fn upperOwner(ids: ?idmap.Mapping, st: fs.Stat) Owner {
+    const m = ids orelse return .{ .uid = st.uid, .gid = st.gid };
+    return .{ .uid = m.uid.toContainer(st.uid) orelse st.uid, .gid = m.gid.toContainer(st.gid) orelse st.gid };
+}
+
+/// Image path -> owner, recorded when the RUN sandbox hands entries back to the build user.
+pub const Owners = std.StringHashMapUnmanaged(Owner);
+
+/// One `uid gid path\0` record of the owners file.
+pub fn appendOwner(a: std.mem.Allocator, out: *std.ArrayList(u8), path: []const u8, o: Owner) error{OutOfMemory}!void {
+    try out.print(a, "{d} {d} {s}\x00", .{ o.uid, o.gid, path });
+}
+
+pub fn parseOwners(a: std.mem.Allocator, bytes: []const u8) error{ OutOfMemory, BadOwners }!Owners {
+    var out: Owners = .empty;
+    var it = std.mem.tokenizeScalar(u8, bytes, 0);
+    while (it.next()) |rec| {
+        var f = std.mem.splitScalar(u8, rec, ' ');
+        const uid = std.fmt.parseInt(u32, f.next() orelse return error.BadOwners, 10) catch return error.BadOwners;
+        const gid = std.fmt.parseInt(u32, f.next() orelse return error.BadOwners, 10) catch return error.BadOwners;
+        const path = f.rest();
+        if (path.len == 0) return error.BadOwners;
+        try out.put(a, try a.dupe(u8, path), .{ .uid = uid, .gid = gid });
+    }
+    return out;
+}
 
 fn opaqueXattr(allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
     if (try fs.getXattr(allocator, path, "user.overlay.opaque")) |v| return v;
