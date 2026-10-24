@@ -112,10 +112,10 @@ const Plan = struct {
         const fd = std.c.open(self.resolv_dst, .{ .ACCMODE = .WRONLY, .CREAT = true }, @as(std.c.mode_t, 0o644));
         if (fd >= 0) _ = std.c.close(fd);
         _ = mount(self.resolv_src, self.resolv_dst, null, MS_BIND, null);
-        const code = container_root.enterPidNamespace() catch return;
-        if (code) |c| std.c._exit(c);
+        if (container_root.enterPidNamespace(&.{}) catch return) |c| std.c._exit(c);
         container_root.apply(self.root_ops);
         container_root.pivotInto(self.merged_z) catch return;
+        if (container_root.forkCommand(&.{}) catch return) |c| std.c._exit(c);
         if (self.workdir_z) |wd| {
             makePathZ(wd);
             if (std.c.chdir(wd) != 0) return;

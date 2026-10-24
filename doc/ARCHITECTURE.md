@@ -99,18 +99,23 @@ Steps are cached by `BLAKE3(parent root, instruction, env, inputs)`; a cache
 hit only swaps the root chunk, so fully cached builds never load a tree.
 
 **Rootless sandbox** (`voila run`, build `RUN`; `runtime/oci/container_root.zig`):
-a user, mount and PID namespace, with the command as PID 1 and its parent
-forwarding signals (killing it for a fatal signal it does not handle, which
-PID 1 would otherwise drop) and returning its exit status (128 + signal).
-`voila run` makes the read-only FUSE root writable with an overlayfs whose upper
-dir is a per-run tmpfs (writes are discarded at exit) and falls back to a
-read-only bind of the FUSE root when overlayfs is refused. The root gets a fresh
-`proc`, a tmpfs `/dev` with the host's `null`, `zero`, `full`, `random`,
-`urandom` and `tty` bound in, a new `devpts` instance and a tmpfs `/dev/shm`,
-and the host's `/sys` bound read-only (mounting `sysfs` needs a network
-namespace). The process then `pivot_root`s into it and detaches the old root,
-so the host filesystem is no longer mounted in the namespace; plain `chroot`
-is used only if `pivot_root` is refused.
+a user, mount and PID namespace. PID 1 is a small voila init that runs the
+command as PID 2, forwards signals to it, reaps orphans and exits with the
+command's status (128 + signal when it is killed). `voila run` makes the
+read-only FUSE root writable with an overlayfs whose upper and work dirs live
+on disk in `<root>/containers/<id>/rw` (removed with the container); `voila
+exec` and kernels that refuse the overlay get a read-only bind of the FUSE
+root. The root gets a fresh `proc`, a tmpfs `/dev` with the host's `null`,
+`zero`, `full`, `random`, `urandom` and `tty` bound in, a new `devpts`
+instance (the `-it` terminal is allocated there and its master is passed back
+over a unix socket) and a tmpfs `/dev/shm`. The host's `/sys` is bound
+read-only, submounts included (`mount_setattr`, Linux 5.12+), so host sysfs
+is visible but not writable; mounting a fresh `sysfs` would need a network
+namespace. The process then `pivot_root`s into the root and detaches the old
+one, so the host filesystem is no longer mounted in the namespace; plain
+`chroot` is used only if `pivot_root` is refused. The log file is opened
+before the root changes, so a non-`-it` command's output lands in
+`container.log`.
 
 **runc bundle**: `root.readonly: true`, env/args/cwd from the image config,
 tmpfs on `/tmp`/`/var/tmp`/`/dev`/`/dev/shm`, default namespaces,

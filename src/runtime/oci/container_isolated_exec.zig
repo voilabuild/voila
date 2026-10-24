@@ -15,8 +15,11 @@ pub const Spec = struct {
     vfs_argv0: []const u8,
     cmd_argv: []const []const u8,
     opts: container_run_opts.RunOpts,
+    /// Disk dir for the writable root's overlay upper; empty keeps the root read-only.
+    rw_dir: []const u8 = "",
     use_tty: bool,
-    pty_slave: std.posix.fd_t,
+    /// Unix socket the container's pty master is sent back on.
+    console_fd: std.posix.fd_t = -1,
 };
 
 pub fn run(spec: Spec) Error!u8 {
@@ -24,17 +27,12 @@ pub fn run(spec: Spec) Error!u8 {
     ns.unshare(ns.CLONE.NEWNS) catch return error.UserNamespacesRequired;
     // Refused when / is not a mount point; pivotInto then falls back to chroot.
     ns.mount(null, "/", null, ns.MS.REC | ns.MS.PRIVATE, null) catch {};
-    if (container_root.enterPidNamespace() catch return error.SetupFailed) |code| return code;
-    const mount_z = allocZ(spec.mount_dir) catch return error.SetupFailed;
-    var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const root = container_root.mountOverlayRoot(mount_z, &root_buf) catch blk: {
-        ns.mount(mount_z, mount_z, null, ns.MS.BIND | ns.MS.REC, null) catch return error.SetupFailed;
-        break :blk mount_z;
-    };
-    if (!container_bind.applyVolumeBinds(root, spec.opts.volumes)) return error.SetupFailed;
-    const ops = container_root.plan(std.heap.page_allocator, root) catch return error.SetupFailed;
-    container_root.apply(ops);
-    container_root.pivotInto(root) catch return error.SetupFailed;
+    // A host path: open it before the root changes.
+    const log_fd: std.posix.fd_t = if (spec.console_fd >= 0 or spec.log_path.len == 0) -1 else openLogAppend(spec.log_path);
+    const keep = [_]std.posix.fd_t{ log_fd, spec.console_fd };
+    if (container_root.enterPidNamespace(&keep) catch return error.SetupFailed) |code| return code;
+    try enterRoot(spec);
+    if (container_root.forkCommand(&keep) catch return error.SetupFailed) |code| return code;
     for (spec.opts.env) |e| {
         const key_z = allocZ(e.key) catch return error.SetupFailed;
         const val_z = allocZ(e.value) catch return error.SetupFailed;
@@ -44,18 +42,44 @@ pub fn run(spec: Spec) Error!u8 {
         const wd_z = allocZ(spec.opts.workdir) catch return error.SetupFailed;
         _ = std.c.chdir(wd_z);
     }
-    if (spec.use_tty and spec.pty_slave >= 0) {
-        var pty: container_pty.Pty = .{ .master = -1, .slave = spec.pty_slave };
-        pty.useSlaveInChild() catch return error.SetupFailed;
-    } else {
-        const log_fd = openLogAppend(spec.log_path);
-        if (log_fd >= 0) {
-            _ = std.c.dup2(log_fd, std.c.STDOUT_FILENO);
-            _ = std.c.dup2(log_fd, std.c.STDERR_FILENO);
-            _ = std.c.close(log_fd);
-        }
+    if (spec.console_fd >= 0) {
+        try attachConsole(spec.console_fd);
+    } else if (log_fd >= 0) {
+        _ = std.c.dup2(log_fd, std.c.STDOUT_FILENO);
+        _ = std.c.dup2(log_fd, std.c.STDERR_FILENO);
+        _ = std.c.close(log_fd);
     }
     return execCommand(spec);
+}
+
+/// In PID 1: mount the root (overlay on `rw_dir`, else a read-only bind), apply `-v`,
+/// /proc, /dev and /sys, then pivot into it.
+fn enterRoot(spec: Spec) Error!void {
+    const mount_z = allocZ(spec.mount_dir) catch return error.SetupFailed;
+    var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const overlay: ?[:0]const u8 = if (spec.rw_dir.len == 0) null else blk: {
+        const rw_z = allocZ(spec.rw_dir) catch return error.SetupFailed;
+        break :blk container_root.mountOverlayRoot(spec.mount_dir, rw_z, &root_buf) catch null;
+    };
+    const root = overlay orelse blk: {
+        ns.mount(mount_z, mount_z, null, ns.MS.BIND | ns.MS.REC, null) catch return error.SetupFailed;
+        break :blk mount_z;
+    };
+    if (!container_bind.applyVolumeBinds(root, spec.opts.volumes)) return error.SetupFailed;
+    const ops = container_root.plan(std.heap.page_allocator, root) catch return error.SetupFailed;
+    container_root.apply(ops);
+    container_root.pivotInto(root) catch return error.SetupFailed;
+}
+
+/// Take the terminal from the container's own devpts so ttyname() resolves inside, send
+/// the master back to the host side and make the slave the controlling terminal.
+fn attachConsole(console_fd: std.posix.fd_t) Error!void {
+    const pty = ns.openPty("/dev/ptmx") catch return error.SetupFailed;
+    ns.sendFd(console_fd, pty.master) catch return error.SetupFailed;
+    ns.close(pty.master);
+    ns.close(console_fd);
+    var p: container_pty.Pty = .{ .master = -1, .slave = pty.slave };
+    p.useSlaveInChild() catch return error.SetupFailed;
 }
 
 fn execCommand(spec: Spec) Error {
@@ -87,7 +111,9 @@ pub fn errorExitCode(err: Error) u8 {
     };
 }
 
-pub fn spawnAndWait(_: std.Io, allocator: std.mem.Allocator, spec: Spec, pty_master: std.posix.fd_t, timeout_ms: u64) !u8 {
+pub fn spawnAndWait(_: std.Io, allocator: std.mem.Allocator, spec: Spec, timeout_ms: u64) !u8 {
+    const console: ?[2]std.posix.fd_t = if (spec.use_tty) ns.socketPair() catch null else null;
+    defer if (console) |c| ns.close(c[0]);
     const exe = selfExePath(allocator) catch return error.ExecFailed;
     defer allocator.free(exe);
     const mount_z = try allocator.dupe(u8, spec.mount_dir);
@@ -118,9 +144,13 @@ pub fn spawnAndWait(_: std.Io, allocator: std.mem.Allocator, spec: Spec, pty_mas
         try argv.append(allocator, "-v");
         try argv.append(allocator, try std.fmt.allocPrint(allocator, "{s}:{s}", .{ v.host, v.container }));
     }
-    if (spec.pty_slave >= 0) {
-        try argv.append(allocator, "--pty-slave-fd");
-        try argv.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{spec.pty_slave}));
+    if (spec.rw_dir.len > 0) {
+        try argv.append(allocator, "--rw-dir");
+        try argv.append(allocator, spec.rw_dir);
+    }
+    if (console) |c| {
+        try argv.append(allocator, "--console-fd");
+        try argv.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{c[1]}));
     }
     try argv.append(allocator, "--");
     for (spec.cmd_argv) |a| try argv.append(allocator, try allocator.dupe(u8, a));
@@ -143,15 +173,27 @@ pub fn spawnAndWait(_: std.Io, allocator: std.mem.Allocator, spec: Spec, pty_mas
     const pid = std.c.fork();
     if (pid < 0) return error.ForkFailed;
     if (pid == 0) {
-        closeInheritedFds(-1, -1, spec.pty_slave);
+        const child_console: std.posix.fd_t = if (console) |c| c[1] else -1;
+        closeInheritedFds(child_console);
+        if (child_console >= 0) clearCloexec(child_console);
         _ = std.c.execve(zargs.items[0].ptr, @ptrCast(cargv.ptr), std.c.environ);
         std.c._exit(127);
     }
     var status: i32 = 0;
-    const in_thread = if (pty_master >= 0)
+    var pty_master: std.posix.fd_t = -1;
+    if (console) |c| {
+        ns.close(c[1]);
+        pty_master = (ns.recvFd(c[0]) catch null) orelse -1;
+        if (pty_master >= 0) container_pty.syncWindowSize(pty_master);
+    }
+    const saved_mode = if (pty_master >= 0) ns.rawMode(std.c.STDIN_FILENO) else null;
+    defer if (saved_mode) |m| ns.restoreMode(std.c.STDIN_FILENO, m);
+    defer if (pty_master >= 0) ns.close(pty_master);
+    // Blocks on the terminal until the next keystroke, so it is never joined.
+    if (if (pty_master >= 0)
         std.Thread.spawn(.{}, container_pty.copyTerminalToMaster, .{pty_master}) catch null
     else
-        null;
+        null) |t| t.detach();
     const out_thread = if (pty_master >= 0)
         std.Thread.spawn(.{}, container_pty.pumpMasterToStdout, .{pty_master}) catch null
     else
@@ -165,13 +207,11 @@ pub fn spawnAndWait(_: std.Io, allocator: std.mem.Allocator, spec: Spec, pty_mas
             if (monotonicMs() > deadline) {
                 _ = std.c.kill(pid, std.c.SIG.KILL);
                 while (std.c.waitpid(pid, &status, 0) < 0 and std.c.errno(-1) == .INTR) {}
-                if (in_thread) |t| t.join();
                 return error.ExecTimeout;
             }
         }
         sleepMs(10);
     }
-    if (in_thread) |t| t.join();
     if (out_thread) |t| t.join();
     return ns.exitCode(@bitCast(status));
 }
@@ -184,7 +224,8 @@ pub fn parseCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
     var env_list: std.ArrayList(run_cli_parse.EnvPair) = .empty;
     var vol_list: std.ArrayList(run_cli_parse.Volume) = .empty;
     var cmd_list: std.ArrayList([]const u8) = .empty;
-    var pty_slave: std.posix.fd_t = -1;
+    var console_fd: std.posix.fd_t = -1;
+    var rw_dir: []const u8 = "";
     var after_sep = false;
     while (args.next()) |arg| {
         if (after_sep) {
@@ -230,9 +271,13 @@ pub fn parseCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
             });
             continue;
         }
-        if (std.mem.eql(u8, arg, "--pty-slave-fd")) {
+        if (std.mem.eql(u8, arg, "--console-fd")) {
             const n = args.next() orelse return error.BadArgs;
-            pty_slave = @intCast(std.fmt.parseInt(i32, n, 10) catch return error.BadArgs);
+            console_fd = @intCast(std.fmt.parseInt(i32, n, 10) catch return error.BadArgs);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--rw-dir")) {
+            rw_dir = try allocator.dupe(u8, args.next() orelse return error.BadArgs);
             continue;
         }
         return error.BadArgs;
@@ -256,8 +301,9 @@ pub fn parseCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
             .tty = false,
             .interactive = false,
         },
-        .use_tty = pty_slave >= 0,
-        .pty_slave = pty_slave,
+        .rw_dir = rw_dir,
+        .use_tty = console_fd >= 0,
+        .console_fd = console_fd,
     };
 }
 
@@ -282,12 +328,15 @@ fn selfExePath(allocator: std.mem.Allocator) ![]const u8 {
     return allocator.dupe(u8, buf[0..@intCast(n)]);
 }
 
-fn closeInheritedFds(log_fd: std.posix.fd_t, pty_master: std.posix.fd_t, pty_slave: std.posix.fd_t) void {
+fn closeInheritedFds(keep: std.posix.fd_t) void {
     var fd: i32 = 3;
     while (fd < 512) : (fd += 1) {
-        if (fd == log_fd or fd == pty_master or fd == pty_slave) continue;
-        _ = std.c.close(fd);
+        if (fd != keep) _ = std.c.close(fd);
     }
+}
+
+fn clearCloexec(fd: std.posix.fd_t) void {
+    _ = std.c.fcntl(fd, std.c.F.SETFD, @as(c_int, 0));
 }
 
 fn openLogAppend(path: []const u8) std.posix.fd_t {

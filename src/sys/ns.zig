@@ -22,6 +22,8 @@ pub const Error = error{
     SignalFailed,
     ForkFailed,
     WaitFailed,
+    SocketFailed,
+    PtyFailed,
 };
 
 fn failed(rc: usize) bool {
@@ -31,6 +33,15 @@ fn failed(rc: usize) bool {
 /// mount(2) with optional source, fstype and data.
 pub fn mount(source: ?[*:0]const u8, target: [*:0]const u8, fstype: ?[*:0]const u8, flags: u32, data: ?[*:0]const u8) Error!void {
     if (failed(linux.mount(source, target, fstype, flags, @intFromPtr(data)))) return error.MountFailed;
+}
+
+/// Make the mount tree at `path` read-only, submounts included (mount_setattr, Linux 5.12+).
+pub fn readOnlyRecursive(path: [*:0]const u8) Error!void {
+    const MountAttr = extern struct { attr_set: u64, attr_clr: u64, propagation: u64, userns_fd: u64 };
+    const attr: MountAttr = .{ .attr_set = 1, .attr_clr = 0, .propagation = 0, .userns_fd = 0 };
+    const at_fdcwd: usize = @bitCast(@as(isize, linux.AT.FDCWD));
+    const rc = linux.syscall5(.mount_setattr, at_fdcwd, @intFromPtr(path), linux.AT.RECURSIVE, @intFromPtr(&attr), @sizeOf(MountAttr));
+    if (failed(rc)) return error.MountFailed;
 }
 
 pub fn umountDetach(target: [*:0]const u8) Error!void {
@@ -128,64 +139,122 @@ pub fn fork() Error!linux.pid_t {
     return pid;
 }
 
-/// Raw wait status of `pid` if it has exited, without blocking.
-pub fn waitNoHang(pid: linux.pid_t) Error!?u32 {
+pub const Exited = struct { pid: linux.pid_t, status: u32 };
+
+/// Reap one exited child without blocking; null when none is ready or none is left.
+pub fn reapAny() Error!?Exited {
     var status: i32 = 0;
     while (true) {
-        const rc = linux.wait4(pid, &status, linux.W.NOHANG, null);
+        const rc = linux.wait4(-1, &status, linux.W.NOHANG, null);
         switch (linux.errno(rc)) {
-            .SUCCESS => return if (rc == 0) null else @bitCast(status),
+            .SUCCESS => return if (rc == 0) null else .{ .pid = @intCast(rc), .status = @bitCast(status) },
             .INTR => continue,
+            .CHILD => return null,
             else => return error.WaitFailed,
         }
     }
 }
 
-/// Whether `pid` catches or ignores `sig`, read through the `proc` directory fd;
-/// true when its status cannot be read.
-pub fn signalHandled(proc: linux.fd_t, pid: linux.pid_t, sig: SIG) bool {
-    if (proc < 0) return true;
-    var path_buf: [32]u8 = undefined;
-    const path = std.mem.printSentinel(&path_buf, "{d}/status", .{pid}, 0) catch return true;
-    const rc = linux.openat(proc, path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
-    if (failed(rc)) return true;
-    const fd: linux.fd_t = @intCast(rc);
-    defer close(fd);
-    var buf: [4096]u8 = undefined;
-    var len: usize = 0;
-    while (len < buf.len) {
-        const n = linux.read(fd, buf[len..].ptr, buf.len - len);
-        if (failed(n) or n == 0) break;
-        len += n;
-    }
-    return statusHandles(buf[0..len], sig) orelse true;
+pub fn socketPair() Error![2]linux.fd_t {
+    var fds: [2]linux.fd_t = undefined;
+    const rc = linux.socketpair(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.CLOEXEC, 0, &fds);
+    if (failed(rc)) return error.SocketFailed;
+    return fds;
 }
 
-/// Parse SigIgn/SigCgt from /proc/<pid>/status text; null when either is missing.
-pub fn statusHandles(status: []const u8, sig: SIG) ?bool {
-    const bit = @as(u64, 1) << @intCast(@backingInt(sig) - 1);
-    var mask: u64 = 0;
-    var found: u2 = 0;
-    var lines = std.mem.tokenizeScalar(u8, status, '\n');
-    while (lines.next()) |line| {
-        for ([_][]const u8{ "SigIgn:", "SigCgt:" }) |key| {
-            if (!std.mem.startsWith(u8, line, key)) continue;
-            const hex = std.mem.trim(u8, line[key.len..], " \t");
-            mask |= std.fmt.parseInt(u64, hex, 16) catch return null;
-            found += 1;
+const fd_cmsg_len = @sizeOf(linux.cmsghdr) + @sizeOf(linux.fd_t);
+const fd_cmsg_space = std.mem.alignForward(usize, fd_cmsg_len, linux.cmsg_align);
+
+/// Pass `fd` over a unix socket (SCM_RIGHTS).
+pub fn sendFd(sock: linux.fd_t, fd: linux.fd_t) Error!void {
+    var byte: u8 = 0;
+    const iov = [_]std.posix.iovec_const{.{ .base = @ptrCast(&byte), .len = 1 }};
+    var control: [fd_cmsg_space]u8 align(@alignOf(linux.cmsghdr)) = @splat(0);
+    const hdr: *linux.cmsghdr = @ptrCast(&control);
+    hdr.* = .{ .len = fd_cmsg_len, .level = linux.SOL.SOCKET, .type = linux.SCM.RIGHTS };
+    std.mem.writeInt(linux.fd_t, control[@sizeOf(linux.cmsghdr)..][0..@sizeOf(linux.fd_t)], fd, .little);
+    const msg: linux.msghdr_const = .{ .name = null, .namelen = 0, .iov = &iov, .iovlen = 1, .control = &control, .controllen = control.len, .flags = 0 };
+    if (failed(linux.sendmsg(sock, &msg, linux.MSG.NOSIGNAL))) return error.SocketFailed;
+}
+
+/// Receive an fd sent with `sendFd`; null when the peer closed without sending one.
+pub fn recvFd(sock: linux.fd_t) Error!?linux.fd_t {
+    var byte: u8 = 0;
+    var iov = [_]std.posix.iovec{.{ .base = @ptrCast(&byte), .len = 1 }};
+    var control: [fd_cmsg_space]u8 align(@alignOf(linux.cmsghdr)) = @splat(0);
+    var msg: linux.msghdr = .{ .name = null, .namelen = 0, .iov = &iov, .iovlen = 1, .control = &control, .controllen = control.len, .flags = 0 };
+    while (true) {
+        const rc = linux.recvmsg(sock, &msg, linux.MSG.CMSG_CLOEXEC);
+        switch (linux.errno(rc)) {
+            .SUCCESS => break,
+            .INTR => continue,
+            else => return error.SocketFailed,
         }
     }
-    if (found < 2) return null;
-    return mask & bit != 0;
+    if (msg.controllen < fd_cmsg_len) return null;
+    const hdr: *const linux.cmsghdr = @ptrCast(&control);
+    if (hdr.level != linux.SOL.SOCKET or hdr.type != linux.SCM.RIGHTS) return null;
+    return std.mem.readInt(linux.fd_t, control[@sizeOf(linux.cmsghdr)..][0..@sizeOf(linux.fd_t)], .little);
 }
 
-test "statusHandles reads caught and ignored masks" {
-    const status = "Name:\tsh\nSigIgn:\t0000000000001000\nSigCgt:\t0000000000004002\n";
-    try std.testing.expectEqual(@as(?bool, true), statusHandles(status, .INT));
-    try std.testing.expectEqual(@as(?bool, true), statusHandles(status, .PIPE));
-    try std.testing.expectEqual(@as(?bool, true), statusHandles(status, .TERM));
-    try std.testing.expectEqual(@as(?bool, false), statusHandles(status, .HUP));
-    try std.testing.expectEqual(@as(?bool, null), statusHandles("Name:\tsh\n", .TERM));
+/// Make `pgid` the foreground process group of terminal `fd`. SIGTTOU is blocked so a
+/// background caller can take the terminal back. False when `fd` is not a terminal.
+pub fn setForeground(fd: linux.fd_t, pgid: linux.pid_t) bool {
+    const set = sigset(&.{.TTOU});
+    const old = blockSignals(&set) catch return false;
+    defer setSignalMask(&old) catch {};
+    return !failed(linux.tcsetpgrp(fd, &pgid));
+}
+
+pub fn processGroup() linux.pid_t {
+    return @intCast(linux.getpgid(0));
+}
+
+/// Put terminal `fd` in raw mode and return the previous settings, or null when it is not a terminal.
+pub fn rawMode(fd: linux.fd_t) ?linux.termios {
+    var old: linux.termios = undefined;
+    if (failed(linux.tcgetattr(fd, &old))) return null;
+    var raw = old;
+    raw.iflag.IGNBRK = false;
+    raw.iflag.BRKINT = false;
+    raw.iflag.PARMRK = false;
+    raw.iflag.ISTRIP = false;
+    raw.iflag.INLCR = false;
+    raw.iflag.IGNCR = false;
+    raw.iflag.ICRNL = false;
+    raw.iflag.IXON = false;
+    raw.oflag.OPOST = false;
+    raw.lflag.ECHO = false;
+    raw.lflag.ECHONL = false;
+    raw.lflag.ICANON = false;
+    raw.lflag.ISIG = false;
+    raw.lflag.IEXTEN = false;
+    raw.cflag.CSIZE = .CS8;
+    raw.cflag.PARENB = false;
+    raw.cc[@backingInt(linux.V.MIN)] = 1;
+    raw.cc[@backingInt(linux.V.TIME)] = 0;
+    if (failed(linux.tcsetattr(fd, .FLUSH, &raw))) return null;
+    return old;
+}
+
+pub fn restoreMode(fd: linux.fd_t, mode: linux.termios) void {
+    _ = linux.tcsetattr(fd, .FLUSH, &mode);
+}
+
+pub const Pty = struct { master: linux.fd_t, slave: linux.fd_t };
+
+/// Open a pty pair from `ptmx` (the container's devpts), slave via TIOCGPTPEER.
+pub fn openPty(ptmx: [*:0]const u8) Error!Pty {
+    const rc = linux.open(ptmx, .{ .ACCMODE = .RDWR, .NOCTTY = true, .CLOEXEC = true }, 0);
+    if (failed(rc)) return error.PtyFailed;
+    const master: linux.fd_t = @intCast(rc);
+    errdefer close(master);
+    var unlock: c_int = 0;
+    if (failed(linux.ioctl(master, linux.T.IOCSPTLCK, @intFromPtr(&unlock)))) return error.PtyFailed;
+    const flags: u32 = @bitCast(linux.O{ .ACCMODE = .RDWR, .NOCTTY = true });
+    const peer = linux.ioctl(master, linux.T.IOCGPTPEER, flags);
+    if (failed(peer)) return error.PtyFailed;
+    return .{ .master = master, .slave = @intCast(peer) };
 }
 
 /// Shell-style exit code for a wait status: the exit code, or 128 + signal.
@@ -201,4 +270,27 @@ test "exitCode maps exit and signal statuses" {
     try std.testing.expectEqual(@as(u8, 137), exitCode(9));
     try std.testing.expectEqual(@as(u8, 143), exitCode(15));
     try std.testing.expectEqual(@as(u8, 139), exitCode(11 | 0x80));
+}
+
+test "sendFd passes a working pty master" {
+    const pair = try socketPair();
+    defer close(pair[0]);
+    defer close(pair[1]);
+    const pty = try openPty("/dev/ptmx");
+    defer close(pty.slave);
+    try sendFd(pair[0], pty.master);
+    close(pty.master);
+    const got = (try recvFd(pair[1])).?;
+    defer close(got);
+    _ = linux.write(pty.slave, "hi", 2);
+    var buf: [2]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 2), linux.read(got, &buf, 2));
+    try std.testing.expectEqualStrings("hi", &buf);
+}
+
+test "recvFd returns null when the peer closes" {
+    const pair = try socketPair();
+    defer close(pair[1]);
+    close(pair[0]);
+    try std.testing.expectEqual(@as(?linux.fd_t, null), try recvFd(pair[1]));
 }

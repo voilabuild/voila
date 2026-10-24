@@ -78,8 +78,9 @@ pub fn apply(ops: []const Op) void {
         .touch => |p| ns.touch(p, 0o666) catch {},
         .symlink => |s| ns.symlink(s.target, s.link) catch {},
         .mount => |m| applyMount(m),
-        .readonly => |p| {
-            // Locked host flags must be repeated or the kernel refuses the remount.
+        .readonly => |p| ns.readOnlyRecursive(p) catch {
+            // Before Linux 5.12 only the top mount can be made read-only; locked host
+            // flags must be repeated or the kernel refuses the remount.
             const flags = MS.BIND | MS.REMOUNT | MS.RDONLY | MS.NOSUID | MS.NODEV | MS.NOEXEC;
             ns.mount(null, p, null, flags, null) catch ns.umountDetach(p) catch {};
         },
@@ -109,65 +110,56 @@ pub fn pivotInto(root: [:0]const u8) ns.Error!void {
     try ns.chdir("/");
 }
 
-/// Writable root over a read-only `dir`: tmpfs on `dir`, overlay of the hidden original
-/// and the tmpfs at `<dir>/root`. Returns that root path in `buf`.
-pub fn mountOverlayRoot(dir: [:0]const u8, buf: []u8) (ns.Error || error{NameTooLong})![:0]const u8 {
-    const lower = try ns.openPath(dir);
-    defer ns.close(lower);
-    try ns.mount("tmpfs", dir, "tmpfs", MS.NOSUID | MS.NODEV, "mode=755");
-    errdefer ns.umountDetach(dir) catch {};
+/// Writable root: overlay of the read-only `lower` with upper/work dirs under `rw_dir`,
+/// mounted at `<rw_dir>/root`, whose path is returned in `buf`.
+pub fn mountOverlayRoot(lower: []const u8, rw_dir: [:0]const u8, buf: []u8) (ns.Error || error{NameTooLong})![:0]const u8 {
     var upper_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     var work_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     var opts_buf: [3 * std.Io.Dir.max_path_bytes]u8 = undefined;
-    const upper = std.mem.printSentinel(&upper_buf, "{s}/upper", .{dir}, 0) catch return error.NameTooLong;
-    const work = std.mem.printSentinel(&work_buf, "{s}/work", .{dir}, 0) catch return error.NameTooLong;
-    const root = std.mem.printSentinel(buf, "{s}/root", .{dir}, 0) catch return error.NameTooLong;
-    for ([_][:0]const u8{ upper, work, root }) |d| try ns.mkdir(d, 0o755);
-    const opts = std.mem.printSentinel(&opts_buf, "lowerdir=/proc/self/fd/{d},upperdir={s},workdir={s},userxattr", .{ lower, upper, work }, 0) catch return error.NameTooLong;
+    const upper = std.mem.printSentinel(&upper_buf, "{s}/upper", .{rw_dir}, 0) catch return error.NameTooLong;
+    const work = std.mem.printSentinel(&work_buf, "{s}/work", .{rw_dir}, 0) catch return error.NameTooLong;
+    const root = std.mem.printSentinel(buf, "{s}/root", .{rw_dir}, 0) catch return error.NameTooLong;
+    for ([_][:0]const u8{ rw_dir, upper, work, root }) |d| try ns.mkdir(d, 0o755);
+    const opts = std.mem.printSentinel(&opts_buf, "lowerdir={s},upperdir={s},workdir={s},userxattr", .{ lower, upper, work }, 0) catch return error.NameTooLong;
     try ns.mount("overlay", root, "overlay", 0, opts);
     return root;
 }
 
-/// Forwarded signals whose default action terminates the process.
-const fatal = [_]ns.SIG{ .HUP, .INT, .QUIT, .TERM, .USR1, .USR2 };
-const forwarded = fatal ++ [_]ns.SIG{ .WINCH, .CHLD };
+const forwarded = [_]ns.SIG{ .HUP, .INT, .QUIT, .TERM, .USR1, .USR2, .WINCH, .CHLD };
 
-/// Unshare a PID namespace and fork its init. Returns null in the child (PID 1, killed
-/// with its parent) and, in the parent, the child's exit code after forwarding signals to it.
-pub fn enterPidNamespace() ns.Error!?u8 {
+/// Unshare a PID namespace and fork its init (killed with its parent). Returns null in
+/// the child and, in the parent, the child's exit code. `close_in_parent` are fds only the child keeps.
+pub fn enterPidNamespace(close_in_parent: []const std.posix.fd_t) ns.Error!?u8 {
     try ns.unshare(ns.CLONE.NEWPID);
-    const set = ns.sigset(&forwarded);
-    const old = try ns.blockSignals(&set);
-    // pivot_root also moves this process's root, so keep a handle on the host /proc.
-    const proc = ns.openPath("/proc") catch -1;
-    const pid = try ns.fork();
-    if (pid == 0) {
-        if (proc >= 0) ns.close(proc);
-        try ns.setSignalMask(&old);
-        try ns.setParentDeathSignal(.KILL);
-        return null;
-    }
-    var killed_by: ?ns.SIG = null;
-    while (true) {
-        const sig = try ns.waitSignal(&set);
-        if (sig == .CHLD) {
-            const status = try ns.waitNoHang(pid) orelse continue;
-            if (killed_by) |k| if (ns.exitCode(status) == 128 + 9) return 128 + @as(u8, @intCast(@backingInt(k)));
-            return ns.exitCode(status);
-        }
-        // PID 1 drops signals it does not handle; kill it as the default action would.
-        if (isFatal(sig) and !ns.signalHandled(proc, pid, sig)) {
-            killed_by = sig;
-            ns.kill(pid, .KILL);
-        } else {
-            ns.kill(pid, sig);
-        }
-    }
+    return forkSupervised(close_in_parent, true);
 }
 
-fn isFatal(sig: ns.SIG) bool {
-    for (fatal) |f| if (f == sig) return true;
-    return false;
+/// From PID 1, fork the command as PID 2. Returns null in the command and, in init, the
+/// command's exit code; init forwards signals to it and reaps orphans meanwhile.
+pub fn forkCommand(close_in_parent: []const std.posix.fd_t) ns.Error!?u8 {
+    return forkSupervised(close_in_parent, false);
+}
+
+fn forkSupervised(close_in_parent: []const std.posix.fd_t, death_signal: bool) ns.Error!?u8 {
+    const set = ns.sigset(&forwarded);
+    const old = try ns.blockSignals(&set);
+    const pid = try ns.fork();
+    if (pid == 0) {
+        try ns.setSignalMask(&old);
+        if (death_signal) try ns.setParentDeathSignal(.KILL);
+        return null;
+    }
+    for (close_in_parent) |fd| if (fd >= 0) ns.close(fd);
+    while (true) {
+        const sig = try ns.waitSignal(&set);
+        if (sig != .CHLD) {
+            ns.kill(pid, sig);
+            continue;
+        }
+        while (try ns.reapAny()) |e| {
+            if (e.pid == pid) return ns.exitCode(e.status);
+        }
+    }
 }
 
 fn join(a: std.mem.Allocator, base: []const u8, rel: []const u8) std.mem.Allocator.Error![:0]const u8 {
