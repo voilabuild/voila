@@ -211,6 +211,12 @@ pub fn symlink(target: []const u8, path: []const u8) Error!void {
     _ = try check(linux.symlinkat(try toZ(&zt, target), linux.AT.FDCWD, try toZ(&zp, path)));
 }
 
+pub fn hardLink(existing: []const u8, path: []const u8) Error!void {
+    var ze: Z = undefined;
+    var zp: Z = undefined;
+    _ = try check(linux.linkat(linux.AT.FDCWD, try toZ(&ze, existing), linux.AT.FDCWD, try toZ(&zp, path), 0));
+}
+
 pub fn rename(from: []const u8, to: []const u8) Error!void {
     var zf: Z = undefined;
     var zt: Z = undefined;
