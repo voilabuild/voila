@@ -767,6 +767,10 @@ fn parseRunArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) 
             continue;
         }
         if (image != null) {
+            if (cmd_list.items.len == 0 and std.mem.eql(u8, arg, "--")) {
+                after_sep = true;
+                continue;
+            }
             try cmd_list.append(allocator, try allocator.dupe(u8, arg));
             continue;
         }
@@ -1175,4 +1179,29 @@ test {
     _ = @import("../runtime/build/steps.zig");
     _ = @import("../runtime/build/copy_sources.zig");
     _ = @import("../runtime/build/driver_test.zig");
+}
+
+test "run drops -- right after image ref" {
+    const alloc = std.testing.allocator;
+    const argv: []const [*:0]const u8 = &.{ "-root", "/voila-test-root", "alpine:3", "--", "echo", "--", "hi" };
+    var it = std.process.Args.Iterator.init(.{ .vector = argv });
+    const parsed = try parseRunArgs(alloc, &it);
+    defer parsed.deinit(alloc);
+    try std.testing.expectEqualStrings("alpine:3", parsed.image);
+    try std.testing.expectEqual(@as(usize, 3), parsed.cmd.len);
+    try std.testing.expectEqualStrings("echo", parsed.cmd[0]);
+    try std.testing.expectEqualStrings("--", parsed.cmd[1]);
+    try std.testing.expectEqualStrings("hi", parsed.cmd[2]);
+}
+
+test "run keeps argv without separator after image ref" {
+    const alloc = std.testing.allocator;
+    const argv: []const [*:0]const u8 = &.{ "-root", "/voila-test-root", "alpine:3", "echo", "hi" };
+    var it = std.process.Args.Iterator.init(.{ .vector = argv });
+    const parsed = try parseRunArgs(alloc, &it);
+    defer parsed.deinit(alloc);
+    try std.testing.expectEqualStrings("alpine:3", parsed.image);
+    try std.testing.expectEqual(@as(usize, 2), parsed.cmd.len);
+    try std.testing.expectEqualStrings("echo", parsed.cmd[0]);
+    try std.testing.expectEqualStrings("hi", parsed.cmd[1]);
 }
