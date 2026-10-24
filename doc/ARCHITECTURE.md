@@ -102,9 +102,9 @@ source of truth for current behavior.
 
 ## Benchmarks
 
-These were measured on the Go release line (`voilad`, runc) in the privileged
-devcontainer with `test/gates/gate*.sh`. They have not been re-measured on the
-Zig CLI; treat them as history until the gates are ported.
+These were measured on the Go release line (`voilad`, runc). They have not
+been re-measured on the Zig CLI; treat them as history until the end-to-end
+tests cover them.
 
 | Scenario | Result |
 |---|---|
@@ -112,13 +112,13 @@ Zig CLI; treat them as history until the gates are ported.
 | `python:3.13` `import json,hashlib,sqlite3` | 72 chunks / 20.4 MiB = 1.9% |
 | `postgres:16` initdb + server + SQL round trip | 169 chunks / 61.3 MiB = **13.6% of 452 MiB** |
 | Cold-start over the network (empty machine, alpine) | **91 ms**, 5 chunks / 1.59 MiB (5.6% of image) |
-| FUSE sequential read (gate 3 `dd`) | **714 MB/s** |
-| `voila run` echo (warm, gate 4) | **12 ms** wall |
+| FUSE sequential read (`dd`) | **714 MB/s** |
+| `voila run` echo (warm) | **12 ms** wall |
 | alpine `echo hi` local cold start (drop_caches, fresh daemon) | **45 ms** |
 | `python:3.13` `print("hi")` local cold start | **147 ms** |
 | `libpython` 28 MiB sequential `dd` | 362 MB/s |
-| `python:3.13` ingest / re-ingest (gate 8) | 9.7 s cold; **0.68 s** re-ingest (7/7 layers cached) |
-| One-file change in a 60 MiB image, push delta (gate 8) | **3 chunks / 3.3 KiB** uploaded |
+| `python:3.13` ingest / re-ingest | 9.7 s cold; **0.68 s** re-ingest (7/7 layers cached) |
+| One-file change in a 60 MiB image, push delta | **3 chunks / 3.3 KiB** uploaded |
 
 ## Limitations
 

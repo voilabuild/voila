@@ -10,13 +10,15 @@ voila is Linux only. Building and the unit tests work anywhere Zig runs;
 locked in `mise.lock`):
 
 ```bash
-mise install          # zig 0.17.0
+mise install          # zig 0.17.0, uv
 zig build             # zig-out/bin/voila (Debug)
 zig build -Doptimize=ReleaseFast
 zig build test        # unit + integration tests, no root
 zig build test -Dprivileged   # needs /dev/fuse, user namespaces
 zig fmt --check .
 ```
+
+End-to-end tests: see [TESTING.md](TESTING.md#end-to-end-tests).
 
 C dependencies (BLAKE3, zstd, SQLite, libfuse3) are fetched by
 `build.zig.zon` and built from source, so no system `-dev` packages are needed.
@@ -35,7 +37,7 @@ C dependencies (BLAKE3, zstd, SQLite, libfuse3) are fetched by
 ## macOS
 
 Use the devcontainer (`.devcontainer/`): a privileged Debian container with
-`fuse3`, `uidmap`, `skopeo` and the pinned Zig. Open the repo in VS Code and
+`fuse3`, `uidmap` and the pinned Zig and uv. Open the repo in VS Code and
 choose "Reopen in Container", or run `devcontainer up`.
 
 ## Tests
