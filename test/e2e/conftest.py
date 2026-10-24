@@ -47,7 +47,7 @@ class Registry:
     state: registry.State
 
 
-def _free_port() -> int:
+def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
@@ -60,6 +60,9 @@ def _userns_blocked_by_apparmor() -> bool:
     binary = str(Path(VOILA_BIN).resolve())
     profiles = (f for f in Path("/etc/apparmor.d").glob("*") if f.is_file())
     return not any(binary in f.read_text(errors="ignore") for f in profiles)
+
+
+Machine = Callable[..., Voila]
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -79,7 +82,7 @@ def _require_sandbox() -> None:
 
 @pytest.fixture(scope="session")
 def _registry_server() -> Iterator[str]:
-    port = _free_port()
+    port = free_port()
     server = uvicorn.Server(uvicorn.Config(registry.app, port=port, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -97,10 +100,10 @@ def registry_server(_registry_server: str) -> Registry:
 
 
 @pytest.fixture
-def machine(tmp_path: Path, registry_server: Registry) -> Callable[[str], Voila]:
+def machine(tmp_path: Path, registry_server: Registry) -> Machine:
     """Factory for isolated machines that share the test's registry."""
 
-    def make(name: str) -> Voila:
+    def make(name: str, registry_url: str | None = None) -> Voila:
         home = tmp_path / name / "home"
         root = tmp_path / name / "root"
         home.mkdir(parents=True)
@@ -108,7 +111,7 @@ def machine(tmp_path: Path, registry_server: Registry) -> Callable[[str], Voila]
             "PATH": os.environ["PATH"],
             "HOME": str(home),
             "VOILA_ROOT": str(root),
-            "VOILA_REGISTRY": registry_server.url,
+            "VOILA_REGISTRY": registry_url or registry_server.url,
             "VOILA_REGISTRY_TOKEN": "test",
         }
         return Voila(root, env)
@@ -117,5 +120,5 @@ def machine(tmp_path: Path, registry_server: Registry) -> Callable[[str], Voila]
 
 
 @pytest.fixture
-def voila(machine: Callable[[str], Voila]) -> Voila:
+def voila(machine: Machine) -> Voila:
     return machine("a")
