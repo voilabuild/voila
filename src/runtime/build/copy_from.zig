@@ -69,8 +69,12 @@ const Grafter = struct {
     copies: std.AutoHashMap(*Node, *Node),
 
     fn children(self: *Grafter, dst: *Node, src: *Node) std.mem.Allocator.Error!void {
-        var it = src.children.iterator();
-        while (it.next()) |e| try self.add(dst, e.key_ptr.*, e.value_ptr.*);
+        var names: std.ArrayList([]const u8) = .empty;
+        var it = src.children.keyIterator();
+        while (it.next()) |k| try names.append(self.a, k.*);
+        // Sorted, so the first hard-link alias (the node's `path`) is deterministic.
+        std.mem.sort([]const u8, names.items, {}, lessThan);
+        for (names.items) |n| try self.add(dst, n, src.children.get(n).?);
     }
 
     fn add(self: *Grafter, parent: *Node, name: []const u8, src: *Node) std.mem.Allocator.Error!void {
@@ -81,7 +85,7 @@ const Grafter = struct {
                 self.meta(old, src);
                 return self.children(old, src);
             }
-            self.forget(old);
+            try self.forget(path, old);
         }
         if (self.copies.get(src)) |shared| {
             try layer_walk.attachChild(a, parent, name, shared);
@@ -112,10 +116,11 @@ const Grafter = struct {
         dst.gid = o.gid;
     }
 
-    fn forget(self: *Grafter, n: *Node) void {
-        var it = n.children.valueIterator();
-        while (it.next()) |c| self.forget(c.*);
-        _ = self.tree.by_path.remove(n.path);
+    /// Drops the entries under `path`; a hard link's `n.path` may name another alias.
+    fn forget(self: *Grafter, path: []const u8, n: *Node) std.mem.Allocator.Error!void {
+        var it = n.children.iterator();
+        while (it.next()) |e| try self.forget(try join(self.a, path, e.key_ptr.*), e.value_ptr.*);
+        _ = self.tree.by_path.remove(path);
     }
 };
 
@@ -158,4 +163,28 @@ test "graft keeps chunk ids, hard links and ownership" {
     try std.testing.expectEqual(@as(u32, 2), one.lookup("x/renamed").?.gid);
     try std.testing.expectError(error.CopySourceMissing, resolve(a, src, &.{"nope"}));
     try std.testing.expectError(error.BadDestination, graft(a, wild[0..1], "", false, null));
+}
+
+fn testFile(a: std.mem.Allocator, t: *tree_mod.LayerTree, dir: []const u8, name: []const u8, size: u64) !*Node {
+    const f = try a.create(Node);
+    f.* = .{ .path = try join(a, dir, name), .name = name, .node_type = .regular, .size = size, .blocks = .empty, .xattrs = .init(a), .children = .init(a), .allocator = a };
+    try layer_walk.attachChild(a, layer_walk.ensureDir(a, t, dir), name, f);
+    try t.put(f);
+    return f;
+}
+
+test "a later source replacing a hard-link alias keeps the other link" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const src = try tree_mod.newTree(a);
+    const f = try testFile(a, src, "out", "a", 3);
+    try layer_walk.attachChild(a, src.lookup("out").?, "b", f);
+    try src.by_path.put("out/b", f);
+    _ = try testFile(a, src, "other", "b", 9);
+
+    const t = try graft(a, try resolve(a, src, &.{ "out", "other/b" }), "d", true, null);
+    try std.testing.expectEqual(@as(u64, 3), t.lookup("d/a").?.size);
+    try std.testing.expectEqual(@as(u64, 9), t.lookup("d/b").?.size);
+    try std.testing.expectEqual(t.lookup("d/b").?, t.lookup("d").?.children.get("b").?);
 }

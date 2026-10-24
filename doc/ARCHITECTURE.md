@@ -100,7 +100,9 @@ hit only swaps the root chunk, so fully cached builds never load a tree.
 Multi-stage builds run only the stages the target needs, in file order; each
 stage ends as a root chunk. `COPY --from` loads the source tree's manifests
 and grafts its nodes into the layer, reusing their chunk ids, and is keyed by
-the source root chunk plus the paths.
+the source root chunk plus the paths. For `COPY --from=<image>` on a lazily
+pulled image, the grafted chunk ids may not be local; push relies on the
+registry already having them.
 
 **runc bundle**: `root.readonly: true`, env/args/cwd from the image config,
 tmpfs on `/tmp`/`/var/tmp`/`/dev`/`/dev/shm`, default namespaces,
