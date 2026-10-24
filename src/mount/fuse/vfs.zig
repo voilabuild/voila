@@ -1,6 +1,6 @@
 const std = @import("std");
-const constants = @import("../../core/constants.zig");
-const fixture = @import("../../store/fixture.zig");
+const constants = @import("core").constants;
+const fixture = @import("store").fixture;
 const fuse_abi = @import("./fuse_abi.zig");
 const read_walker = @import("./read_walker.zig");
 

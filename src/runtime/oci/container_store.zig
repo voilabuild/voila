@@ -1,5 +1,5 @@
 const std = @import("std");
-const posix_util = @import("../../sys/posix_util.zig");
+const posix_util = @import("sys").posix_util;
 
 pub const State = struct {
     id: []const u8,

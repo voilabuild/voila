@@ -1,6 +1,6 @@
 const std = @import("std");
-const voila_refkey = @import("../core/voila_refkey.zig");
-const posix_util = @import("../sys/posix_util.zig");
+const voila_refkey = @import("core").voila_refkey;
+const posix_util = @import("sys").posix_util;
 
 pub fn manifestPath(allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) ![]const u8 {
     const key = try voila_refkey.refKey(allocator, image_ref);

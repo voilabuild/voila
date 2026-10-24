@@ -4,12 +4,12 @@ const types = @import("./types.zig");
 const container_run = @import("./oci/container_run.zig");
 const container_exec = @import("./oci/container_exec.zig");
 const container_lifecycle = @import("./oci/container_lifecycle.zig");
-const registry_session = @import("../registry/registry_session.zig");
-const voila_image_pull = @import("../registry/voila_image_pull.zig");
-const voila_image_push = @import("../registry/voila_image_push.zig");
-const voila_resolve = @import("../registry/voila_resolve.zig");
-const voila_registry = @import("../registry/voila_registry.zig");
-const voila_hub_import = @import("../registry/voila_hub_import.zig");
+const registry_session = @import("registry").registry_session;
+const voila_image_pull = @import("registry").voila_image_pull;
+const voila_image_push = @import("registry").voila_image_push;
+const voila_resolve = @import("registry").voila_resolve;
+const voila_registry = @import("registry").voila_registry;
+const voila_hub_import = @import("registry").voila_hub_import;
 
 const Local = struct {
     store_root: []const u8,

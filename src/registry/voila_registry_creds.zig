@@ -1,5 +1,5 @@
 const std = @import("std");
-const posix_util = @import("../sys/posix_util.zig");
+const posix_util = @import("sys").posix_util;
 const hub = @import("./voila_registry_hub.zig");
 
 pub fn loadFromCredsFile(allocator: std.mem.Allocator, voila_root: []const u8) !void {

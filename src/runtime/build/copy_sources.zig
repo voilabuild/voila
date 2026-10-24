@@ -1,9 +1,9 @@
 //! Resolve COPY/ADD sources in the build context and digest them for the step cache.
 const std = @import("std");
-const fs = @import("../../sys/fs.zig");
-const glob = @import("../../core/glob.zig");
-const cache_key = @import("../../core/build_cache_key.zig");
-const dir_walk = @import("../../store/ingest/ingest_dir_walk.zig");
+const fs = @import("sys").fs;
+const glob = @import("core").glob;
+const cache_key = @import("core").build_cache_key;
+const dir_walk = @import("store").ingest.ingest_dir_walk;
 
 pub const Source = struct {
     /// Path relative to the context root.

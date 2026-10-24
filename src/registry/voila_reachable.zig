@@ -1,10 +1,10 @@
 const std = @import("std");
-const voila_manifest_proto = @import("../codec/voila_manifest_proto.zig");
-const voila_store = @import("../store/voila_store.zig");
-const voila_chunk_load = @import("../store/voila_chunk_load.zig");
+const voila_manifest_proto = @import("codec").voila_manifest_proto;
+const voila_store = @import("store").voila_store;
+const voila_chunk_load = @import("store").voila_chunk_load;
 const voila_registry_fetch = @import("./voila_registry_fetch.zig");
-const voila_chunk_index = @import("../store/voila_chunk_index.zig");
-const hex_util = @import("../core/hex_util.zig");
+const voila_chunk_index = @import("store").voila_chunk_index;
+const hex_util = @import("core").hex_util;
 
 fn hexToId(hex: []const u8, out: *[32]u8) !void {
     if (hex.len != 64) return error.BadHex;

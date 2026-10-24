@@ -4,8 +4,8 @@
 
 | Tier | Where | Command | Needs |
 |---|---|---|---|
-| unit + integration | `test` blocks next to the code, wired in `src/all_tests.zig` | `zig build test` | nothing (temp dirs, fakes) |
-| privileged | `src/privileged_tests.zig` | `zig build test -Dprivileged` | root or userns, `/dev/fuse`, nbd, erofs |
+| unit + integration | `test` blocks next to the code, listed in the layer's `src/<layer>/root.zig` | `zig build test` (one test binary per layer) | nothing (temp dirs, fakes) |
+| privileged | `src/sys/privileged_test.zig` | `zig build test -Dprivileged` | root or userns, `/dev/fuse`, nbd, erofs |
 | build gate | `test/gates/build.sh [voila]` | see below | `/dev/fuse`, user namespaces, static busybox |
 | legacy gates | `test/gates/gate*.sh`, `pg_coldstart.sh`, `e2e_auth.sh` | not maintained | Go release line |
 

@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const fuse_vfs_mod = @import("./fuse/fuse_vfs.zig");
-const posix_util = @import("../sys/posix_util.zig");
+const posix_util = @import("sys").posix_util;
 
 const default_path_dirs = [_][]const u8{
     "/usr/local/sbin",

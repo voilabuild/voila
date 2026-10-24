@@ -1,6 +1,6 @@
 //! Container root setup: PID namespace init, fresh /proc, minimal /dev, read-only /sys, pivot_root.
 const std = @import("std");
-const ns = @import("../../sys/ns.zig");
+const ns = @import("sys").ns;
 
 const MS = ns.MS;
 

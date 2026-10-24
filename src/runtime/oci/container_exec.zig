@@ -3,10 +3,10 @@ const container_store = @import("./container_store.zig");
 const container_lifecycle = @import("./container_lifecycle.zig");
 const container_run = @import("./container_run.zig");
 const container_run_opts = @import("./container_run_opts.zig");
-const mount_exec = @import("../../mount/mount_exec.zig");
-const fuse_vfs_mod = @import("../../mount/fuse/fuse_vfs.zig");
+const mount_exec = @import("mount").mount_exec;
+const fuse_vfs_mod = @import("mount").fuse.fuse_vfs;
 const voila_loader = @import("../voila_loader.zig");
-const voila_vfs_mod = @import("../../mount/fuse/voila_vfs.zig");
+const voila_vfs_mod = @import("mount").fuse.voila_vfs;
 
 pub const ExecSpec = struct {
     context_id: []const u8,

@@ -1,6 +1,6 @@
 const std = @import("std");
 const container_store = @import("./container_store.zig");
-const posix_util = @import("../../sys/posix_util.zig");
+const posix_util = @import("sys").posix_util;
 
 pub fn ps(allocator: std.mem.Allocator, voila_root: []const u8) !void {
     const states = try container_store.listStates(allocator, voila_root);

@@ -1,5 +1,5 @@
 const std = @import("std");
-const proto = @import("../../codec/voila_manifest_proto.zig");
+const proto = @import("codec").voila_manifest_proto;
 
 pub const NodeType = enum {
     regular,

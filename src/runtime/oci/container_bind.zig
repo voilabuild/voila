@@ -1,8 +1,8 @@
 //! Rootless bind mounts into the FUSE rootfs via a private mount namespace.
 const std = @import("std");
 const run_flags = @import("../run_flags.zig");
-const posix_util = @import("../../sys/posix_util.zig");
-const fs = @import("../../sys/fs.zig");
+const posix_util = @import("sys").posix_util;
+const fs = @import("sys").fs;
 
 const MS_BIND: usize = 4096;
 const MS_REC: usize = 16384;

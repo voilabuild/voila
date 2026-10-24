@@ -1,29 +1,29 @@
 const std = @import("std");
 const zio = @import("zio");
-const vfs_mod = @import("../mount/fuse/vfs.zig");
-const fuse_vfs_mod = @import("../mount/fuse/fuse_vfs.zig");
-const voila_vfs_mod = @import("../mount/fuse/voila_vfs.zig");
-const fuse_linux = @import("../mount/fuse/fuse_linux.zig");
-const posix_util = @import("../sys/posix_util.zig");
-const constants = @import("../core/constants.zig");
-const voila_loader = @import("../runtime/voila_loader.zig");
-const voila_registry = @import("../registry/voila_registry.zig");
-const voila_registry_creds = @import("../registry/voila_registry_creds.zig");
-const voila_fetch_stats = @import("../registry/voila_fetch_stats.zig");
-const voila_runtime = @import("../runtime/open.zig");
-const voila_refkey = @import("../core/voila_refkey.zig");
-const _voila_image_pull = @import("../registry/voila_image_pull.zig");
-const _registry_session = @import("../registry/registry_session.zig");
-const container_run = @import("../runtime/oci/container_run.zig");
-const voila_image_run_config = @import("../runtime/oci/voila_image_run_config.zig");
-const container_bind = @import("../runtime/oci/container_bind.zig");
-const container_isolated_exec = @import("../runtime/oci/container_isolated_exec.zig");
-const container_fuse_sibling = @import("../runtime/oci/container_fuse_sibling.zig");
-const voila_paths = @import("../sys/voila_paths.zig");
-const voila_login_creds = @import("../registry/voila_login_creds.zig");
-const run_flags = @import("../runtime/run_flags.zig");
-const voila_image_import = @import("../registry/voila_image_import.zig");
-const registry_ref_mod = @import("../registry/voila_registry_ref.zig");
+const vfs_mod = @import("mount").fuse.vfs;
+const fuse_vfs_mod = @import("mount").fuse.fuse_vfs;
+const voila_vfs_mod = @import("mount").fuse.voila_vfs;
+const fuse_linux = @import("mount").fuse.fuse_linux;
+const posix_util = @import("sys").posix_util;
+const constants = @import("core").constants;
+const voila_loader = @import("runtime").voila_loader;
+const voila_registry = @import("registry").voila_registry;
+const voila_registry_creds = @import("registry").voila_registry_creds;
+const voila_fetch_stats = @import("registry").voila_fetch_stats;
+const voila_runtime = @import("runtime").open;
+const voila_refkey = @import("core").voila_refkey;
+const _voila_image_pull = @import("registry").voila_image_pull;
+const _registry_session = @import("registry").registry_session;
+const container_run = @import("runtime").oci.container_run;
+const voila_image_run_config = @import("runtime").oci.voila_image_run_config;
+const container_bind = @import("runtime").oci.container_bind;
+const container_isolated_exec = @import("runtime").oci.container_isolated_exec;
+const container_fuse_sibling = @import("runtime").oci.container_fuse_sibling;
+const voila_paths = @import("sys").voila_paths;
+const voila_login_creds = @import("registry").voila_login_creds;
+const run_flags = @import("runtime").run_flags;
+const voila_image_import = @import("registry").voila_image_import;
+const registry_ref_mod = @import("registry").voila_registry_ref;
 const build_cmd = @import("./build_cmd.zig");
 
 pub const std_options_debug_io = zio.debug_io;
@@ -1161,22 +1161,6 @@ fn resolveAbs(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     if (cwd_err != .SUCCESS) return allocator.dupe(u8, path);
     const cwd_slice = std.mem.sliceTo(@as([*:0]const u8, @ptrCast(cwd[0..].ptr)), 0);
     return std.fmt.allocPrint(allocator, "{s}/{s}", .{ cwd_slice, path });
-}
-
-test {
-    _ = @import("../store/ingest/ingest_tar.zig");
-    _ = @import("../store/ingest/ingest_merge.zig");
-    _ = @import("../core/dockerfile.zig");
-    _ = @import("../core/build_cache_key.zig");
-    _ = @import("../sys/fs.zig");
-    _ = @import("../store/build_cache.zig");
-    _ = @import("../store/ingest/ingest_dir_walk_test.zig");
-    _ = @import("../codec/oci_image_config.zig");
-    _ = @import("../core/glob.zig");
-    _ = @import("../core/passwd.zig");
-    _ = @import("../runtime/build/steps.zig");
-    _ = @import("../runtime/build/copy_sources.zig");
-    _ = @import("../runtime/build/driver_test.zig");
 }
 
 test "run drops -- right after image ref" {
