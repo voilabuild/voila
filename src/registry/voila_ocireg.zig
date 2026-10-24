@@ -75,12 +75,14 @@ pub fn parseRef(allocator: std.mem.Allocator, s: []const u8) !Ref {
     }
     const has_host_port = std.mem.indexOfScalar(u8, host_part, ':') != null;
     var tag: []const u8 = "";
+    var composite_owned: ?[]const u8 = null;
     if (has_host_port) {
         if (std.mem.indexOfScalar(u8, rest, ':')) |j| {
             tag = rest[j + 1 ..];
             rest = rest[0..j];
         }
-        rest = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ host_part, rest });
+        composite_owned = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ host_part, rest });
+        rest = composite_owned.?;
         host_part = "";
     } else if (std.mem.indexOfScalar(u8, rest, ':')) |j| {
         tag = rest[j + 1 ..];
@@ -89,8 +91,12 @@ pub fn parseRef(allocator: std.mem.Allocator, s: []const u8) !Ref {
     if (tag.len == 0) tag = "latest";
 
     var name = rest;
-    if (host_part.len != 0) name = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ host_part, rest });
+    if (host_part.len != 0) {
+        composite_owned = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ host_part, rest });
+        name = composite_owned.?;
+    }
     const parts = try splitName(name, allocator);
+    if (composite_owned) |n| allocator.free(n);
     return .{
         .host = parts.host,
         .repo = parts.repo,

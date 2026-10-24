@@ -17,6 +17,7 @@ const container_userns = @import("./container_userns.zig");
 const container_isolated_exec = @import("./container_isolated_exec.zig");
 const container_fuse_sibling = @import("./container_fuse_sibling.zig");
 const container_ports = @import("./container_ports.zig");
+const userns_ids = @import("./userns_ids.zig");
 const run_cli_parse = @import("../../cli/run_cli_parse.zig");
 
 const ServeCtx = struct {
@@ -253,7 +254,12 @@ fn runMounted(
     defer fuse_vfs.deinit();
     const vfs_exec = try mount_exec.resolveArgv0VfsPath(allocator, &fuse_vfs, cmd_argv[0]);
     defer allocator.free(vfs_exec);
-    var fuse_server = try container_fuse_sibling.start(io, allocator, voila_root, root_ref, mount_dir);
+    const ids = userns_ids.detect(allocator, .{});
+    var fuse_server = try container_fuse_sibling.startWith(io, allocator, voila_root, root_ref, mount_dir, .{
+        .map_root = true,
+        .subuid = ids.uid.sub,
+        .subgid = ids.gid.sub,
+    });
     defer fuse_server.deinit();
     const forwarders = try container_ports.start(io, opts.ports);
     defer container_ports.stopAll(forwarders);

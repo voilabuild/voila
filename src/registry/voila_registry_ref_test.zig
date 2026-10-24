@@ -8,6 +8,20 @@ test "normalize bare alpine to latest tag" {
     try std.testing.expectEqualStrings("alpine:latest", n);
 }
 
+test "pull candidates include drift org library alias" {
+    const gpa = std.testing.allocator;
+    const list = try registry_ref.registryPullCandidates(gpa, "saucisse/alpine:3.20", "saucisse");
+    defer {
+        for (list) |c| gpa.free(c);
+        gpa.free(list);
+    }
+    var saw_alias = false;
+    for (list) |c| {
+        if (std.mem.eql(u8, c, "saucisse/docker.io/library/alpine:3.20")) saw_alias = true;
+    }
+    try std.testing.expect(saw_alias);
+}
+
 test "pull candidates include org and test catalog" {
     const gpa = std.testing.allocator;
     const list = try registry_ref.registryPullCandidates(gpa, "python:3.13", "saucisse");

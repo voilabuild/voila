@@ -11,6 +11,11 @@ const ingest_build = @import("../store/ingest/ingest_build.zig");
 const chunk_store = @import("../store/ingest/ingest_chunk_store.zig");
 const posix_util = @import("../sys/posix_util.zig");
 
+pub const ImportOpts = struct {
+    /// Upload chunks and manifest to the configured voila registry after local ingest.
+    push: bool = false,
+};
+
 pub fn importImage(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -18,6 +23,7 @@ pub fn importImage(
     cfg: voila_registry_hub.Config,
     hub_ref: []const u8,
     push_ref: []const u8,
+    opts: ImportOpts,
 ) !void {
     try posix_util.makePath(voila_root);
 
@@ -48,7 +54,7 @@ pub fn importImage(
     std.debug.print("imported {s} from {s}\n", .{ push_ref, hub_ref });
     std.debug.print("  bytes in: {d}, chunks: {d}\n", .{ res.bytes_in, res.chunk_count });
 
-    try voila_image_push.pushImage(io, allocator, voila_root, cfg, push_ref);
+    if (opts.push) try voila_image_push.pushImage(io, allocator, voila_root, cfg, push_ref);
 }
 
 fn registryClient(client: *ocireg_client.Client) ingest_registry.RegistryClient {

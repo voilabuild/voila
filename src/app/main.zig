@@ -231,7 +231,7 @@ pub fn main(init: std.process.Init) !void {
         else
             try init.gpa.dupe(u8, hub_ref);
         defer init.gpa.free(push_ref);
-        try voila_image_import.importImage(io, init.gpa, parsed.runtime_cfg.store_root, cfg, hub_ref, push_ref);
+        try voila_image_import.importImage(io, init.gpa, parsed.runtime_cfg.store_root, cfg, hub_ref, push_ref, .{});
         return;
     }
     if (std.mem.eql(u8, sub, "rmi")) {
