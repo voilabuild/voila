@@ -23,6 +23,7 @@ test {
     _ = @import("mount/fuse/fuse_abi_test.zig");
     _ = @import("mount/fuse/fuse_conf_test.zig");
     _ = @import("mount/fuse/read_walker.zig");
+    _ = @import("mount/fuse/voila_vfs_test.zig");
     _ = @import("mount/erofs_nbd/backend.zig");
     _ = @import("mount/erofs_nbd/capacity_wait.zig");
     _ = @import("runtime/build/copy_from.zig");

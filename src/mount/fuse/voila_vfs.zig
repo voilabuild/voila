@@ -17,6 +17,10 @@ pub const DirEnt = struct {
     typ: u32,
 };
 
+/// Up to this many decoded chunks (1 MiB each at most) stay in memory; the kernel page
+/// cache holds the rest.
+const chunk_cache_max = 64;
+
 pub const VoilaVfs = struct {
     backend: union(enum) {
         indexed: voila_index.Index,
@@ -24,6 +28,8 @@ pub const VoilaVfs = struct {
     },
     readdir_by_ino: std.AutoHashMap(u64, []DirEnt),
     chunk_cache: std.StringHashMap([]const u8),
+    /// Insertion order of `chunk_cache` keys; the oldest is evicted past `chunk_cache_max`.
+    chunk_order: std.ArrayList([]const u8) = .empty,
     allocator: std.mem.Allocator,
     /// When set, image ids are reported as the host ids that a user namespace with this
     /// map sees as those image ids.
@@ -86,6 +92,7 @@ pub const VoilaVfs = struct {
             self.allocator.free(e.value_ptr.*);
         }
         self.chunk_cache.deinit();
+        self.chunk_order.deinit(self.allocator);
         var rit = self.readdir_by_ino.iterator();
         while (rit.next()) |e| self.allocator.free(e.value_ptr.*);
         self.readdir_by_ino.deinit();
@@ -291,7 +298,7 @@ pub const VoilaVfs = struct {
                 cursor += zeros;
                 continue;
             }
-            const chunk = self.getChunk(b.chunk_hex, b.algo) catch return error.ReadFailed;
+            const chunk = self.getChunk(b.chunk_hex, b.algo, "") catch return error.ReadFailed;
             const chunk_off: usize = @intCast(cursor - b.offset);
             const avail = @min(chunk.len - chunk_off, goal - filled);
             @memcpy(buf[filled..][0..avail], chunk[chunk_off..][0..avail]);
@@ -311,7 +318,6 @@ pub const VoilaVfs = struct {
         const goal = @min(buf.len, @as(usize, @intCast(file.size - off)));
         var filled: usize = 0;
         var cursor = off;
-        const root = self.voilaRoot();
         for (file.blocks) |b| {
             const block_end = b.offset + b.logical_len;
             if (cursor >= block_end) continue;
@@ -329,8 +335,7 @@ pub const VoilaVfs = struct {
             }
             const hex = try voila_resolve.chunkIdToHex(self.allocator, b.chunk_id);
             defer self.allocator.free(hex);
-            const algo = voila_chunk_index.compAlgoForChunk(root, b.chunk_id) catch voila_store.AlgoRaw;
-            const chunk = self.getChunk(hex, algo) catch return error.ReadFailed;
+            const chunk = self.getChunk(hex, null, b.chunk_id) catch return error.ReadFailed;
             const chunk_off: usize = @intCast(cursor - b.offset);
             const avail = @min(chunk.len - chunk_off, goal - filled);
             @memcpy(buf[filled..][0..avail], chunk[chunk_off..][0..avail]);
@@ -345,10 +350,22 @@ pub const VoilaVfs = struct {
         return filled;
     }
 
-    fn getChunk(self: *VoilaVfs, hex: []const u8, algo: i32) ![]const u8 {
+    /// `algo` null looks it up by `id` in the index, on a miss only. The returned slice
+    /// stays valid until the next `getChunk` call.
+    fn getChunk(self: *VoilaVfs, hex: []const u8, algo: ?i32, id: []const u8) ![]const u8 {
         if (self.chunk_cache.get(hex)) |c| return c;
-        const owned = try voila_chunk_load.loadChunkRaw(hub.g_io, self.allocator, self.voilaRoot(), hex, algo);
+        const root = self.voilaRoot();
+        const comp = algo orelse voila_chunk_index.compAlgoForChunk(root, id) catch voila_store.AlgoRaw;
+        const owned = try voila_chunk_load.loadChunkRaw(hub.g_io, self.allocator, root, hex, comp);
+        errdefer self.allocator.free(owned);
+        if (self.chunk_order.items.len >= chunk_cache_max) {
+            const old = self.chunk_order.orderedRemove(0);
+            if (self.chunk_cache.fetchRemove(old)) |kv| self.allocator.free(kv.value);
+            self.allocator.free(old);
+        }
         const key = try self.allocator.dupe(u8, hex);
+        errdefer self.allocator.free(key);
+        try self.chunk_order.append(self.allocator, key);
         try self.chunk_cache.put(key, owned);
         return owned;
     }

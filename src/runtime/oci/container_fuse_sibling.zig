@@ -7,7 +7,6 @@ const voila_loader = @import("../../store/voila_loader.zig");
 const voila_registry = @import("../../registry/voila_registry.zig");
 const voila_registry_creds = @import("../../registry/voila_registry_creds.zig");
 const voila_login_creds = @import("../../registry/voila_login_creds.zig");
-const voila_image_pull = @import("../../registry/voila_image_pull.zig");
 const mount_exec = @import("../../mount/mount_exec.zig");
 const posix_util = @import("../../sys/posix_util.zig");
 const idmap = @import("../../core/idmap.zig");
@@ -167,8 +166,6 @@ fn serveChild(
     voila_login_creds.loadIntoHub(allocator) catch return;
     voila_registry_creds.loadFromCredsFile(allocator, voila_root) catch return;
     voila_registry.loadFromEnv(allocator) catch return;
-    _ = voila_loader.loadTreeRoot(io, allocator, voila_root, image) catch return;
-    voila_image_pull.warmRunChunks(io, allocator, voila_root, image) catch {};
     const tree = voila_loader.loadTreeRoot(io, allocator, voila_root, image) catch return;
     var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(allocator, tree) };
     defer fuse_vfs.deinit();
