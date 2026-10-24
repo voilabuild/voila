@@ -10,6 +10,7 @@ const hex_util = @import("../../core/hex_util.zig");
 const posix_util = @import("../../sys/posix_util.zig");
 const registry_ref = @import("../../registry/voila_registry_ref.zig");
 const voila_image_pull = @import("../../registry/voila_image_pull.zig");
+const run_cli_parse = @import("../../cli/run_cli_parse.zig");
 
 const OciConfig = struct {
     entrypoint: []const []const u8,
@@ -156,6 +157,41 @@ pub fn defaultArgv(
     defer allocator.free(ref_norm);
     _ = voila_image_pull.autoPull(io, allocator, voila_root, ref_norm) catch {};
 
+    const raw = try loadConfigJson(io, allocator, voila_root, image_ref);
+    defer allocator.free(raw);
+    const oci = try parseOciConfig(allocator, raw);
+    defer freeOci(allocator, oci);
+    const argv = try mergeArgv(allocator, oci, override);
+    if (argv.len == 0) return error.NoDefaultCommand;
+    return argv;
+}
+
+/// `Env` of the image config as key/value pairs (empty when the image has none).
+pub fn imageEnv(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) ![]run_cli_parse.EnvPair {
+    const raw = loadConfigJson(io, allocator, voila_root, image_ref) catch return allocator.alloc(run_cli_parse.EnvPair, 0);
+    defer allocator.free(raw);
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, raw, .{}) catch return allocator.alloc(run_cli_parse.EnvPair, 0);
+    defer parsed.deinit();
+    var out: std.ArrayList(run_cli_parse.EnvPair) = .empty;
+    errdefer out.deinit(allocator);
+    if (parsed.value != .object) return out.toOwnedSlice(allocator);
+    const cfg = parsed.value.object.get("Config") orelse parsed.value.object.get("config") orelse return out.toOwnedSlice(allocator);
+    if (cfg != .object) return out.toOwnedSlice(allocator);
+    const env = cfg.object.get("Env") orelse return out.toOwnedSlice(allocator);
+    if (env != .array) return out.toOwnedSlice(allocator);
+    for (env.array.items) |item| {
+        if (item != .string) continue;
+        const eq = std.mem.indexOfScalar(u8, item.string, '=') orelse continue;
+        try out.append(allocator, .{
+            .key = try allocator.dupe(u8, item.string[0..eq]),
+            .value = try allocator.dupe(u8, item.string[eq + 1 ..]),
+        });
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Raw OCI config JSON of a locally resolvable image.
+pub fn loadConfigJson(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) ![]u8 {
     const rec = try voila_resolve.resolveImage(allocator, voila_root, image_ref);
     defer {
         allocator.free(rec.ref);
@@ -173,13 +209,7 @@ pub fn defaultArgv(
     hex_util.encodeHexLower(hex_buf[0 .. chunk_id.len * 2], chunk_id);
     const chunk_hex = hex_buf[0 .. chunk_id.len * 2];
     const algo = voila_chunk_index.compAlgoForChunk(voila_root, chunk_id) catch voila_store.AlgoRaw;
-    const raw = try voila_chunk_load.loadChunkRaw(io, allocator, voila_root, chunk_hex, algo);
-    defer allocator.free(raw);
-    const oci = try parseOciConfig(allocator, raw);
-    defer freeOci(allocator, oci);
-    const argv = try mergeArgv(allocator, oci, override);
-    if (argv.len == 0) return error.NoDefaultCommand;
-    return argv;
+    return voila_chunk_load.loadChunkRaw(io, allocator, voila_root, chunk_hex, algo);
 }
 
 pub const Error = error{

@@ -1,0 +1,118 @@
+//! Shared pieces of build steps: the RUN executor interface and path/argv helpers.
+const std = @import("std");
+const dockerfile = @import("../../core/dockerfile.zig");
+const dir_walk = @import("../../store/ingest/ingest_dir_walk.zig");
+
+pub const default_path = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+pub const RunRequest = struct {
+    voila_root: []const u8,
+    /// Merged root manifest chunk the command runs on.
+    root: [32]u8,
+    /// Private scratch directory, removed after the step.
+    scratch_dir: []const u8,
+    /// Empty directory inside `scratch_dir`; every write of the command must land here
+    /// in overlayfs upper-dir format.
+    upper_dir: []const u8,
+    argv: []const []const u8,
+    env: []const []const u8,
+    workdir: []const u8,
+    user: []const u8,
+};
+
+pub const RunnerError = error{
+    OutOfMemory,
+    MountFailed,
+    UserNamespacesRequired,
+    OverlayFailed,
+    SpawnFailed,
+};
+
+/// Executes one RUN command; returns its exit status.
+pub const StepRunner = struct {
+    ptr: *anyopaque,
+    runFn: *const fn (ptr: *anyopaque, io: std.Io, req: RunRequest) RunnerError!u8,
+
+    pub fn run(self: StepRunner, io: std.Io, req: RunRequest) RunnerError!u8 {
+        return self.runFn(self.ptr, io, req);
+    }
+};
+
+/// Shell form runs through `/bin/sh -c`, as in Docker.
+pub fn formArgv(a: std.mem.Allocator, form: dockerfile.Form) ![]const []const u8 {
+    return switch (form) {
+        .exec => |argv| argv,
+        .shell => |cmd| try a.dupe([]const u8, &.{ "/bin/sh", "-c", cmd }),
+    };
+}
+
+/// Absolute, normalized path of `p` relative to `cwd` (empty cwd is `/`).
+pub fn joinPath(a: std.mem.Allocator, cwd: []const u8, p: []const u8) ![]const u8 {
+    var parts: std.ArrayList([]const u8) = .empty;
+    if (p.len == 0 or p[0] != '/') {
+        var it = std.mem.tokenizeScalar(u8, cwd, '/');
+        while (it.next()) |s| try parts.append(a, s);
+    }
+    var it = std.mem.tokenizeScalar(u8, p, '/');
+    while (it.next()) |s| {
+        if (std.mem.eql(u8, s, ".")) continue;
+        if (std.mem.eql(u8, s, "..")) {
+            _ = parts.pop();
+            continue;
+        }
+        try parts.append(a, s);
+    }
+    const body = try std.mem.join(a, "/", parts.items);
+    return std.fmt.allocPrint(a, "/{s}", .{body});
+}
+
+pub fn joinRel(a: std.mem.Allocator, dir: []const u8, name: []const u8) ![]const u8 {
+    if (dir.len == 0) return a.dupe(u8, name);
+    return std.fmt.allocPrint(a, "{s}/{s}", .{ dir, name });
+}
+
+pub const ChownError = error{UnsupportedChown};
+
+/// `--chown=uid[:gid]` with numeric ids; empty means root.
+pub fn parseChown(s: []const u8) ChownError!dir_walk.Owner {
+    if (s.len == 0) return .{ .uid = 0, .gid = 0 };
+    const colon = std.mem.indexOfScalar(u8, s, ':');
+    const uid = std.fmt.parseInt(u32, s[0 .. colon orelse s.len], 10) catch return error.UnsupportedChown;
+    const gid = if (colon) |c| std.fmt.parseInt(u32, s[c + 1 ..], 10) catch return error.UnsupportedChown else uid;
+    return .{ .uid = uid, .gid = gid };
+}
+
+/// Paths the RUN sandbox mounts over; never part of a layer (Docker does the same).
+pub const mountpoints = [_][]const u8{ "proc", "sys", "dev", "etc/resolv.conf", "etc/hosts" };
+
+pub const MountpointSkip = struct {
+    pub fn skip(self: *MountpointSkip) dir_walk.Skip {
+        return .{ .ctx = self, .func = check };
+    }
+
+    fn check(_: *const anyopaque, rel: []const u8, _: bool) bool {
+        for (mountpoints) |m| if (std.mem.eql(u8, rel, m)) return true;
+        return false;
+    }
+};
+
+const testing = std.testing;
+
+test "joinPath resolves relative to the working directory" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqualStrings("/app/src", try joinPath(a, "/app", "src"));
+    try testing.expectEqualStrings("/etc", try joinPath(a, "/app", "/etc/"));
+    try testing.expectEqualStrings("/x", try joinPath(a, "", "x"));
+    try testing.expectEqualStrings("/", try joinPath(a, "/a", ".."));
+    try testing.expectEqualStrings("/", try joinPath(a, "/", "../.."));
+    try testing.expectEqualStrings("/a/c", try joinPath(a, "/a/b", "./../c"));
+}
+
+test "parseChown accepts numeric ids only" {
+    try testing.expectEqual(dir_walk.Owner{ .uid = 0, .gid = 0 }, try parseChown(""));
+    try testing.expectEqual(dir_walk.Owner{ .uid = 1000, .gid = 1000 }, try parseChown("1000"));
+    try testing.expectEqual(dir_walk.Owner{ .uid = 1, .gid = 2 }, try parseChown("1:2"));
+    try testing.expectError(error.UnsupportedChown, parseChown("app:app"));
+}

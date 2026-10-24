@@ -24,6 +24,8 @@ pub const VoilaVfs = struct {
     readdir_by_ino: std.AutoHashMap(u64, []DirEnt),
     chunk_cache: std.StringHashMap([]const u8),
     allocator: std.mem.Allocator,
+    /// When set, entries owned by uid/gid 0 are reported as this owner instead.
+    root_owner: ?struct { uid: u32, gid: u32 } = null,
 
     pub fn load(allocator: std.mem.Allocator, index_json_path: []const u8) !VoilaVfs {
         const json_bytes = try posix_util.readFileAlloc(allocator, index_json_path, 256 * 1024 * 1024);
@@ -162,13 +164,18 @@ pub const VoilaVfs = struct {
     pub fn attr(self: *VoilaVfs, ino: u64) ?fuse_abi.Attr {
         const mtime_sec: u64 = 0;
         const mtime_nsec: u32 = 0;
-        return switch (self.backend) {
+        var a = switch (self.backend) {
             .indexed => |*idx| attrFromIndex(idx, ino, mtime_sec, mtime_nsec),
-            .lazy_tree => |*tree| {
+            .lazy_tree => |*tree| blk: {
                 tree.ensureInode(ino) catch return null;
-                return attrFromTree(tree, ino, mtime_sec, mtime_nsec);
+                break :blk attrFromTree(tree, ino, mtime_sec, mtime_nsec);
             },
-        };
+        } orelse return null;
+        if (self.root_owner) |o| {
+            if (a.uid == 0) a.uid = o.uid;
+            if (a.gid == 0) a.gid = o.gid;
+        }
+        return a;
     }
 
     pub fn readlink(self: *VoilaVfs, ino: u64) ?[]const u8 {
