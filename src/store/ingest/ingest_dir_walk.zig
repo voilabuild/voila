@@ -81,7 +81,7 @@ pub const Walker = struct {
         return self.res;
     }
 
-    fn walkChildren(self: *Walker, src_dir: []const u8, dest_dir: []const u8, rel_dir: []const u8) anyerror!void {
+    fn walkChildren(self: *Walker, src_dir: []const u8, dest_dir: []const u8, rel_dir: []const u8) !void {
         const names = try fs.listDir(self.allocator, src_dir);
         defer fs.freeNames(self.allocator, names);
         for (names) |name| {
