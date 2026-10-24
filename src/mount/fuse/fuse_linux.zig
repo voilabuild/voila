@@ -39,10 +39,13 @@ pub fn fuseConfUserAllowOtherFromBytes(data: []const u8) bool {
     return false;
 }
 
+/// Images are immutable, so the kernel may cache pages, entries, attributes and misses.
+const cache_opts = "kernel_cache,entry_timeout=86400,attr_timeout=86400,negative_timeout=86400";
+
 pub fn fuseMountOptions() []const u8 {
-    if (std.os.linux.geteuid() == 0) return "ro,allow_other";
-    if (fuseUserAllowOtherEnabled()) return "ro,allow_other";
-    return "ro";
+    if (std.os.linux.geteuid() == 0) return "ro,allow_other," ++ cache_opts;
+    if (fuseUserAllowOtherEnabled()) return "ro,allow_other," ++ cache_opts;
+    return "ro," ++ cache_opts;
 }
 
 pub fn printAllowOtherHint() void {

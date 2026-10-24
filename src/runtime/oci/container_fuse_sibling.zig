@@ -160,7 +160,8 @@ fn serveChild(
     stop_r: std.posix.fd_t,
     opts: Options,
 ) void {
-    const allocator = std.heap.page_allocator;
+    // page_allocator maps a page per allocation; decoding a large manifest makes ~10^5 of them.
+    const allocator = std.heap.smp_allocator;
     if (!fuse_linux.canUseFuse()) return;
     voila_registry.setIo(io, allocator);
     voila_login_creds.loadIntoHub(allocator) catch return;
