@@ -10,7 +10,7 @@ const ocireg = @import("./voila_ocireg.zig");
 const posix_util = @import("../sys/posix_util.zig");
 const voila_hub_import = @import("./voila_hub_import.zig");
 const voila_manifest_cache = @import("./voila_manifest_cache.zig");
-const voila_resolve = @import("../runtime/voila_resolve.zig");
+const voila_resolve = @import("./voila_resolve.zig");
 const proto_wire = @import("../codec/proto_wire.zig");
 
 pub fn pullManifestOnce(

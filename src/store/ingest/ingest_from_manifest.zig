@@ -1,13 +1,14 @@
 //! Rebuild a mutable `LayerTree` from a stored merged root manifest (metadata only).
 const std = @import("std");
-const voila_tree = @import("../../core/voila_tree.zig");
+const voila_tree = @import("../voila_tree.zig");
+const voila_chunk_load = @import("../voila_chunk_load.zig");
 const tree_mod = @import("ingest_tree.zig");
 const layer_walk = @import("ingest_layer_walk.zig");
 
 /// Loads every subtree manifest of `root_chunk`; file data chunks are not touched.
 /// Use an arena: nodes follow the ingest ownership model.
-pub fn loadTree(allocator: std.mem.Allocator, voila_root: []const u8, root_chunk: [32]u8) !*tree_mod.LayerTree {
-    var src = try voila_tree.openTreeEager(allocator, voila_root, &root_chunk);
+pub fn loadTree(allocator: std.mem.Allocator, voila_root: []const u8, root_chunk: [32]u8, fetcher: ?voila_chunk_load.Fetcher) !*tree_mod.LayerTree {
+    var src = try voila_tree.openTreeEager(allocator, voila_root, &root_chunk, fetcher);
     defer src.deinit();
     const out = try tree_mod.newTree(allocator);
     var by_ino: std.AutoHashMap(u64, *tree_mod.Node) = .init(allocator);

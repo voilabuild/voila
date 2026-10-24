@@ -29,7 +29,7 @@ mount, runtime   Backend / Runtime interfaces + implementations
 cli, app         app/ is the only place that picks implementations and reads env
 ```
 
-`build.zig` does not enforce this yet, and some imports still point up (#82, #83). Do not add new ones.
+`build.zig` does not enforce this yet (#83). Do not add imports that point up. The store reaches the registry only through an injected `voila_chunk_load.Fetcher`.
 
 ## Adding an implementation (backend, launcher, transport…)
 

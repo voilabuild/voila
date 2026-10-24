@@ -13,10 +13,10 @@ test {
     _ = @import("sys/ns.zig");
     _ = @import("store/build_cache.zig");
     _ = @import("store/voila_store.zig");
-    _ = @import("store/voila_loader_test.zig");
+    _ = @import("runtime/voila_loader_test.zig");
     _ = @import("store/ingest/ingest_dir_walk_test.zig");
     _ = @import("store/ingest/ingest_merge.zig");
-    _ = @import("store/ingest/ingest_registry.zig");
+    _ = @import("registry/ingest_registry.zig");
     _ = @import("store/ingest/ingest_tar.zig");
     _ = @import("registry/ocireg_client.zig");
     _ = @import("registry/voila_registry_ref_test.zig");
@@ -34,5 +34,5 @@ test {
     _ = @import("runtime/oci/userns_ids.zig");
     _ = @import("runtime/oci/container_root.zig");
     _ = @import("runtime/oci/container_isolated_exec.zig");
-    _ = @import("cli/run_cli_parse.zig");
+    _ = @import("runtime/run_flags.zig");
 }

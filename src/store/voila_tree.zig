@@ -1,11 +1,10 @@
 const std = @import("std");
 const voila_manifest_proto = @import("../codec/voila_manifest_proto.zig");
-const voila_store = @import("../store/voila_store.zig");
-const voila_chunk_load = @import("../store/voila_chunk_load.zig");
-const hub = @import("../registry/voila_registry_hub.zig");
-const voila_resolve = @import("../runtime/voila_resolve.zig");
-const voila_chunk_index = @import("../store/voila_chunk_index.zig");
-const voila_index = @import("./voila_index.zig");
+const voila_store = @import("./voila_store.zig");
+const voila_chunk_load = @import("./voila_chunk_load.zig");
+const hex_util = @import("../core/hex_util.zig");
+const voila_chunk_index = @import("./voila_chunk_index.zig");
+const voila_index = @import("../core/voila_index.zig");
 
 fn cloneFile(allocator: std.mem.Allocator, f: voila_manifest_proto.FileMsg) !voila_manifest_proto.FileMsg {
     var blocks = try allocator.alloc(voila_manifest_proto.BlockMsg, f.blocks.len);
@@ -64,6 +63,8 @@ pub const Tree = struct {
     device_by_inode: std.AutoHashMap(u64, voila_manifest_proto.DeviceMsg),
     external_subtrees: std.AutoHashMap(u64, []const u8),
     root_ino: u64,
+    /// Where chunks missing from `voila_root` come from; null reads local chunks only.
+    fetcher: ?voila_chunk_load.Fetcher,
 
     pub fn deinit(self: *Tree) void {
         var mit = self.manifest_hex_loaded.keyIterator();
@@ -152,12 +153,12 @@ pub const Tree = struct {
     }
 
     fn loadManifestChunk(self: *Tree, chunk_id: []const u8) !void {
-        const hex = try voila_resolve.chunkIdToHex(self.allocator, chunk_id);
+        const hex = try hex_util.chunkIdToHex(self.allocator, chunk_id);
         defer self.allocator.free(hex);
         if (self.manifest_hex_loaded.contains(hex)) return;
         if (self.manifest_hex_failed.contains(hex)) return error.ManifestUnavailable;
         const algo = voila_chunk_index.compAlgoForChunk(self.voila_root, chunk_id) catch voila_store.AlgoRaw;
-        const raw = voila_chunk_load.loadChunkRaw(hub.g_io, self.allocator, self.voila_root, hex, algo) catch |e| {
+        const raw = voila_chunk_load.loadChunkRaw(self.fetcher, self.allocator, self.voila_root, hex, algo) catch |e| {
             self.markManifestFailed(hex);
             return e;
         };
@@ -197,7 +198,7 @@ pub const Tree = struct {
             defer pending.deinit(self.allocator);
             var it = self.external_subtrees.iterator();
             while (it.next()) |e| {
-                const hex = voila_resolve.chunkIdToHex(self.allocator, e.value_ptr.*) catch continue;
+                const hex = hex_util.chunkIdToHex(self.allocator, e.value_ptr.*) catch continue;
                 defer self.allocator.free(hex);
                 if (self.manifest_hex_loaded.contains(hex)) continue;
                 if (self.manifest_hex_failed.contains(hex)) continue;
@@ -268,7 +269,7 @@ pub const Tree = struct {
                         var hex_id: []const u8 = "";
                         var algo: i32 = 0;
                         if (b.chunk_id.len == 32) {
-                            hex_id = try voila_resolve.chunkIdToHex(t.allocator, b.chunk_id);
+                            hex_id = try hex_util.chunkIdToHex(t.allocator, b.chunk_id);
                             algo = voila_chunk_index.compAlgoForChunk(t.voila_root, b.chunk_id) catch 0;
                         }
                         try blocks.append(t.allocator, .{
@@ -323,7 +324,7 @@ pub const Error = error{
 };
 
 /// Root manifest only; external subtrees load on first touch (matches Go mount.Load).
-pub fn openTree(allocator: std.mem.Allocator, voila_root: []const u8, root_chunk: []const u8) !Tree {
+pub fn openTree(allocator: std.mem.Allocator, voila_root: []const u8, root_chunk: []const u8, fetcher: ?voila_chunk_load.Fetcher) !Tree {
     var tree: Tree = .{
         .voila_root = try allocator.dupe(u8, voila_root),
         .allocator = allocator,
@@ -335,14 +336,15 @@ pub fn openTree(allocator: std.mem.Allocator, voila_root: []const u8, root_chunk
         .device_by_inode = std.AutoHashMap(u64, voila_manifest_proto.DeviceMsg).init(allocator),
         .external_subtrees = std.AutoHashMap(u64, []const u8).init(allocator),
         .root_ino = 1,
+        .fetcher = fetcher,
     };
     try tree.loadRoot(root_chunk);
     return tree;
 }
 
 /// Eager load for debug export / full index build (not used on FUSE serve-store hot path).
-pub fn openTreeEager(allocator: std.mem.Allocator, voila_root: []const u8, root_chunk: []const u8) !Tree {
-    var tree = try openTree(allocator, voila_root, root_chunk);
+pub fn openTreeEager(allocator: std.mem.Allocator, voila_root: []const u8, root_chunk: []const u8, fetcher: ?voila_chunk_load.Fetcher) !Tree {
+    var tree = try openTree(allocator, voila_root, root_chunk, fetcher);
     tree.prefetchAll();
     return tree;
 }

@@ -7,7 +7,7 @@ const from_manifest = @import("../../store/ingest/ingest_from_manifest.zig");
 const manifest_mod = @import("../../store/ingest/ingest_manifest.zig");
 const chunk_store = @import("../../store/ingest/ingest_chunk_store.zig");
 const tree_mod = @import("../../store/ingest/ingest_tree.zig");
-const voila_resolve = @import("../voila_resolve.zig");
+const voila_resolve = @import("../../registry/voila_resolve.zig");
 const run_config = @import("../oci/voila_image_run_config.zig");
 
 /// Interprets `write <path> <content>` and `fail` instead of running a shell.
@@ -105,7 +105,7 @@ const Env = struct {
     }
 
     fn imageTree(self: *Env, root: [32]u8) !*tree_mod.LayerTree {
-        return from_manifest.loadTree(self.arena.allocator(), self.root, root);
+        return from_manifest.loadTree(self.arena.allocator(), self.root, root, null);
     }
 };
 

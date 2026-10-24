@@ -7,7 +7,7 @@ const container_lifecycle = @import("./oci/container_lifecycle.zig");
 const registry_session = @import("../registry/registry_session.zig");
 const voila_image_pull = @import("../registry/voila_image_pull.zig");
 const voila_image_push = @import("../registry/voila_image_push.zig");
-const voila_resolve = @import("./voila_resolve.zig");
+const voila_resolve = @import("../registry/voila_resolve.zig");
 const voila_registry = @import("../registry/voila_registry.zig");
 const voila_hub_import = @import("../registry/voila_hub_import.zig");
 

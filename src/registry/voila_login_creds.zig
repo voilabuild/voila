@@ -1,6 +1,6 @@
 const std = @import("std");
 const posix_util = @import("../sys/posix_util.zig");
-const voila_paths = @import("../core/voila_paths.zig");
+const voila_paths = @import("../sys/voila_paths.zig");
 const voila_http = @import("./voila_http.zig");
 const voila_registry_hub = @import("./voila_registry_hub.zig");
 

@@ -2,6 +2,7 @@ const std = @import("std");
 const voila_manifest_proto = @import("../codec/voila_manifest_proto.zig");
 const voila_store = @import("../store/voila_store.zig");
 const voila_chunk_load = @import("../store/voila_chunk_load.zig");
+const voila_registry_fetch = @import("./voila_registry_fetch.zig");
 const voila_chunk_index = @import("../store/voila_chunk_index.zig");
 const hex_util = @import("../core/hex_util.zig");
 
@@ -35,7 +36,7 @@ fn walkManifestChunk(
     const hex_owned = try allocator.dupe(u8, hex);
     defer allocator.free(hex_owned);
     const raw = if (io) |i|
-        voila_chunk_load.loadChunkRaw(i, allocator, voila_root, hex_owned, algo) catch return error.MissingChunk
+        voila_chunk_load.loadChunkRaw(voila_registry_fetch.fetcher(i), allocator, voila_root, hex_owned, algo) catch return error.MissingChunk
     else
         voila_store.loadChunkRaw(allocator, voila_root, hex_owned, algo) catch return error.MissingChunk;
     defer allocator.free(raw);

@@ -1,5 +1,5 @@
 const std = @import("std");
-const voila_registry_hub = @import("../registry/voila_registry_hub.zig");
+const voila_registry_hub = @import("./voila_registry_hub.zig");
 
 pub const Snapshot = struct {
     chunks_fetched: u64 = 0,

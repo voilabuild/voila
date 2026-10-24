@@ -1,5 +1,5 @@
 const std = @import("std");
-const voila_paths = @import("../core/voila_paths.zig");
+const voila_paths = @import("../sys/voila_paths.zig");
 
 pub const Config = struct {
     base_url: []const u8,

@@ -1,11 +1,11 @@
 const std = @import("std");
 const sqlite = @import("sqlite_c");
-const ocireg = @import("../registry/voila_ocireg.zig");
+const ocireg = @import("./voila_ocireg.zig");
 const hex_util = @import("../core/hex_util.zig");
-const registry_ref = @import("../registry/voila_registry_ref.zig");
-const voila_login_creds = @import("../registry/voila_login_creds.zig");
+const registry_ref = @import("./voila_registry_ref.zig");
+const voila_login_creds = @import("./voila_login_creds.zig");
 const voila_refkey = @import("../core/voila_refkey.zig");
-const voila_manifest_cache = @import("../registry/voila_manifest_cache.zig");
+const voila_manifest_cache = @import("./voila_manifest_cache.zig");
 
 pub const Error = error{
     SqliteOpen,
@@ -13,7 +13,6 @@ pub const Error = error{
     SqliteStep,
     NoImageMatch,
     AmbiguousDigest,
-    BadManifestChunk,
 };
 
 pub const ImageRecord = struct {
@@ -175,11 +174,6 @@ fn listImages(allocator: std.mem.Allocator, db: *sqlite.sqlite3) ![]ImageRecord 
         });
     }
     return try out.toOwnedSlice(allocator);
-}
-
-pub fn chunkIdToHex(allocator: std.mem.Allocator, id: []const u8) ![]const u8 {
-    if (id.len != 32) return error.BadManifestChunk;
-    return hex_util.allocHexLower(allocator, id);
 }
 
 pub fn removeImage(allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) !void {
