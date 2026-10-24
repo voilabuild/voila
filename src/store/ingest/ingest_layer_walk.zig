@@ -5,7 +5,8 @@ const tar_mod = @import("ingest_tar.zig");
 const chunk_store = @import("ingest_chunk_store.zig");
 
 pub const chunk_size = voila_store_chunk_size;
-const voila_store_chunk_size = @import("../voila_store.zig").ChunkSize;
+const voila_store = @import("../voila_store.zig");
+const voila_store_chunk_size = voila_store.ChunkSize;
 
 pub const LayerWalkResult = struct {
     tree: *tree_mod.LayerTree,
@@ -31,6 +32,8 @@ pub fn walkLayer(
 
     var seen: std.AutoHashMap(chunk_store.ChunkId, void) = .init(allocator);
     defer seen.deinit();
+    var writer = voila_store.ChunkWriter.init(voila_root);
+    defer writer.deinit();
 
     var tr = tar_mod.TarStream.init(layer_tar);
     var chunk_buf: [chunk_size]u8 = undefined;
@@ -58,7 +61,7 @@ pub fn walkLayer(
             layer_tree.root.implicit = false;
             continue;
         }
-        try walkEntry(allocator, voila_root, &tr, hdr, clean, layer_tree, &seen, &chunk_buf, &res);
+        try walkEntry(allocator, voila_root, &tr, hdr, clean, layer_tree, &writer, &seen, &chunk_buf, &res);
     }
     return res;
 }
@@ -70,6 +73,7 @@ fn walkEntry(
     hdr: tar_mod.TarHeader,
     clean: []const u8,
     layer_tree: *tree_mod.LayerTree,
+    writer: *voila_store.ChunkWriter,
     seen: *std.AutoHashMap(chunk_store.ChunkId, void),
     chunk_buf: *[chunk_size]u8,
     res: *LayerWalkResult,
@@ -93,7 +97,7 @@ fn walkEntry(
                 .children = std.StringHashMap(*tree_mod.Node).init(allocator),
                 .allocator = allocator,
             };
-            try chunkFile(allocator, voila_root, tr, hdr.size, node, seen, chunk_buf, res);
+            try chunkFile(allocator, voila_root, tr, hdr.size, node, writer, seen, chunk_buf, res);
             try attachChild(allocator, parent, parts.base, node);
             try layer_tree.put(node);
         },
@@ -129,6 +133,7 @@ fn chunkFile(
     tr: *tar_mod.TarStream,
     size: u64,
     node: *tree_mod.Node,
+    writer: *voila_store.ChunkWriter,
     seen: *std.AutoHashMap(chunk_store.ChunkId, void),
     _: *[chunk_size]u8,
     res: *LayerWalkResult,
@@ -142,7 +147,7 @@ fn chunkFile(
         remaining -= slice.len;
         res.bytes_in += slice.len;
         node.size += slice.len;
-        const put_res = try putChunk(allocator, voila_root, seen, slice);
+        const put_res = try putChunk(allocator, voila_root, writer, seen, slice);
         try node.blocks.append(allocator, .{
             .offset = offset,
             .chunk_id = put_res.id,
@@ -160,6 +165,7 @@ pub const PutChunkResult = struct { id: chunk_store.ChunkId, is_new: bool, store
 pub fn putChunk(
     allocator: std.mem.Allocator,
     voila_root: []const u8,
+    writer: *voila_store.ChunkWriter,
     seen: *std.AutoHashMap(chunk_store.ChunkId, void),
     buf: []const u8,
 ) !PutChunkResult {
@@ -170,7 +176,8 @@ pub fn putChunk(
         seen.put(id, {}) catch {};
         return .{ .id = id, .is_new = false, .stored_add = 0 };
     }
-    _ = try chunk_store.putBytes(allocator, voila_root, buf);
+    const hex = chunk_store.idToHex(id);
+    try writer.putTrusted(allocator, &hex, buf);
     seen.put(id, {}) catch {};
     return .{ .id = id, .is_new = true, .stored_add = buf.len };
 }

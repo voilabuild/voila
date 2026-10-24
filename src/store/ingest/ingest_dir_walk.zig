@@ -4,6 +4,7 @@ const fs = @import("../../sys/fs.zig");
 const tree_mod = @import("ingest_tree.zig");
 const layer_walk = @import("ingest_layer_walk.zig");
 const chunk_store = @import("ingest_chunk_store.zig");
+const voila_store = @import("../voila_store.zig");
 
 pub const Mode = enum { copy, overlay_upper };
 
@@ -43,6 +44,7 @@ pub const Walker = struct {
     opts: Options,
     res: layer_walk.LayerWalkResult,
     seen: std.AutoHashMap(chunk_store.ChunkId, void),
+    writer: voila_store.ChunkWriter,
     links: std.AutoHashMap(InodeKey, *tree_mod.Node),
     buf: []u8,
 
@@ -54,12 +56,14 @@ pub const Walker = struct {
             .opts = opts,
             .res = .{ .tree = try tree_mod.newTree(allocator), .bytes_in = 0, .chunk_count = 0, .chunks_deduped = 0, .stored_bytes = 0 },
             .seen = .init(allocator),
+            .writer = .init(voila_root),
             .links = .init(allocator),
             .buf = try allocator.alloc(u8, layer_walk.chunk_size),
         };
     }
 
     pub fn deinit(self: *Walker) void {
+        self.writer.deinit();
         self.seen.deinit();
         self.links.deinit();
         self.allocator.free(self.buf);
@@ -187,7 +191,7 @@ pub const Walker = struct {
         while (true) {
             const n = try f.readFull(self.buf);
             if (n == 0) break;
-            const put = try layer_walk.putChunk(self.allocator, self.voila_root, &self.seen, self.buf[0..n]);
+            const put = try layer_walk.putChunk(self.allocator, self.voila_root, &self.writer, &self.seen, self.buf[0..n]);
             try node.blocks.append(self.allocator, .{ .offset = offset, .chunk_id = put.id, .logical_len = n });
             offset += n;
             self.res.bytes_in += n;
