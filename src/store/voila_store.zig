@@ -68,7 +68,7 @@ pub fn compressZstdPublic(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     errdefer allocator.free(out);
     const n = zstd.ZSTD_compress(out.ptr, out.len, raw.ptr, raw.len, 3);
     if (zstd.ZSTD_isError(n) != 0) return error.ZstdEncode;
-    return out[0..n];
+    return allocator.realloc(out, n);
 }
 
 /// Verifies `raw` against `chunk_hex`, then stores it. Use `ChunkWriter` for bulk writes.
@@ -262,6 +262,16 @@ test "decompress zstd empty frame" {
     const raw = try decompressZstd(gpa, input_raw);
     defer gpa.free(raw);
     try std.testing.expectEqualSlices(u8, "", raw);
+}
+
+test "compressZstdPublic result can be freed and round-trips" {
+    const gpa = std.testing.allocator;
+    const raw = "hello hello hello hello hello hello hello hello";
+    const z = try compressZstdPublic(gpa, raw);
+    defer gpa.free(z);
+    const back = try decompressZstd(gpa, z);
+    defer gpa.free(back);
+    try std.testing.expectEqualSlices(u8, raw, back);
 }
 
 test "decompress zstd rejects truncated frame" {
