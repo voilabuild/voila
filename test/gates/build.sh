@@ -1,5 +1,5 @@
 #!/bin/bash
-# voila build acceptance: COPY/RUN/ENV/WORKDIR, whiteouts, opaque dirs,
+# voila build acceptance: COPY/RUN/ENV/WORKDIR, whiteouts, opaque dirs, multi-stage,
 # .dockerignore, step cache, invalidation and RUN failure reporting.
 # Fully local: FROM scratch + a static busybox, no registry or network.
 #
@@ -59,6 +59,34 @@ echo "=== context change"
 echo hello-v2 >"$CTX/hello.txt"
 out=$(build)
 check "only steps from the changed COPY rerun" "$(echo "$out" | grep -c CACHED)" 3
+
+echo "=== multi-stage"
+MS=$WORK/ms
+mkdir -p "$MS"
+cp "$BUSYBOX" "$MS/busybox"
+echo payload >"$MS/payload.txt"
+cat >"$MS/Dockerfile" <<'EOF'
+FROM scratch AS tools
+COPY busybox /bin/busybox
+RUN ["/bin/busybox", "--install", "-s", "/bin"]
+RUN mkdir /out && echo built > /out/artifact.txt
+FROM scratch AS unused
+COPY missing.txt /never
+FROM scratch
+COPY --from=tools /bin/ /bin/
+COPY --from=tools /out/artifact.txt /app/
+COPY payload.txt /app/
+EOF
+msbuild() { "$VOILA" build -root "$ROOT" -t test/ms:1 "$@" "$MS" 2>&1 | grep -v SafeAllocator; }
+msin() { "$VOILA" run --rm -root "$ROOT" "$1" /bin/busybox sh -c "$2" 2>/dev/null | grep -v SafeAllocator; }
+out=$(msbuild); echo "$out"
+check "stage names in progress" "$(echo "$out" | grep -c '^\[tools ')" 4
+check "unused stage is skipped" "$(echo "$out" | grep -c unused || true)" 0
+check "final image has only copied files" "$(msin test/ms:1 'ls -d /out 2>/dev/null; ls /app | tr "\n" " "')" "artifact.txt payload.txt "
+out=$(msbuild)
+check "multi-stage rebuild is fully cached" "$(echo "$out" | grep -c CACHED)" 6
+out=$(msbuild --target tools)
+check "--target tags the named stage" "$(msin test/ms:1 'cat /out/artifact.txt')" "built"
 
 echo "=== failing RUN"
 mkdir -p "$WORK/bad"

@@ -1,4 +1,4 @@
-//! Dockerfile parser (single-stage subset) and `$VAR` expansion.
+//! Dockerfile parser (multi-stage subset) and `$VAR` expansion.
 const std = @import("std");
 
 pub const Form = union(enum) {
@@ -15,6 +15,8 @@ pub const Copy = struct {
     srcs: []const []const u8,
     dest: []const u8,
     chown: []const u8 = "",
+    /// `--from=<stage name|index|image>`; empty copies from the build context.
+    from: []const u8 = "",
     chmod: ?u32 = null,
 };
 
@@ -32,8 +34,14 @@ pub const Arg = struct {
     default: ?[]const u8 = null,
 };
 
+pub const From = struct {
+    image: []const u8,
+    /// `AS name`, lowercased; empty when absent.
+    name: []const u8 = "",
+};
+
 pub const Op = union(enum) {
-    from: []const u8,
+    from: From,
     run: Form,
     cmd: Form,
     entrypoint: Form,
@@ -59,11 +67,19 @@ pub const Instruction = struct {
     op: Op,
 };
 
+/// Instructions from one FROM up to the next; `instructions[0]` is the FROM.
+pub const Stage = struct {
+    name: []const u8,
+    instructions: []const Instruction,
+};
+
 pub const Dockerfile = struct {
     arena: std.heap.ArenaAllocator,
     /// ARGs declared before FROM.
     global_args: []const Arg,
+    /// Every instruction of every stage, in file order.
     instructions: []const Instruction,
+    stages: []const Stage,
 
     pub fn deinit(self: *Dockerfile) void {
         self.arena.deinit();
@@ -80,7 +96,7 @@ pub const Error = error{
     Unsupported,
     MissingArgument,
     MissingFrom,
-    MultiStage,
+    DuplicateStage,
     BadQuote,
     BadValue,
 };
@@ -93,6 +109,7 @@ pub fn parse(gpa: std.mem.Allocator, text: []const u8, diag: *Diagnostic) Error!
     var global_args: std.ArrayList(Arg) = .empty;
     var out: std.ArrayList(Instruction) = .empty;
     var seen_from = false;
+    var starts: std.ArrayList(usize) = .empty;
     var lines = LogicalLines{ .text = text };
     while (try lines.next(a)) |ll| {
         diag.line = ll.line;
@@ -100,8 +117,8 @@ pub fn parse(gpa: std.mem.Allocator, text: []const u8, diag: *Diagnostic) Error!
         const rest = std.mem.trim(u8, ll.text[kw_end..], " \t");
         const op = try parseOp(a, ll.text[0..kw_end], rest);
         if (op == .from) {
-            if (seen_from) return error.MultiStage;
             seen_from = true;
+            try starts.append(a, out.items.len);
         } else if (!seen_from) {
             if (op != .arg) return error.MissingFrom;
             try global_args.append(a, op.arg);
@@ -110,11 +127,23 @@ pub fn parse(gpa: std.mem.Allocator, text: []const u8, diag: *Diagnostic) Error!
         try out.append(a, .{ .line = ll.line, .text = ll.text, .op = op });
     }
     if (!seen_from) return error.MissingFrom;
+    const instructions = try out.toOwnedSlice(a);
+    const stages = try a.alloc(Stage, starts.items.len);
+    for (stages, starts.items, 0..) |*st, start, i| {
+        const end = if (i + 1 < starts.items.len) starts.items[i + 1] else instructions.len;
+        st.* = .{ .name = instructions[start].op.from.name, .instructions = instructions[start..end] };
+        if (st.name.len == 0) continue;
+        for (stages[0..i]) |prev| if (std.mem.eql(u8, prev.name, st.name)) {
+            diag.line = instructions[start].line;
+            return error.DuplicateStage;
+        };
+    }
     diag.line = 0;
     return .{
         .arena = arena,
         .global_args = try global_args.toOwnedSlice(a),
-        .instructions = try out.toOwnedSlice(a),
+        .instructions = instructions,
+        .stages = stages,
     };
 }
 
@@ -181,14 +210,13 @@ fn parseOp(a: std.mem.Allocator, keyword: []const u8, rest: []const u8) Error!Op
     return error.UnknownInstruction;
 }
 
-fn parseFrom(a: std.mem.Allocator, rest: []const u8) Error![]const u8 {
+fn parseFrom(a: std.mem.Allocator, rest: []const u8) Error!From {
     const words = try splitWords(a, rest);
     if (words.len == 0) return error.MissingArgument;
     if (std.mem.startsWith(u8, words[0], "--")) return error.Unsupported;
-    // `FROM img AS name` is accepted; the alias is irrelevant in a single stage.
-    if (words.len != 1 and !(words.len == 3 and std.ascii.eqlIgnoreCase(words[1], "as")))
-        return error.MissingArgument;
-    return words[0];
+    if (words.len == 1) return .{ .image = words[0] };
+    if (words.len != 3 or !std.ascii.eqlIgnoreCase(words[1], "as")) return error.MissingArgument;
+    return .{ .image = words[0], .name = try std.ascii.allocLowerString(a, words[2]) };
 }
 
 fn parseForm(a: std.mem.Allocator, rest: []const u8) Error!Form {
@@ -209,14 +237,17 @@ fn parseCopy(a: std.mem.Allocator, rest: []const u8) Error!Copy {
     else
         try splitWords(a, rest);
     var chown: []const u8 = "";
+    var from: []const u8 = "";
     var chmod: ?u32 = null;
     while (flags_end < all.len and std.mem.startsWith(u8, all[flags_end], "--")) : (flags_end += 1) {
         const flag = all[flags_end];
         if (std.mem.startsWith(u8, flag, "--chown=")) {
             chown = flag["--chown=".len..];
+        } else if (std.mem.startsWith(u8, flag, "--from=")) {
+            from = flag["--from=".len..];
+            if (from.len == 0) return error.MissingArgument;
         } else if (std.mem.startsWith(u8, flag, "--chmod=")) {
             const v = flag["--chmod=".len..];
-            // A `$VAR` is expanded at build time; only literal octal is checked here.
             if (std.mem.indexOfScalar(u8, v, '$') != null) return error.Unsupported;
             chmod = std.fmt.parseInt(u32, v, 8) catch return error.BadValue;
             if (chmod.? > 0o7777) return error.BadValue;
@@ -224,7 +255,7 @@ fn parseCopy(a: std.mem.Allocator, rest: []const u8) Error!Copy {
     }
     words = all[flags_end..];
     if (words.len < 2) return error.MissingArgument;
-    return .{ .srcs = words[0 .. words.len - 1], .dest = words[words.len - 1], .chown = chown, .chmod = chmod };
+    return .{ .srcs = words[0 .. words.len - 1], .dest = words[words.len - 1], .chown = chown, .from = from, .chmod = chmod };
 }
 
 fn parseShell(a: std.mem.Allocator, rest: []const u8) Error![]const []const u8 {
@@ -459,7 +490,9 @@ test "parse basic dockerfile with continuations, comments and forms" {
     try testing.expectEqual(@as(usize, 1), df.global_args.len);
     try testing.expectEqualStrings("alpine:3.20", df.global_args[0].default.?);
     const ins = df.instructions;
-    try testing.expectEqualStrings("${BASE}", ins[0].op.from);
+    try testing.expectEqualStrings("${BASE}", ins[0].op.from.image);
+    try testing.expectEqualStrings("app", ins[0].op.from.name);
+    try testing.expectEqual(@as(usize, 1), df.stages.len);
     try testing.expectEqualStrings("two words", ins[1].op.env[1].value);
     try testing.expectEqualStrings("some value", ins[2].op.env[0].value);
     try testing.expectEqualStrings("apk add  curl  git", ins[3].op.run.shell);
@@ -477,9 +510,10 @@ test "parse errors carry the line number" {
     const cases = [_]struct { text: []const u8, err: Error, line: usize }{
         .{ .text = "RUN true", .err = error.MissingFrom, .line = 1 },
         .{ .text = "FROM a\n\nFROBNICATE x", .err = error.UnknownInstruction, .line = 3 },
-        .{ .text = "FROM a\nFROM b", .err = error.MultiStage, .line = 2 },
+        .{ .text = "FROM a AS x\nFROM b as X", .err = error.DuplicateStage, .line = 2 },
         .{ .text = "FROM a\nRUN --mount=type=cache true", .err = error.Unsupported, .line = 2 },
-        .{ .text = "FROM a\nCOPY --from=x a b", .err = error.Unsupported, .line = 2 },
+        .{ .text = "FROM a\nCOPY --from= a b", .err = error.MissingArgument, .line = 2 },
+        .{ .text = "FROM a AS\n", .err = error.MissingArgument, .line = 1 },
         .{ .text = "FROM a\nCOPY onlyone", .err = error.MissingArgument, .line = 2 },
         .{ .text = "FROM a\nENV X=\"open", .err = error.BadQuote, .line = 2 },
         .{ .text = "# only comments\n", .err = error.MissingFrom, .line = 0 },
@@ -489,6 +523,35 @@ test "parse errors carry the line number" {
         try testing.expectError(c.err, parse(testing.allocator, c.text, &diag));
         try testing.expectEqual(c.line, diag.line);
     }
+}
+
+test "parse splits stages and COPY --from" {
+    var df = try parseOk(
+        \\ARG V=1
+        \\FROM golang:$V AS Builder
+        \\RUN make
+        \\FROM builder
+        \\ARG X
+        \\FROM scratch
+        \\COPY --from=builder --chown=1:2 /out/app /bin/
+        \\COPY --from=0 /etc/os-release /etc/
+    );
+    defer df.deinit();
+    try testing.expectEqual(@as(usize, 1), df.global_args.len);
+    try testing.expectEqual(@as(usize, 3), df.stages.len);
+    try testing.expectEqual(@as(usize, 7), df.instructions.len);
+    const s = df.stages;
+    try testing.expectEqualStrings("builder", s[0].name);
+    try testing.expectEqual(@as(usize, 2), s[0].instructions.len);
+    try testing.expectEqualStrings("builder", s[1].instructions[0].op.from.image);
+    try testing.expectEqualStrings("", s[1].name);
+    try testing.expectEqualStrings("X", s[1].instructions[1].op.arg.name);
+    const c = s[2].instructions[1].op.copy;
+    try testing.expectEqualStrings("builder", c.from);
+    try testing.expectEqualStrings("1:2", c.chown);
+    try testing.expectEqualStrings("/bin/", c.dest);
+    try testing.expectEqualStrings("0", s[2].instructions[2].op.copy.from);
+    try testing.expectEqual(@as(usize, 8), s[2].instructions[2].line);
 }
 
 test "expand variables" {
