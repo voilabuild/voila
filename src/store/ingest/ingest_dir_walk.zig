@@ -22,6 +22,8 @@ pub const Options = struct {
     /// overlay_upper: host ids that are root inside the build user namespace.
     host_root: ?Owner = null,
     skip: ?Skip = null,
+    /// copy: permission bits for every entry instead of the source's.
+    chmod: ?u32 = null,
 };
 
 pub const UpperClass = enum { normal, whiteout, opaque_dir };
@@ -70,7 +72,10 @@ pub const Walker = struct {
     pub fn add(self: *Walker, src: []const u8, dest: []const u8) !void {
         const st = try fs.lstat(src);
         if (st.kind == .dir) {
-            _ = layer_walk.ensureDir(self.allocator, self.res.tree, dest);
+            const top = layer_walk.ensureDir(self.allocator, self.res.tree, dest);
+            if (self.opts.mode == .copy) if (self.opts.chmod) |m| {
+                top.mode = m;
+            };
             return self.walkChildren(src, dest, "");
         }
         if (dest.len == 0) return error.BadDestination;
@@ -171,6 +176,9 @@ pub const Walker = struct {
             .copy => {
                 node.uid = self.opts.owner.uid;
                 node.gid = self.opts.owner.gid;
+                if (node.node_type != .symlink) if (self.opts.chmod) |m| {
+                    node.mode = m;
+                };
             },
             .overlay_upper => {
                 const hr = self.opts.host_root;
