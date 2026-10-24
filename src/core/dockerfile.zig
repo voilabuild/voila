@@ -1,0 +1,410 @@
+//! Dockerfile parser (single-stage subset) and `$VAR` expansion.
+const std = @import("std");
+
+pub const Form = union(enum) {
+    shell: []const u8,
+    exec: []const []const u8,
+};
+
+pub const KeyValue = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
+pub const Copy = struct {
+    srcs: []const []const u8,
+    dest: []const u8,
+    chown: []const u8 = "",
+};
+
+pub const Arg = struct {
+    name: []const u8,
+    default: ?[]const u8 = null,
+};
+
+pub const Op = union(enum) {
+    from: []const u8,
+    run: Form,
+    cmd: Form,
+    entrypoint: Form,
+    copy: Copy,
+    add: Copy,
+    env: []const KeyValue,
+    label: []const KeyValue,
+    arg: Arg,
+    workdir: []const u8,
+    user: []const u8,
+    expose: []const []const u8,
+};
+
+pub const Instruction = struct {
+    line: usize,
+    /// Source text after continuation joining; stable input for cache keys.
+    text: []const u8,
+    op: Op,
+};
+
+pub const Dockerfile = struct {
+    arena: std.heap.ArenaAllocator,
+    /// ARGs declared before FROM.
+    global_args: []const Arg,
+    instructions: []const Instruction,
+
+    pub fn deinit(self: *Dockerfile) void {
+        self.arena.deinit();
+    }
+};
+
+pub const Diagnostic = struct {
+    line: usize = 0,
+};
+
+pub const Error = error{
+    OutOfMemory,
+    UnknownInstruction,
+    Unsupported,
+    MissingArgument,
+    MissingFrom,
+    MultiStage,
+    BadQuote,
+};
+
+pub fn parse(gpa: std.mem.Allocator, text: []const u8, diag: *Diagnostic) Error!Dockerfile {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    errdefer arena.deinit();
+    const a = arena.allocator();
+
+    var global_args: std.ArrayList(Arg) = .empty;
+    var out: std.ArrayList(Instruction) = .empty;
+    var seen_from = false;
+    var lines = LogicalLines{ .text = text };
+    while (try lines.next(a)) |ll| {
+        diag.line = ll.line;
+        const kw_end = std.mem.indexOfAny(u8, ll.text, " \t") orelse ll.text.len;
+        const rest = std.mem.trim(u8, ll.text[kw_end..], " \t");
+        const op = try parseOp(a, ll.text[0..kw_end], rest);
+        if (op == .from) {
+            if (seen_from) return error.MultiStage;
+            seen_from = true;
+        } else if (!seen_from) {
+            if (op != .arg) return error.MissingFrom;
+            try global_args.append(a, op.arg);
+            continue;
+        }
+        try out.append(a, .{ .line = ll.line, .text = ll.text, .op = op });
+    }
+    if (!seen_from) return error.MissingFrom;
+    diag.line = 0;
+    return .{
+        .arena = arena,
+        .global_args = try global_args.toOwnedSlice(a),
+        .instructions = try out.toOwnedSlice(a),
+    };
+}
+
+const LogicalLine = struct { line: usize, text: []const u8 };
+
+const LogicalLines = struct {
+    text: []const u8,
+    pos: usize = 0,
+    line_no: usize = 0,
+
+    fn next(self: *LogicalLines, a: std.mem.Allocator) Error!?LogicalLine {
+        var buf: std.ArrayList(u8) = .empty;
+        var start_line: usize = 0;
+        while (self.pos < self.text.len) {
+            const end = std.mem.indexOfScalarPos(u8, self.text, self.pos, '\n') orelse self.text.len;
+            const raw = std.mem.trimEnd(u8, self.text[self.pos..end], "\r");
+            self.pos = end + 1;
+            self.line_no += 1;
+            const trimmed = std.mem.trim(u8, raw, " \t");
+            if (trimmed.len > 0 and trimmed[0] == '#') continue;
+            if (buf.items.len == 0 and trimmed.len == 0) continue;
+            if (buf.items.len == 0) start_line = self.line_no;
+            if (std.mem.endsWith(u8, trimmed, "\\")) {
+                try buf.appendSlice(a, trimmed[0 .. trimmed.len - 1]);
+                try buf.append(a, ' ');
+                continue;
+            }
+            try buf.appendSlice(a, trimmed);
+            break;
+        }
+        const joined = std.mem.trim(u8, buf.items, " \t");
+        if (joined.len == 0) return null;
+        return .{ .line = start_line, .text = joined };
+    }
+};
+
+fn parseOp(a: std.mem.Allocator, keyword: []const u8, rest: []const u8) Error!Op {
+    var kw_buf: [16]u8 = undefined;
+    if (keyword.len > kw_buf.len) return error.UnknownInstruction;
+    const kw = std.ascii.lowerString(&kw_buf, keyword);
+    const eql = std.mem.eql;
+    if (eql(u8, kw, "healthcheck") or eql(u8, kw, "onbuild") or eql(u8, kw, "shell") or
+        eql(u8, kw, "stopsignal") or eql(u8, kw, "volume") or eql(u8, kw, "maintainer"))
+        return error.Unsupported;
+    if (rest.len == 0) return error.MissingArgument;
+    if (eql(u8, kw, "from")) return .{ .from = try parseFrom(a, rest) };
+    if (eql(u8, kw, "run")) {
+        if (std.mem.startsWith(u8, rest, "--")) return error.Unsupported;
+        return .{ .run = try parseForm(a, rest) };
+    }
+    if (eql(u8, kw, "cmd")) return .{ .cmd = try parseForm(a, rest) };
+    if (eql(u8, kw, "entrypoint")) return .{ .entrypoint = try parseForm(a, rest) };
+    if (eql(u8, kw, "copy")) return .{ .copy = try parseCopy(a, rest) };
+    if (eql(u8, kw, "add")) return .{ .add = try parseCopy(a, rest) };
+    if (eql(u8, kw, "env")) return .{ .env = try parseKeyValues(a, rest, true) };
+    if (eql(u8, kw, "label")) return .{ .label = try parseKeyValues(a, rest, false) };
+    if (eql(u8, kw, "arg")) return .{ .arg = parseArg(rest) };
+    if (eql(u8, kw, "workdir")) return .{ .workdir = rest };
+    if (eql(u8, kw, "user")) return .{ .user = rest };
+    if (eql(u8, kw, "expose")) return .{ .expose = try splitWords(a, rest) };
+    return error.UnknownInstruction;
+}
+
+fn parseFrom(a: std.mem.Allocator, rest: []const u8) Error![]const u8 {
+    const words = try splitWords(a, rest);
+    if (words.len == 0) return error.MissingArgument;
+    if (std.mem.startsWith(u8, words[0], "--")) return error.Unsupported;
+    // `FROM img AS name` is accepted; the alias is irrelevant in a single stage.
+    if (words.len != 1 and !(words.len == 3 and std.ascii.eqlIgnoreCase(words[1], "as")))
+        return error.MissingArgument;
+    return words[0];
+}
+
+fn parseForm(a: std.mem.Allocator, rest: []const u8) Error!Form {
+    if (rest[0] == '[') {
+        if (std.json.parseFromSliceLeaky([]const []const u8, a, rest, .{})) |argv| {
+            if (argv.len == 0) return error.MissingArgument;
+            return .{ .exec = argv };
+        } else |_| {}
+    }
+    return .{ .shell = rest };
+}
+
+fn parseCopy(a: std.mem.Allocator, rest: []const u8) Error!Copy {
+    var words: []const []const u8 = undefined;
+    var flags_end: usize = 0;
+    const all = if (rest[0] == '[')
+        std.json.parseFromSliceLeaky([]const []const u8, a, rest, .{}) catch try splitWords(a, rest)
+    else
+        try splitWords(a, rest);
+    var chown: []const u8 = "";
+    while (flags_end < all.len and std.mem.startsWith(u8, all[flags_end], "--")) : (flags_end += 1) {
+        const flag = all[flags_end];
+        if (std.mem.startsWith(u8, flag, "--chown=")) {
+            chown = flag["--chown=".len..];
+        } else return error.Unsupported;
+    }
+    words = all[flags_end..];
+    if (words.len < 2) return error.MissingArgument;
+    return .{ .srcs = words[0 .. words.len - 1], .dest = words[words.len - 1], .chown = chown };
+}
+
+fn parseArg(rest: []const u8) Arg {
+    if (std.mem.indexOfScalar(u8, rest, '=')) |eq| {
+        return .{ .name = rest[0..eq], .default = unquote(rest[eq + 1 ..]) };
+    }
+    return .{ .name = rest };
+}
+
+fn unquote(s: []const u8) []const u8 {
+    if (s.len >= 2 and (s[0] == '"' or s[0] == '\'') and s[s.len - 1] == s[0]) return s[1 .. s.len - 1];
+    return s;
+}
+
+/// `K=V K2="a b"`; with `legacy_ok`, also the `ENV K some value` form.
+fn parseKeyValues(a: std.mem.Allocator, rest: []const u8, legacy_ok: bool) Error![]const KeyValue {
+    const first = std.mem.indexOfAny(u8, rest, " \t=") orelse rest.len;
+    if (legacy_ok and (first == rest.len or rest[first] != '=')) {
+        if (first == rest.len) return error.MissingArgument;
+        const kv = try a.alloc(KeyValue, 1);
+        kv[0] = .{ .key = rest[0..first], .value = std.mem.trim(u8, rest[first..], " \t") };
+        return kv;
+    }
+    const words = try splitWords(a, rest);
+    const out = try a.alloc(KeyValue, words.len);
+    for (words, out) |w, *kv| {
+        const eq = std.mem.indexOfScalar(u8, w, '=') orelse return error.MissingArgument;
+        kv.* = .{ .key = w[0..eq], .value = w[eq + 1 ..] };
+    }
+    return out;
+}
+
+/// Splits on whitespace, honoring quotes and backslash escapes; quotes are removed.
+fn splitWords(a: std.mem.Allocator, s: []const u8) Error![]const []const u8 {
+    var words: std.ArrayList([]const u8) = .empty;
+    var cur: std.ArrayList(u8) = .empty;
+    var in_word = false;
+    var quote: u8 = 0;
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        const c = s[i];
+        if (quote != 0) {
+            if (c == quote) {
+                quote = 0;
+            } else if (c == '\\' and quote == '"' and i + 1 < s.len) {
+                i += 1;
+                try cur.append(a, s[i]);
+            } else try cur.append(a, c);
+            continue;
+        }
+        switch (c) {
+            ' ', '\t' => if (in_word) {
+                try words.append(a, try cur.toOwnedSlice(a));
+                in_word = false;
+            },
+            '"', '\'' => {
+                quote = c;
+                in_word = true;
+            },
+            '\\' => {
+                in_word = true;
+                if (i + 1 < s.len) i += 1;
+                try cur.append(a, s[i]);
+            },
+            else => {
+                in_word = true;
+                try cur.append(a, c);
+            },
+        }
+    }
+    if (quote != 0) return error.BadQuote;
+    if (in_word) try words.append(a, try cur.toOwnedSlice(a));
+    return words.toOwnedSlice(a);
+}
+
+/// Expands `$A`, `${A}`, `${A:-def}`, `${A:+alt}`; `\$` is a literal `$`. Unset vars expand to "".
+pub fn expand(a: std.mem.Allocator, s: []const u8, vars: *const std.StringHashMapUnmanaged([]const u8)) Error![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(a);
+    var i: usize = 0;
+    while (i < s.len) {
+        const c = s[i];
+        if (c == '\\' and i + 1 < s.len and s[i + 1] == '$') {
+            try out.append(a, '$');
+            i += 2;
+            continue;
+        }
+        if (c != '$' or i + 1 >= s.len) {
+            try out.append(a, c);
+            i += 1;
+            continue;
+        }
+        if (s[i + 1] == '{') {
+            const close = std.mem.indexOfScalarPos(u8, s, i + 2, '}') orelse return error.BadQuote;
+            try expandBraced(a, &out, s[i + 2 .. close], vars);
+            i = close + 1;
+            continue;
+        }
+        var j = i + 1;
+        while (j < s.len and isNameChar(s[j])) j += 1;
+        if (j == i + 1) {
+            try out.append(a, '$');
+            i += 1;
+            continue;
+        }
+        try out.appendSlice(a, vars.get(s[i + 1 .. j]) orelse "");
+        i = j;
+    }
+    return out.toOwnedSlice(a);
+}
+
+fn expandBraced(a: std.mem.Allocator, out: *std.ArrayList(u8), body: []const u8, vars: *const std.StringHashMapUnmanaged([]const u8)) Error!void {
+    if (std.mem.indexOf(u8, body, ":-")) |p| {
+        const v = vars.get(body[0..p]) orelse "";
+        return out.appendSlice(a, if (v.len > 0) v else body[p + 2 ..]);
+    }
+    if (std.mem.indexOf(u8, body, ":+")) |p| {
+        const v = vars.get(body[0..p]) orelse "";
+        return out.appendSlice(a, if (v.len > 0) body[p + 2 ..] else "");
+    }
+    try out.appendSlice(a, vars.get(body) orelse "");
+}
+
+fn isNameChar(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_';
+}
+
+const testing = std.testing;
+
+fn parseOk(text: []const u8) !Dockerfile {
+    var diag: Diagnostic = .{};
+    return parse(testing.allocator, text, &diag);
+}
+
+test "parse basic dockerfile with continuations, comments and forms" {
+    var df = try parseOk(
+        \\# syntax comment
+        \\ARG BASE=alpine:3.20
+        \\FROM ${BASE} AS app
+        \\
+        \\ENV A=1 B="two words"
+        \\ENV LEGACY some value
+        \\RUN apk add \
+        \\    curl \
+        \\  # interleaved comment
+        \\    git
+        \\COPY --chown=1:1 a.txt b/ /app/
+        \\WORKDIR /app
+        \\cmd ["sh", "-c", "echo hi"]
+        \\ENTRYPOINT [not json
+        \\EXPOSE 80 443/tcp
+        \\LABEL org.x="y z"
+        \\USER nobody
+    );
+    defer df.deinit();
+    try testing.expectEqual(@as(usize, 1), df.global_args.len);
+    try testing.expectEqualStrings("alpine:3.20", df.global_args[0].default.?);
+    const ins = df.instructions;
+    try testing.expectEqualStrings("${BASE}", ins[0].op.from);
+    try testing.expectEqualStrings("two words", ins[1].op.env[1].value);
+    try testing.expectEqualStrings("some value", ins[2].op.env[0].value);
+    try testing.expectEqualStrings("apk add  curl  git", ins[3].op.run.shell);
+    try testing.expectEqual(@as(usize, 7), ins[3].line);
+    try testing.expectEqual(@as(usize, 2), ins[4].op.copy.srcs.len);
+    try testing.expectEqualStrings("/app/", ins[4].op.copy.dest);
+    try testing.expectEqualStrings("1:1", ins[4].op.copy.chown);
+    try testing.expectEqualStrings("echo hi", ins[6].op.cmd.exec[2]);
+    try testing.expectEqualStrings("[not json", ins[7].op.entrypoint.shell);
+    try testing.expectEqualStrings("443/tcp", ins[8].op.expose[1]);
+    try testing.expectEqualStrings("y z", ins[9].op.label[0].value);
+}
+
+test "parse errors carry the line number" {
+    const cases = [_]struct { text: []const u8, err: Error, line: usize }{
+        .{ .text = "RUN true", .err = error.MissingFrom, .line = 1 },
+        .{ .text = "FROM a\n\nFROBNICATE x", .err = error.UnknownInstruction, .line = 3 },
+        .{ .text = "FROM a\nFROM b", .err = error.MultiStage, .line = 2 },
+        .{ .text = "FROM a\nRUN --mount=type=cache true", .err = error.Unsupported, .line = 2 },
+        .{ .text = "FROM a\nCOPY --from=x a b", .err = error.Unsupported, .line = 2 },
+        .{ .text = "FROM a\nCOPY onlyone", .err = error.MissingArgument, .line = 2 },
+        .{ .text = "FROM a\nENV X=\"open", .err = error.BadQuote, .line = 2 },
+        .{ .text = "# only comments\n", .err = error.MissingFrom, .line = 0 },
+    };
+    for (cases) |c| {
+        var diag: Diagnostic = .{};
+        try testing.expectError(c.err, parse(testing.allocator, c.text, &diag));
+        try testing.expectEqual(c.line, diag.line);
+    }
+}
+
+test "expand variables" {
+    var vars: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer vars.deinit(testing.allocator);
+    try vars.put(testing.allocator, "A", "x");
+    try vars.put(testing.allocator, "EMPTY", "");
+    const cases = [_][2][]const u8{
+        .{ "$A/${A}", "x/x" },
+        .{ "${MISSING:-def} ${A:-def}", "def x" },
+        .{ "${EMPTY:-def}", "def" },
+        .{ "${A:+alt}${MISSING:+alt}", "alt" },
+        .{ "\\$A $ $1x", "$A $ " },
+        .{ "$A_B-$A", "-x" },
+    };
+    for (cases) |c| {
+        const got = try expand(testing.allocator, c[0], &vars);
+        defer testing.allocator.free(got);
+        try testing.expectEqualStrings(c[1], got);
+    }
+}

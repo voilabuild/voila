@@ -1149,4 +1149,6 @@ fn findVoilaRoot(allocator: std.mem.Allocator) ![]const u8 {
 test {
     _ = @import("../store/ingest/ingest_tar.zig");
     _ = @import("../store/ingest/ingest_merge.zig");
+    _ = @import("../core/dockerfile.zig");
+    _ = @import("../core/build_cache_key.zig");
 }
