@@ -87,7 +87,7 @@ or docker-save images; decompression sniffed (raw/gzip/zstd); hardlinks share
 an inode; whiteouts applied at the layer merge step. One-shot and eager;
 everything afterwards is lazy.
 
-**Build** (`voila build`): a single-stage Dockerfile becomes a regular voila
+**Build** (`voila build`): a Dockerfile becomes a regular voila
 image without tarballs or OCI blobs. The base image is mounted read-only with
 the FUSE backend (image root shown as the build user), an unprivileged
 overlayfs on top captures each `RUN`'s writes in an upper dir, and the command
@@ -97,6 +97,12 @@ whiteouts, `user.overlay.opaque` marks opaque dirs) and merged over the
 current tree; `COPY` walks the context the same way and needs no sandbox.
 Steps are cached by `BLAKE3(parent root, instruction, env, inputs)`; a cache
 hit only swaps the root chunk, so fully cached builds never load a tree.
+Multi-stage builds run only the stages the target needs, in file order; each
+stage ends as a root chunk. `COPY --from` loads the source tree's manifests
+and grafts its nodes into the layer, reusing their chunk ids, and is keyed by
+the source root chunk plus the paths. For `COPY --from=<image>` on a lazily
+pulled image, the grafted chunk ids may not be local; push relies on the
+registry already having them.
 
 **runc bundle**: `root.readonly: true`, env/args/cwd from the image config,
 tmpfs on `/tmp`/`/var/tmp`/`/dev`/`/dev/shm`, default namespaces,

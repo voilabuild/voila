@@ -14,6 +14,7 @@ const Args = struct {
     root: []const u8,
     tag: []const u8,
     file: ?[]const u8 = null,
+    target: []const u8 = "",
     context: []const u8,
     build_args: []const dockerfile.KeyValue,
     no_cache: bool = false,
@@ -26,6 +27,7 @@ fn parseArgs(a: std.mem.Allocator, it: *std.process.Args.Iterator) !Args {
     var root: ?[]const u8 = null;
     var tag: ?[]const u8 = null;
     var file: ?[]const u8 = null;
+    var target: []const u8 = "";
     var context: ?[]const u8 = null;
     var no_cache = false;
     var push = false;
@@ -37,6 +39,8 @@ fn parseArgs(a: std.mem.Allocator, it: *std.process.Args.Iterator) !Args {
             tag = it.next() orelse return error.BadBuildArgs;
         } else if (std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--file")) {
             file = it.next() orelse return error.BadBuildArgs;
+        } else if (std.mem.eql(u8, arg, "--target")) {
+            target = it.next() orelse return error.BadBuildArgs;
         } else if (std.mem.eql(u8, arg, "--build-arg")) {
             const kv = it.next() orelse return error.BadBuildArgs;
             const eq = std.mem.indexOfScalar(u8, kv, '=') orelse return error.BadBuildArgs;
@@ -53,6 +57,7 @@ fn parseArgs(a: std.mem.Allocator, it: *std.process.Args.Iterator) !Args {
         .root = if (root) |r| try absPath(a, r) else try voila_paths.defaultVoilaRoot(a),
         .tag = tag orelse return error.NeedTag,
         .file = file,
+        .target = target,
         .context = try absPath(a, context orelse return error.NeedContext),
         .build_args = try build_args.toOwnedSlice(a),
         .no_cache = no_cache,
@@ -65,7 +70,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, it: *std.process.Args.Iterator) !
     defer arena.deinit();
     const a = arena.allocator();
     const args = parseArgs(a, it) catch |e| {
-        std.debug.print("usage: voila build -t <ref> [-f Dockerfile] [--build-arg K=V]... [--no-cache] [--push] [-root dir] <context>\n", .{});
+        std.debug.print("usage: voila build -t <ref> [-f Dockerfile] [--target stage] [--build-arg K=V]... [--no-cache] [--push] [-root dir] <context>\n", .{});
         return e;
     };
     const df_path = args.file orelse try std.fmt.allocPrint(a, "{s}/Dockerfile", .{args.context});
@@ -84,6 +89,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, it: *std.process.Args.Iterator) !
         .context_dir = args.context,
         .dockerfile_text = text,
         .tag = args.tag,
+        .target = args.target,
         .build_args = args.build_args,
         .no_cache = args.no_cache,
         .runner = runner.runner(),
@@ -94,7 +100,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, it: *std.process.Args.Iterator) !
     };
     const ref = try registry_ref.normalizeUserRef(a, args.tag);
     std.debug.print("built {s} in {d:.2}s ({d}/{d} steps cached)\n", .{
-        ref, secs(monotonic() - t0), res.cached, res.steps - 1,
+        ref, secs(monotonic() - t0), res.cached, res.steps,
     });
     if (args.push) {
         const cfg = voila_registry.getConfigCopy(a) orelse {
@@ -116,7 +122,9 @@ fn reportError(df_path: []const u8, e: anyerror, diag: driver.Diagnostic) void {
         error.CopyEscapesContext => "COPY source is outside the build context",
         error.UnsupportedWildcard => "COPY wildcards are only supported in the last path segment",
         error.UnsupportedChown => "--chown only takes numeric uid[:gid]",
-        error.MultiStage => "multi-stage builds are not supported yet",
+        error.DuplicateStage => "duplicate stage name",
+        error.UnknownTarget => "--target names no stage of the Dockerfile",
+        error.StageNotFound => "COPY --from index must name an earlier stage",
         error.Unsupported => "instruction or flag not supported yet",
         error.UnknownInstruction => "unknown instruction",
         error.MissingFrom => "the Dockerfile must start with FROM",
@@ -140,10 +148,11 @@ const Printer = struct {
         const state = if (ev.cached) "CACHED" else "";
         const shown = if (ev.text.len > 72) ev.text[0..72] else ev.text;
         const ell = if (ev.text.len > 72) "..." else "";
+        const sep = if (ev.stage.len > 0) " " else "";
         if (ev.index == 0) {
-            std.debug.print("[{d}/{d}] {s}\n", .{ ev.index + 1, ev.total, shown });
+            std.debug.print("[{s}{s}{d}/{d}] {s}\n", .{ ev.stage, sep, ev.index + 1, ev.total, shown });
         } else {
-            std.debug.print("[{d}/{d}] {s}{s} {s} {d:.2}s\n", .{ ev.index + 1, ev.total, shown, ell, state, secs(ev.elapsed_ns) });
+            std.debug.print("[{s}{s}{d}/{d}] {s}{s} {s} {d:.2}s\n", .{ ev.stage, sep, ev.index + 1, ev.total, shown, ell, state, secs(ev.elapsed_ns) });
         }
     }
 };

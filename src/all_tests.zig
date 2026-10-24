@@ -4,6 +4,7 @@ test {
     if (build_options.privileged) _ = @import("privileged_tests.zig");
     _ = @import("codec/oci_image_config.zig");
     _ = @import("core/build_cache_key.zig");
+    _ = @import("core/build_stages.zig");
     _ = @import("core/dockerfile.zig");
     _ = @import("core/glob.zig");
     _ = @import("sys/fs.zig");
@@ -21,6 +22,7 @@ test {
     _ = @import("mount/fuse/read_walker.zig");
     _ = @import("mount/erofs_nbd/backend.zig");
     _ = @import("mount/erofs_nbd/capacity_wait.zig");
+    _ = @import("runtime/build/copy_from.zig");
     _ = @import("runtime/build/copy_sources.zig");
     _ = @import("runtime/build/driver_test.zig");
     _ = @import("runtime/build/steps.zig");
