@@ -1,5 +1,6 @@
 const std = @import("std");
 const posix_util = @import("../sys/posix_util.zig");
+const fs = @import("../sys/fs.zig");
 const zstd = @import("zstd");
 const blake3_c = @import("blake3_c");
 
@@ -70,100 +71,142 @@ pub fn compressZstdPublic(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     return out[0..n];
 }
 
-/// Write raw chunk bytes to local store (chunkstore.LocalStore.Put semantics).
+/// Verifies `raw` against `chunk_hex`, then stores it. Use `ChunkWriter` for bulk writes.
 pub fn putChunkRaw(allocator: std.mem.Allocator, voila_root: []const u8, chunk_hex: []const u8, raw: []const u8) !void {
     verifyChunkId(chunk_hex, raw) catch return error.ChunkIntegrity;
-    const enc = encodeStored(allocator, raw);
-    defer allocator.free(enc.data);
-    const stored = enc.data;
-    const algo = enc.algo;
+    var w = ChunkWriter.init(voila_root);
+    defer w.deinit();
+    try w.putTrusted(allocator, chunk_hex, raw);
+}
 
-    const path = try chunkBlobPath(allocator, voila_root, chunk_hex);
-    defer allocator.free(path);
-    const dir = std.fs.path.dirname(path) orelse return error.FileOpenFailed;
-    const mkdir_cmd = try std.fmt.allocPrint(allocator, "mkdir -p {s}", .{dir});
-    defer allocator.free(mkdir_cmd);
-    const mkdir_z = try allocator.allocSentinel(u8, mkdir_cmd.len, 0);
-    defer allocator.free(mkdir_z);
-    @memcpy(mkdir_z, mkdir_cmd);
-    _ = posix_util.shell(mkdir_z);
+const sqlite = @import("sqlite_c");
 
-    const path_z = try allocator.allocSentinel(u8, path.len, 0);
-    defer allocator.free(path_z);
-    @memcpy(path_z, path);
-    const fd = std.c.open(path_z, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o644));
-    if (fd < 0) return error.FileOpenFailed;
-    defer _ = std.c.close(fd);
-    var off: usize = 0;
-    while (off < stored.len) {
-        const n = std.c.write(fd, stored[off..].ptr, stored.len - off);
-        if (n <= 0) return error.FileWriteFailed;
-        off += @intCast(n);
+const batch_size = 64;
+
+const chunks_schema =
+    \\CREATE TABLE IF NOT EXISTS chunks (
+    \\  id BLOB PRIMARY KEY,
+    \\  logical_len INTEGER NOT NULL,
+    \\  stored_len INTEGER NOT NULL,
+    \\  comp_algo INTEGER NOT NULL,
+    \\  created_ns INTEGER NOT NULL,
+    \\  last_access_ns INTEGER NOT NULL
+    \\);
+;
+
+/// A blob with no index row is raw (AlgoRaw).
+/// Bulk chunk writer: one SQLite connection, inserts batched per transaction, blobs written atomically.
+pub const ChunkWriter = struct {
+    voila_root: []const u8,
+    db: ?*sqlite.sqlite3 = null,
+    insert: ?*sqlite.sqlite3_stmt = null,
+    pending: u32 = 0,
+
+    pub fn init(voila_root: []const u8) ChunkWriter {
+        return .{ .voila_root = voila_root };
     }
 
-    try upsertChunkIndex(allocator, voila_root, chunk_hex, raw.len, stored.len, algo);
-}
+    /// Commits any open batch and closes the index.
+    pub fn deinit(self: *ChunkWriter) void {
+        self.flush() catch {};
+        if (self.insert) |st| _ = sqlite.sqlite3_finalize(st);
+        if (self.db) |db| _ = sqlite.sqlite3_close(db);
+        self.* = init(self.voila_root);
+    }
 
-const Encoded = struct { data: []const u8, algo: i32 };
+    /// Commits the open batch. Callers must flush before returning control to code that opens its own connection.
+    pub fn flush(self: *ChunkWriter) !void {
+        if (self.pending == 0) return;
+        self.pending = 0;
+        const db = self.db orelse return;
+        if (sqlite.sqlite3_exec(db, "COMMIT", null, null, null) != sqlite.SQLITE_OK) {
+            _ = sqlite.sqlite3_exec(db, "ROLLBACK", null, null, null);
+            return error.SqliteCommit;
+        }
+    }
 
-fn encodeStored(allocator: std.mem.Allocator, buf: []const u8) Encoded {
-    const copy = allocator.dupe(u8, buf) catch return .{ .data = buf, .algo = AlgoRaw };
-    return .{ .data = copy, .algo = AlgoRaw };
-}
+    /// Caller guarantees `chunk_hex` is the BLAKE3 id of `raw` (no re-hash here).
+    pub fn putTrusted(self: *ChunkWriter, allocator: std.mem.Allocator, chunk_hex: []const u8, raw: []const u8) !void {
+        if (chunk_hex.len != 64) return error.BadChunkHex;
+        const path = try chunkBlobPath(allocator, self.voila_root, chunk_hex);
+        defer allocator.free(path);
+        try writeBlobAtomic(path, raw);
+        try self.indexChunk(allocator, chunk_hex, raw.len, raw.len, AlgoRaw);
+    }
 
-fn upsertChunkIndex(
-    allocator: std.mem.Allocator,
-    voila_root: []const u8,
-    chunk_hex: []const u8,
-    logical_len: usize,
-    stored_len: usize,
-    algo: i32,
-) !void {
-    const sqlite = @import("sqlite_c");
-    var id: [32]u8 = undefined;
-    _ = try std.fmt.hexToBytes(&id, chunk_hex);
+    fn open(self: *ChunkWriter, allocator: std.mem.Allocator) !void {
+        const db_path = try std.fmt.allocPrintSentinel(allocator, "{s}/index.db", .{self.voila_root}, 0);
+        defer allocator.free(db_path);
+        var db: ?*sqlite.sqlite3 = null;
+        if (sqlite.sqlite3_open(db_path, &db) != sqlite.SQLITE_OK) {
+            if (db) |d| _ = sqlite.sqlite3_close(d);
+            return error.SqliteOpen;
+        }
+        const db_ptr = db orelse return error.SqliteOpen;
+        errdefer _ = sqlite.sqlite3_close(db_ptr);
+        _ = sqlite.sqlite3_busy_timeout(db_ptr, 5000);
+        _ = sqlite.sqlite3_exec(db_ptr, chunks_schema, null, null, null);
+        const sql =
+            \\INSERT INTO chunks (id, logical_len, stored_len, comp_algo, created_ns, last_access_ns)
+            \\VALUES (?, ?, ?, ?, ?, ?)
+            \\ON CONFLICT(id) DO NOTHING
+        ;
+        var stmt: ?*sqlite.sqlite3_stmt = null;
+        if (sqlite.sqlite3_prepare_v2(db_ptr, sql, -1, &stmt, null) != sqlite.SQLITE_OK) return error.SqlitePrepare;
+        self.db = db_ptr;
+        self.insert = stmt;
+    }
 
-    const db_path = try std.fmt.allocPrint(allocator, "{s}/index.db", .{voila_root});
-    defer allocator.free(db_path);
-    const db_path_z = try allocator.allocSentinel(u8, db_path.len, 0);
-    defer allocator.free(db_path_z);
-    @memcpy(db_path_z, db_path);
+    fn indexChunk(self: *ChunkWriter, allocator: std.mem.Allocator, chunk_hex: []const u8, logical_len: usize, stored_len: usize, algo: i32) !void {
+        var id: [32]u8 = undefined;
+        _ = try std.fmt.hexToBytes(&id, chunk_hex);
+        if (self.db == null) try self.open(allocator);
+        const db = self.db.?;
+        const stmt = self.insert;
+        if (self.pending == 0 and sqlite.sqlite3_exec(db, "BEGIN", null, null, null) != sqlite.SQLITE_OK) return error.SqliteBegin;
 
-    var db: ?*sqlite.sqlite3 = null;
-    if (sqlite.sqlite3_open(db_path_z, &db) != sqlite.SQLITE_OK) return error.SqliteOpen;
-    const db_ptr = db orelse return error.SqliteOpen;
-    defer _ = sqlite.sqlite3_close(db_ptr);
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        const now: i64 = @as(i64, ts.sec) * 1_000_000_000 + @as(i64, ts.nsec);
+        _ = sqlite.sqlite3_bind_blob(stmt, 1, &id, 32, sqlite.SQLITE_STATIC);
+        _ = sqlite.sqlite3_bind_int64(stmt, 2, @intCast(logical_len));
+        _ = sqlite.sqlite3_bind_int64(stmt, 3, @intCast(stored_len));
+        _ = sqlite.sqlite3_bind_int64(stmt, 4, algo);
+        _ = sqlite.sqlite3_bind_int64(stmt, 5, now);
+        _ = sqlite.sqlite3_bind_int64(stmt, 6, now);
+        const rc = sqlite.sqlite3_step(stmt);
+        _ = sqlite.sqlite3_reset(stmt);
+        if (rc != sqlite.SQLITE_DONE) {
+            self.pending = 0;
+            _ = sqlite.sqlite3_exec(db, "ROLLBACK", null, null, null);
+            return error.SqliteInsert;
+        }
+        self.pending += 1;
+        if (self.pending >= batch_size) try self.flush();
+    }
+};
 
-    const schema =
-        \\CREATE TABLE IF NOT EXISTS chunks (
-        \\  id BLOB PRIMARY KEY,
-        \\  logical_len INTEGER NOT NULL,
-        \\  stored_len INTEGER NOT NULL,
-        \\  comp_algo INTEGER NOT NULL,
-        \\  created_ns INTEGER NOT NULL,
-        \\  last_access_ns INTEGER NOT NULL
-        \\);
-    ;
-    _ = sqlite.sqlite3_exec(db_ptr, schema, null, null, null);
+/// Writes `bytes` to `<path>.tmp.<random>` then renames over `path`; creates parent dirs on demand.
+pub fn writeBlobAtomic(path: []const u8, bytes: []const u8) !void {
+    var rnd: [8]u8 = undefined;
+    try fs.randomBytes(&rnd);
+    var tmp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmp = std.fmt.bufPrint(&tmp_buf, "{s}.tmp.{x}", .{ path, rnd }) catch return error.NameTooLong;
 
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-    const now: i64 = @as(i64, ts.sec) * 1_000_000_000 + @as(i64, ts.nsec);
-    const sql =
-        \\INSERT INTO chunks (id, logical_len, stored_len, comp_algo, created_ns, last_access_ns)
-        \\VALUES (?, ?, ?, ?, ?, ?)
-        \\ON CONFLICT(id) DO NOTHING
-    ;
-    var stmt: ?*sqlite.sqlite3_stmt = null;
-    if (sqlite.sqlite3_prepare_v2(db_ptr, sql, -1, &stmt, null) != sqlite.SQLITE_OK) return error.SqlitePrepare;
-    defer _ = sqlite.sqlite3_finalize(stmt);
-    _ = sqlite.sqlite3_bind_blob(stmt, 1, &id, 32, sqlite.SQLITE_STATIC);
-    _ = sqlite.sqlite3_bind_int64(stmt, 2, @intCast(logical_len));
-    _ = sqlite.sqlite3_bind_int64(stmt, 3, @intCast(stored_len));
-    _ = sqlite.sqlite3_bind_int64(stmt, 4, algo);
-    _ = sqlite.sqlite3_bind_int64(stmt, 5, now);
-    _ = sqlite.sqlite3_bind_int64(stmt, 6, now);
-    _ = sqlite.sqlite3_step(stmt);
+    const f = fs.File.create(tmp, 0o644) catch |e| switch (e) {
+        error.FileNotFound => blk: {
+            const dir = std.fs.path.dirname(path) orelse return e;
+            try fs.makePath(dir);
+            break :blk try fs.File.create(tmp, 0o644);
+        },
+        else => return e,
+    };
+    errdefer posix_util.unlink(tmp);
+    {
+        defer f.close();
+        try f.writeAll(bytes);
+    }
+    try fs.rename(tmp, path);
 }
 
 /// Matches chunkstore.LocalStore.Get: BLAKE3-256 of raw (uncompressed) bytes
@@ -224,4 +267,95 @@ test "decompress zstd empty frame" {
 test "decompress zstd rejects truncated frame" {
     const gpa = std.testing.allocator;
     try std.testing.expectError(error.ZstdDecode, decompressZstd(gpa, "\x28\xb5\x2f"));
+}
+
+fn testHex(raw: []const u8) [64]u8 {
+    var digest: [32]u8 = undefined;
+    var hasher: blake3_c.blake3_hasher = undefined;
+    blake3_c.blake3_hasher_init(&hasher);
+    blake3_c.blake3_hasher_update(&hasher, raw.ptr, raw.len);
+    blake3_c.blake3_hasher_finalize(&hasher, &digest, blake3_c.BLAKE3_OUT_LEN);
+    return std.fmt.bytesToHex(&digest, .lower);
+}
+
+fn countIndexRows(allocator: std.mem.Allocator, root: []const u8) !i64 {
+    const db_path = try std.fmt.allocPrintSentinel(allocator, "{s}/index.db", .{root}, 0);
+    defer allocator.free(db_path);
+    var db: ?*sqlite.sqlite3 = null;
+    try std.testing.expect(sqlite.sqlite3_open(db_path, &db) == sqlite.SQLITE_OK);
+    defer _ = sqlite.sqlite3_close(db);
+    var stmt: ?*sqlite.sqlite3_stmt = null;
+    try std.testing.expect(sqlite.sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM chunks", -1, &stmt, null) == sqlite.SQLITE_OK);
+    defer _ = sqlite.sqlite3_finalize(stmt);
+    try std.testing.expect(sqlite.sqlite3_step(stmt) == sqlite.SQLITE_ROW);
+    return sqlite.sqlite3_column_int64(stmt, 0);
+}
+
+test "ChunkWriter stores chunks atomically and indexes them in batches" {
+    const a = std.testing.allocator;
+    const root = try fs.makeTempDir(a, "voila-store-test");
+    defer a.free(root);
+    defer fs.removeTree(a, root) catch {};
+
+    const n = batch_size + 6;
+    var w = ChunkWriter.init(root);
+    for (0..n) |i| {
+        var payload: [32]u8 = undefined;
+        _ = try std.fmt.bufPrint(&payload, "chunk-payload-{d:0>18}", .{i});
+        const hex = testHex(&payload);
+        try w.putTrusted(a, &hex, &payload);
+        const back = try loadChunkRaw(a, root, &hex, AlgoRaw);
+        defer a.free(back);
+        try std.testing.expectEqualSlices(u8, &payload, back);
+    }
+    try w.flush();
+    try std.testing.expectEqual(@as(i64, n), try countIndexRows(a, root));
+    w.deinit();
+
+    const probe = "chunk-payload-000000000000000000";
+    const hex = testHex(probe);
+    const path = try chunkBlobPath(a, root, &hex);
+    defer a.free(path);
+    const dir = std.fs.path.dirname(path).?;
+    const names = try fs.listDir(a, dir);
+    defer fs.freeNames(a, names);
+    for (names) |name| try std.testing.expect(std.mem.indexOf(u8, name, ".tmp.") == null);
+}
+
+test "second writer is not blocked by a flushed first writer" {
+    const a = std.testing.allocator;
+    const root = try fs.makeTempDir(a, "voila-store-test");
+    defer a.free(root);
+    defer fs.removeTree(a, root) catch {};
+
+    var w1 = ChunkWriter.init(root);
+    defer w1.deinit();
+    const p1 = "first-payload";
+    const h1 = testHex(p1);
+    try w1.putTrusted(a, &h1, p1);
+    try w1.flush();
+
+    const p2 = "second-payload";
+    const h2 = testHex(p2);
+    try putChunkRaw(a, root, &h2, p2);
+    try std.testing.expectEqual(@as(i64, 2), try countIndexRows(a, root));
+}
+
+test "putChunkRaw verifies the id and tolerates rewriting a chunk" {
+    const a = std.testing.allocator;
+    const root = try fs.makeTempDir(a, "voila-store-test");
+    defer a.free(root);
+    defer fs.removeTree(a, root) catch {};
+
+    const payload = "voila-chunk-verify";
+    const bad = "0000000000000000000000000000000000000000000000000000000000000000";
+    try std.testing.expectError(error.ChunkIntegrity, putChunkRaw(a, root, bad, payload));
+
+    const hex = testHex(payload);
+    try putChunkRaw(a, root, &hex, payload);
+    try putChunkRaw(a, root, &hex, payload);
+    const back = try loadChunkRaw(a, root, &hex, AlgoRaw);
+    defer a.free(back);
+    try std.testing.expectEqualSlices(u8, payload, back);
+    try std.testing.expectEqual(@as(i64, 1), try countIndexRows(a, root));
 }
