@@ -188,6 +188,10 @@ pub fn build(b: *std.Build) void {
     });
     const optimize = b.standardOptimizeOption(.{});
 
+    const privileged = b.option(bool, "privileged", "Run tests needing root, /dev/fuse, nbd, erofs, runc") orelse false;
+    const test_options = b.addOptions();
+    test_options.addOption(bool, "privileged", privileged);
+
     const zio = b.dependency("zio", .{
         .target = target,
         .optimize = optimize,
@@ -243,6 +247,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zstd", .module = zstd_mod },
             .{ .name = "blake3_c", .module = blake3_mod },
             .{ .name = "sqlite_c", .module = sqlite_mod },
+            .{ .name = "build_options", .module = test_options.createModule() },
         },
     });
     app_mod.linkLibrary(fuse_lib);
