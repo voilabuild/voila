@@ -38,19 +38,17 @@ pub const TarHeader = struct {
 pub const TarStream = struct {
     data: []const u8,
     off: usize,
-    content_start: usize,
     content_remaining: u64,
+    /// Offset of the next header: end of the current entry's content, padded to 512.
+    next_header: usize,
 
     pub fn init(data: []const u8) TarStream {
-        return .{ .data = data, .off = 0, .content_start = 0, .content_remaining = 0 };
+        return .{ .data = data, .off = 0, .content_remaining = 0, .next_header = 0 };
     }
 
     pub fn next(self: *TarStream, allocator: std.mem.Allocator) !?TarHeader {
-        if (self.content_remaining > 0) {
-            const skip = (self.content_remaining + 511) & ~@as(u64, 511);
-            self.off = self.content_start + @as(usize, @intCast(skip));
-            self.content_remaining = 0;
-        }
+        self.off = self.next_header;
+        self.content_remaining = 0;
         if (self.off + 512 > self.data.len) return null;
         const block = self.data[self.off .. self.off + 512];
         var all_zero = true;
@@ -70,8 +68,8 @@ pub const TarStream = struct {
         const name = if (name_raw.len == 0) linkname else name_raw;
 
         self.off += 512;
-        self.content_start = self.off;
         self.content_remaining = size;
+        self.next_header = self.off + @as(usize, @intCast((size + 511) & ~@as(u64, 511)));
 
         return .{
             .name = try allocator.dupe(u8, name),
@@ -155,3 +153,35 @@ pub const Error = error{
     UnsupportedCompression,
     ZstdDecode,
 };
+
+fn testHeader(buf: []u8, name: []const u8, size: u64) void {
+    @memset(buf[0..512], 0);
+    @memcpy(buf[0..name.len], name);
+    _ = std.fmt.bufPrint(buf[100..107], "{o:0>7}", .{0o644}) catch unreachable;
+    _ = std.fmt.bufPrint(buf[124..135], "{o:0>11}", .{size}) catch unreachable;
+    buf[156] = '0';
+}
+
+test "next header is found after fully, partially and un-read entries" {
+    const a = std.testing.allocator;
+    var data: [512 * 8]u8 = @splat(0);
+    testHeader(data[0..], "a", 6);
+    @memcpy(data[512..518], "hello\n");
+    testHeader(data[1024..], "b", 7);
+    @memcpy(data[1536..1543], "second\n");
+    testHeader(data[2048..], "c", 3);
+    @memcpy(data[2560..2563], "end");
+
+    var tr = TarStream.init(&data);
+    const names = [_][]const u8{ "a", "b", "c" };
+    const reads = [_]u64{ 6, 2, 0 };
+    for (names, reads) |want, n| {
+        const h = (try tr.next(a)).?;
+        defer a.free(h.name);
+        defer a.free(h.linkname);
+        try std.testing.expectEqualStrings(want, h.name);
+        const body = try tr.readAll(a, n);
+        a.free(body);
+    }
+    try std.testing.expect((try tr.next(a)) == null);
+}

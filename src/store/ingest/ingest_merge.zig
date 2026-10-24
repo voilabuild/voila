@@ -12,11 +12,6 @@ pub fn mergeTrees(allocator: std.mem.Allocator, layers: []*tree_mod.LayerTree) !
     return merged;
 }
 
-fn sortedNames(children: *const std.StringHashMap(*tree_mod.Node)) []const []const u8 {
-    _ = children;
-    return &.{};
-}
-
 fn sortedNamesAlloc(allocator: std.mem.Allocator, children: *const std.StringHashMap(*tree_mod.Node)) ![]const []const u8 {
     var names: std.ArrayList([]const u8) = .empty;
     var it = children.keyIterator();
@@ -34,7 +29,8 @@ fn applyOpaque(merged: *tree_mod.LayerTree, layer: *tree_mod.LayerTree) void {
         const node = merged.lookup(dir_path);
         if (node == null or node.?.node_type != .dir) continue;
         const n = node.?;
-        const names = sortedNames(&n.children);
+        const names = sortedNamesAlloc(merged.allocator, &n.children) catch continue;
+        defer merged.allocator.free(names);
         for (names) |name| {
             if (n.children.get(name)) |child| {
                 dropSubtree(merged, child);
@@ -174,7 +170,8 @@ fn copyShallow(allocator: std.mem.Allocator, n: *tree_mod.Node) *tree_mod.Node {
 
 fn dropSubtree(merged: *tree_mod.LayerTree, node: *tree_mod.Node) void {
     if (node.node_type == .dir) {
-        const names = sortedNames(&node.children);
+        const names = sortedNamesAlloc(merged.allocator, &node.children) catch return;
+        defer merged.allocator.free(names);
         for (names) |name| {
             if (node.children.get(name)) |c| dropSubtree(merged, c);
         }
@@ -197,3 +194,24 @@ fn splitPath(clean: []const u8) struct { parent: []const u8, base: []const u8 } 
 }
 
 pub const Error = error{UnresolvedHardlink};
+
+test "opaque dir in an upper layer hides the lower layer's children" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const layer_walk = @import("ingest_layer_walk.zig");
+    const lower = try tree_mod.newTree(a);
+    _ = layer_walk.ensureDir(a, lower, "d/x/deep");
+    _ = layer_walk.ensureDir(a, lower, "keep");
+    const upper = try tree_mod.newTree(a);
+    layer_walk.recordOpaque(upper, a, "d");
+    _ = layer_walk.ensureDir(a, upper, "d/y");
+
+    var layers = [_]*tree_mod.LayerTree{ lower, upper };
+    const merged = try mergeTrees(a, &layers);
+    try std.testing.expect(merged.lookup("d/x") == null);
+    try std.testing.expect(merged.lookup("d/x/deep") == null);
+    try std.testing.expect(merged.lookup("d/y") != null);
+    try std.testing.expect(merged.lookup("keep") != null);
+    try std.testing.expect(!merged.lookup("d").?.children.contains("x"));
+}

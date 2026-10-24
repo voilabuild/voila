@@ -7,3 +7,7 @@ pub const std_options_debug_io = app_main.std_options_debug_io;
 pub fn main(init: std.process.Init) !void {
     try app_main.main(init);
 }
+
+test {
+    _ = app_main;
+}
