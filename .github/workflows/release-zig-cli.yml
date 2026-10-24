@@ -17,18 +17,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
+          - runner: blacksmith-4vcpu-ubuntu-2404
             arch: amd64
             zig_target: x86_64-linux-musl
             zig_archive: zig-x86_64-linux-0.17.0
-          - runner: ubuntu-24.04-arm
+          - runner: blacksmith-4vcpu-ubuntu-2404-arm
             arch: arm64
             zig_target: aarch64-linux-musl
             zig_archive: zig-aarch64-linux-0.17.0
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: useblacksmith/checkout@v1
         with:
           fetch-depth: 0
 
@@ -74,7 +74,7 @@ jobs:
   release:
     if: github.ref_type == 'tag'
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
       - uses: actions/download-artifact@v4
