@@ -1,39 +1,31 @@
 # CLI reference
 
-Two Go binaries (`make install` builds both):
+One static binary, `voila` (Linux only). There is no daemon: each command
+works directly on the local store, and `voila run` starts a rootless FUSE
+server per container. The hosted registry service lives in
+[`voilabuild/cloud-registry`](https://github.com/voilabuild/cloud-registry);
+this repo ships the registry client (`login`, `import`, `pull`, `push`).
 
-- **`voila`**: the client CLI
-- **`voilad`**: the worker daemon (root, Linux-only)
-
-The standalone filesystem **`voila-registry`** server was removed from this
-release line; it is preserved on branch
-[`backup/main-before-go-registry-move`](https://github.com/voilabuild/voila/tree/backup/main-before-go-registry-move).
-The hosted registry service lives in
-[`voilabuild/cloud-registry`](https://github.com/voilabuild/cloud-registry).
-This repo still ships the registry **client** (`voila push` / `pull` / `login`).
-
-> ⚠️ Very early software, not even pre-alpha: flags and behavior may change
-> at any time.
+> ⚠️ Very early software: flags and behavior may change at any time.
 
 ## Commands
 
-| Command | What it does | Needs `voilad`? |
-|---|---|---|
-| `voila ingest <tarball> [-ref override] [-platform os/arch]` | Convert an OCI-layout or legacy `docker save` tarball into chunks + manifests | no |
-| `voila import <ref> [-ref override] [-platform os/arch] [-user user] [-password pwd] [-plain-http] [-push target] [-registry URL]` | Pull an image straight from an OCI registry (Docker Hub / quay.io / ghcr.io / …) and ingest it, no Docker daemon needed. Credentials also via `$VOILA_REGISTRY_USER` / `$VOILA_REGISTRY_PASSWORD`. `-push myorg/img:tag` retags + publishes to a voila registry in the same command; in an interactive terminal with `$VOILA_REGISTRY` set, import offers this via a `[y/N]` prompt (`$VOILA_ORG` pre-fills the suggested org) | no |
-| `voila images [info <ref> \| rm <ref> \| gc \| prune [-f]]` | List / inspect / remove ingested images; `gc` reclaims unreachable chunks; `prune` wipes ALL local images + chunks | no |
-| `voila build -t <ref> [-f Dockerfile] [--target stage] [--build-arg K=V]... [--no-cache] [--push] [-root dir] <context>` | Build an image from a Dockerfile into the local store (see [Building images](#building-images)); `--push` publishes it to the configured registry | no |
-| `voila run <ref> [--] <cmd...> [-memory bytes] [-cpus pct]` | Run an ingested image via the worker daemon | yes |
-| `voila exec <ctx-id> [--] <cmd...>` | Run an extra process in a running context | yes |
-| `voila logs [-follow] <ctx-id>` | Replay (and optionally follow) a context's ring-buffered output | yes |
-| `voila ps` | List contexts known to the daemon | yes |
-| `voila kill [-signal N] <ctx-id>` | Signal a running context (default SIGTERM, escalating to SIGKILL after a 3s grace if the container is still running; other signals are delivered as-is) | yes |
-| `voila push <ref> [-registry URL]` | Upload an image's chunk closure + ImageManifest to a registry | no |
-| `voila pull <ref> [-registry URL]` | Fetch an image's manifest from a registry (chunks stream on demand) | no |
-| `voila login [registry-url] [-root dir]` | Save registry URL + API key to `~/.config/voila/credentials` (0600); probes auth via `POST /v1/chunks/missing` | no |
-| `voila logout` | Remove saved registry credentials | no |
-| `voilad [-root dir] [-socket path] [-registry URL] [-trace]` | The worker daemon (root, Linux); serves gRPC on `/var/run/voila.sock`. `-trace` records a per-run chunk-access trace (JSONL: every chunk Get with hit/miss, wait time, demand/prefetch source, plus exec/exit phase markers) under `<root>/traces/` — explore with `jq`/`duckdb` | **is** the daemon |
-| `voilad mount <ref> <mountpoint> [-allow-other]` | Debug: mount a read-only FUSE view of an ingested image | no |
+Every command accepts `-root <dir>` (default: `$VOILA_ROOT`).
+
+| Command | What it does |
+|---|---|
+| `voila login [registry-url]` | Save the registry URL and API key to `~/.config/voila/credentials` (0600) |
+| `voila logout` | Remove saved registry credentials |
+| `voila import <ref>` | Pull an image from an OCI registry (Docker Hub, ghcr.io, …) and store it as chunks. No Docker daemon needed |
+| `voila pull <ref>` | Fetch an image's manifest from the voila registry; chunks stream on first read |
+| `voila push <ref>` | Upload an image's missing chunks and its manifest to the voila registry |
+| `voila build -t <ref> [-f Dockerfile] [--build-arg K=V]... [--target stage] [--no-cache] [--push] <context>` | Build an image from a Dockerfile (see [Building images](#building-images)) |
+| `voila run [-d] [-it] [--name N] [--rm] [-e K=V] [-v host:ctr] [-p host:ctr] [-w dir] <ref> [--] [cmd...]` | Run a container (see [Running containers](#running-containers)) |
+| `voila exec <id> [--] <cmd...>` | Run an extra process in a running container |
+| `voila ps` | List containers |
+| `voila logs [-follow] <id>` | Print (and optionally follow) a container's output |
+| `voila stop <id>` / `voila kill <id>` / `voila rm <id>` | Stop, signal or remove a container |
+| `voila images` / `voila rmi <ref>` | List or remove local images |
 
 ## Building images
 
@@ -96,42 +88,21 @@ not fall back to running on the host.
 
 ## Environment variables
 
-- `VOILA_ROOT`: voila data root directory (default `/var/lib/voila`);
-  every subcommand also accepts `-root`. Set to `~/.voila` for an
-  unprivileged, per-user setup.
-- `VOILA_SOCKET`: worker daemon's unix socket path (default
-  `/var/run/voila.sock`); daemon-talking subcommands also accept `-socket`.
-  When `-root` is set explicitly, the socket defaults to `<root>/worker.sock`.
-- `VOILA_REGISTRY`: URL of a voila registry server, used by push/pull/import
-  (also `-registry`). For a registry serving under a path prefix, set the
-  full base, e.g. `http://localhost:7423/registry`; the client appends
-  `/v1/...`. `voilad` also reads this (or `-registry`) for the registry
-  base URL; the bearer token is handed off separately (below). Precedence:
-  `-registry` flag, then `$VOILA_REGISTRY`, then `~/.config/voila/credentials`
-  from `voila login`.
-- `VOILA_REGISTRY_TOKEN`: bearer API key for the **CLI** (`push`/`pull`/
-  `import`). Configure it in your shell or via `voila login` — not in the
-  daemon's environment. Precedence: `$VOILA_REGISTRY_TOKEN`, then the login
-  file. Before `run`/`push`/`pull`, the CLI writes URL + token to
-  `<root>/registry.creds` (0600) and pushes them to a running `voilad` via
-  the `SetRegistry` RPC on the worker socket. Chunk GETs stay unauthenticated
-  on the wire; the token is used for manifest auto-pull and authenticated
-  registry endpoints only. When neither env vars nor a login file provide
-  credentials, push/pull/import error with "run `voila login`".
-- Registry manifest errors are reported per HTTP status: a `404` on pull
-  prints `image "<ref>" not found on <registry> (ref may be wrong, or the
-  image is private)` — private images intentionally return 404 to non-owners,
-  so 404 cannot distinguish "missing" from "no access". An explicit `401/403`
-  prints `not authorized ... (check VOILA_REGISTRY_TOKEN or run voila login)`.
-- `VOILA_RUNTIME_BIN`: override the runc binary (`crun`/`youki` work via the
-  `Runner` interface; defaults to `runc` on `$PATH`).
-- `VOILA_REGISTRY_USER` / `VOILA_REGISTRY_PASSWORD`: credentials for
-  `voila import` against a private OCI registry (also `-user` / `-password`).
-- `VOILA_ORG`: your registry org namespace; used only by the
-  `voila import` publish prompt to pre-fill the suggested target ref
-  (e.g. `$VOILA_ORG=acme` suggests `acme/python:3.13`).
-- `VOILA_E2E_TARBALL`: point `test/e2e.TestRealImage` at a real
-  `docker save` tarball (otherwise the test skips).
-- `VOILA_MOUNT_BACKEND`: `auto` (default), `fuse`, or `erofs`. Auto uses
-  EROFS+NBD when Linux is 5.15+, `erofs` is available, and a `/dev/nbd*`
-  node opens; otherwise FUSE. Only `voilad` reads this.
+- `VOILA_ROOT`: data root. Default: `/var/lib/voila` when it exists,
+  otherwise `~/.local/share/voila`. `-root` overrides it.
+- `VOILA_REGISTRY`: voila registry base URL used by `pull`, `push`, `import`
+  and lazy chunk fetches. For a registry served under a path prefix, give the
+  full base (e.g. `https://host/registry`); the client appends `/v1/...`.
+  Precedence: `$VOILA_REGISTRY`, then `~/.config/voila/credentials`.
+- `VOILA_REGISTRY_TOKEN`: registry API key. Precedence:
+  `$VOILA_REGISTRY_TOKEN`, then the login file. Chunk GETs are
+  unauthenticated; the token is used for manifests and uploads.
+- `VOILA_ORG`: your registry org. `import` retags `<image>` as
+  `<org>/<image>` and pushes it (see #69).
+- `VOILA_RUNTIME`: `local` (default) or `remote`. `remote` is not
+  implemented yet.
+
+Registry errors are reported per HTTP status. A `404` on pull prints `image
+"<ref>" not found on <registry>`: private images return 404 to non-owners, so
+404 cannot tell "missing" from "no access". A `401`/`403` prints `not
+authorized ... (check VOILA_REGISTRY_TOKEN or run voila login)`.

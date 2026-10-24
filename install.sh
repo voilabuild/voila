@@ -10,7 +10,7 @@
 #   --prefix <dir>       Install directory (default: /usr/local/bin if writable, else ~/.local/bin).
 #   --registry <url>     Default registry base (optional; login via `voila login` is preferred).
 #   --token <key>        Registry API key (optional; prefer `voila login`).
-#   --install-prereqs    Install missing runc/fuse3 via the distro package manager.
+#   --install-prereqs    Install missing fuse3 via the distro package manager.
 #   --yes                Assume yes to prompts (non-interactive).
 
 set -euo pipefail
@@ -34,7 +34,7 @@ Flags:
   --prefix <dir>       Install directory (default: /usr/local/bin or ~/.local/bin).
   --registry <url>     Remote registry base URL (default: hosted drift registry).
   --token <key>        Registry API key (dreg_...); prefer `voila login` after install.
-  --install-prereqs    Install missing runc/fuse3 via apt-get/dnf/yum/zypper.
+  --install-prereqs    Install missing fuse3 via apt-get/dnf/yum/zypper.
   --yes                Non-interactive (accept prompts).
   -h, --help           Show this help.
 EOF
@@ -120,7 +120,6 @@ fi
 
 check_runtime_prereqs() {
 	local missing=0
-	command -v runc >/dev/null 2>&1 || { warn "runc not found"; missing=1; }
 	[ -e /dev/fuse ] || { warn "/dev/fuse not found"; missing=1; }
 	command -v fusermount3 >/dev/null 2>&1 || command -v fusermount >/dev/null 2>&1 || { warn "fuse3 not found"; missing=1; }
 	return $missing
@@ -137,7 +136,7 @@ detect_pkgmgr() {
 pkg_install() {
 	local mgr
 	mgr="$(detect_pkgmgr)"
-	[ -n "$mgr" ] || die "no supported package manager; install runc and fuse3 manually"
+	[ -n "$mgr" ] || die "no supported package manager; install fuse3 manually"
 	log "installing via $mgr: $*"
 	case "$mgr" in
 		apt-get)
@@ -151,11 +150,11 @@ pkg_install() {
 
 if ! check_runtime_prereqs; then
 	if [ "$INSTALL_PREREQS" -eq 1 ] || [ "$ASSUME_YES" -eq 1 ]; then
-		pkg_install runc fuse3 || warn "continuing without runc/fuse3 (install failed or no sudo)"
-	elif confirm "install missing prerequisites (runc, fuse3)?"; then
-		pkg_install runc fuse3 || warn "continuing without runc/fuse3"
+		pkg_install fuse3 || warn "continuing without fuse3 (install failed or no sudo)"
+	elif confirm "install missing prerequisite (fuse3)?"; then
+		pkg_install fuse3 || warn "continuing without fuse3"
 	else
-		warn "continuing without runc/fuse3"
+		warn "continuing without fuse3"
 	fi
 fi
 

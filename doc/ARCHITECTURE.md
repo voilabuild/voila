@@ -1,28 +1,19 @@
 # Architecture
 
-`voilad` is a single long-lived daemon per host. The `voila` CLI is a thin
-gRPC client of that daemon (over a unix socket); containers themselves are
-run by runc.
+`voila` is one static, daemonless binary. Each command works directly on the
+local store (`$VOILA_ROOT`); `voila run` and every build `RUN` step start a
+rootless FUSE server for the image and run the command on top of it.
 
 ```
  voila run python:3.13 -- python -c 'print("hi")'
    │
-   │ gRPC (unix socket)
+   │ 1. resolve the ref to a root manifest chunk   (local, or pull the manifest)
+   │ 2. start the FUSE server (container-fuse-serve) on that root, read-only
+   │ 3. enter user + mount + PID namespaces, writable root over the mount,
+   │    fresh /proc, minimal /dev, pivot_root
+   │ 4. exec the command under a small init
    ▼
-┌─────────────────────── voilad ───────────────────────┐
-│                                                      │
-│  1. read the image manifest        (local or registry)│
-│  2. merge layers into one root manifest              │
-│  3. build an EROFS metadata blob from it             │
-│  4. serve data blocks over NBD, mount -t erofs       │
-│  5. write an OCI runtime-spec bundle                 │
-│                                                      │
-│  chunk store ◀──── reads fetch missing chunks         │
-│  (BLAKE3-verified)      from the registry on demand    │
-└──────────────────────────┬───────────────────────────┘
-                           ▼
-                     runc runs the container
-                     with the mount as its rootfs
+ FUSE reads ──▶ chunk store (BLAKE3-verified) ──▶ registry, only for missing chunks
 ```
 
 ## What is a manifest?
@@ -47,38 +38,11 @@ address. Because the address is the content hash:
 - `voila push`/`pull` only move manifests up front; chunks stream on first
   touch.
 
-## The EROFS + NBD combo
+## EROFS + NBD
 
-On Linux 5.15+ with `/dev/nbd*` available, `voilad` auto-selects EROFS+NBD
-(`VOILA_MOUNT_BACKEND=auto`, the default). At mount time it builds a
-deterministic EROFS metadata blob from the merged manifest tree, then serves
-it through a userspace NBD device. EROFS is a read-only kernel filesystem;
-its format lets voila point each file's data extents at fixed 1 MiB slots in
-the virtual device. File bytes still live in the chunk store — only metadata
-is in the blob.
-
-When a process reads a file:
-
-1. the kernel's EROFS driver asks the NBD device for the data block,
-2. the daemon resolves the block to a chunk id,
-3. it returns the chunk from the local store, fetching it from the registry
-   first if needed (BLAKE3-verified).
-
-Filesystem metadata is read by the kernel at native speed; file data crosses
-NBD only for bytes actually touched.
-
-**Build cost:** EROFS must describe the whole tree, so `erofsadapter.Build`
-walks every path on each cold mount. That rebuild is **not cached today**
-(despite older comments elsewhere — a known gap). Over a remote registry,
-`Build` prefetches external subtree manifests in parallel (32-way BFS) so
-network cold start stays around ~2 s. On a local store, large images can
-spend seconds in `Build` before the container starts (see benchmarks below).
-FUSE keeps lazy per-directory loading and is often faster for local cold
-start on big trees, though sequential reads are slightly slower than EROFS.
-
-If the host lacks EROFS or `/dev/nbd*`, the daemon falls back to FUSE with
-the same lazy semantics. `VOILA_MOUNT_BACKEND=fuse` or `erofs` forces one
-backend.
+The Go release line could serve the rootfs as an EROFS image over a userspace
+NBD device instead of FUSE. That code lives under `src/mount/erofs_nbd/` but
+is not wired into `voila`; whether to finish or remove it is tracked in #85.
 
 ## Other components
 
@@ -129,14 +93,6 @@ one, so the host filesystem is no longer mounted in the namespace; plain
 before the root changes, so a non-`-it` command's output lands in
 `container.log`.
 
-**runc bundle**: `root.readonly: true`, env/args/cwd from the image config,
-tmpfs on `/tmp`/`/var/tmp`/`/dev`/`/dev/shm`, default namespaces,
-Docker-default capabilities; foreground `runc run`, so exit codes propagate.
-
-**Worker API**: gRPC service (`Run`/`Exec`/`Logs`/`Events`/`List`/`Kill`)
-over `/var/run/voila.sock`; output is kept in a byte-budget ring buffer with
-replay+follow; a disconnecting client never kills a context.
-
 **Registry client** (`voila push` / `pull` / `login`): speaks the `/v1` HTTP
 wire protocol documented in [openapi.yaml](registry/openapi.yaml).
 The standalone filesystem server (`voila-registry`) and the hosted Postgres/S3
@@ -152,9 +108,9 @@ source of truth for current behavior.
 
 ## Benchmarks
 
-Measured in the privileged devcontainer on real gate runs (see `git log`
-and `test/gates/gate*.sh`). FUSE vs EROFS rows are 3-sample medians with
-`drop_caches` and a fresh `voilad` each cold run.
+These were measured on the Go release line (`voilad`, runc) in the privileged
+devcontainer with `test/gates/gate*.sh`. They have not been re-measured on the
+Zig CLI; treat them as history until the gates are ported.
 
 | Scenario | Result |
 |---|---|
@@ -172,16 +128,13 @@ and `test/gates/gate*.sh`). FUSE vs EROFS rows are 3-sample medians with
 
 ## Limitations
 
-- **Root required**: no user namespaces yet.
-- **Linux-only runtime**: EROFS+NBD / FUSE + runc are Linux-only;
-  import/chunkstore tests run on macOS but `voila run` needs privileged Linux.
-- **EROFS local cold start**: first mount rebuilds metadata from scratch;
-  can be much slower than FUSE on large images until build caching lands.
+- **Linux only**: `voila run` and build `RUN` need `/dev/fuse` and
+  unprivileged user namespaces (on Ubuntu 24.04+, the AppArmor profile from
+  `install.sh`, which only covers the installed binary's path).
 - **Registry auth is bearer-only, no TLS**: run behind a TLS-terminating
   reverse proxy for now.
 - **Eager import**: `voila import` downloads and converts the whole image
   once; laziness starts after that.
-- **Single node**: no cluster control plane.
-
-What comes next: writable volumes, rootless mode, a custom kernel module
-(`voilafs`), clustering. Not scheduled here — see open issues and commits.
+- **One root manifest per image**: all metadata loads at start and is
+  re-uploaded on any change (#78).
+- **Single node**: no daemon, remote runtime or cluster control plane.

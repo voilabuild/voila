@@ -15,19 +15,21 @@ Privileged and e2e failures in a sandbox are usually environmental. Reproduce th
 
 ## Layout
 
-Root `build.zig` / `build.zig.zon`. Zig sources under `src/` (`core`, `codec`, `c`, `sys`, `store`, `registry`, `mount`, `runtime`, `daemon`, `cli`, `app`). Binaries: `cmd/voila/main.zig`, `cmd/voilad/main.zig`.
+Root `build.zig` / `build.zig.zon`. Zig sources under `src/` (`core`, `codec`, `c`, `sys`, `store`, `registry`, `mount`, `runtime`, `cli`, `app`). Binary: `cmd/voila/main.zig`.
 
 Docker Hub / OCI registry import is native in the static `voila` binary (`voila import`).
 
-## Layers (dependencies point down; build.zig enforces it)
+## Layers (dependencies point down)
 
 ```
 core, codec      pure, no I/O
 sys, c           OS and C access, nothing else touches std.c
 store, registry  data
 mount, runtime   Backend / Runtime interfaces + implementations
-daemon, cli, app app/ is the only place that picks implementations and reads env
+cli, app         app/ is the only place that picks implementations and reads env
 ```
+
+`build.zig` does not enforce this yet, and some imports still point up (#82, #83). Do not add new ones.
 
 ## Adding an implementation (backend, launcher, transport…)
 

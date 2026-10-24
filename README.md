@@ -6,85 +6,78 @@ Run a container without downloading the whole image.
 to use a few megabytes. voila splits images into content-addressed chunks and
 mounts the rootfs lazily — file data is fetched only when something reads it.
 
-Very early software. Expect breakage. `voila run` needs a privileged Linux
-host with runc.
+Very early software. Expect breakage. Linux only; `voila` is one static,
+daemonless binary that runs containers rootless.
 
 ## Try it
 
-On Linux, use the install script — it downloads the release, verifies the
-checksum, installs `zig-fuse` (Zig CLI), and can wire up the hosted registry:
+The install script downloads the release, verifies the checksum, installs
+`voila`, sets up the AppArmor profile Ubuntu 24.04+ needs for unprivileged user
+namespaces, and can wire up the hosted registry:
 
 ```bash
-curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sudo bash
-```
-
-Add `--with-systemd` to run `voilad` as a service, or start it by hand:
-
-```bash
-sudo voilad &
+curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sh
 ```
 
 More install flags: [doc/INSTALL.md](doc/INSTALL.md).
 
 ### Local run
 
-`voila import` stores images under the full Docker Hub ref. Use `voila tag`
-for a short local name:
-
 ```bash
 voila import alpine:3.20
-voila tag registry-1.docker.io/library/alpine:3.20 alpine:3.20
-voila run alpine:3.20 -- /bin/echo hi
+voila run --rm alpine:3.20 -- echo hi
+voila run --rm -it alpine:3.20 sh
 ```
+
+### Build
+
+```bash
+voila build -t myapp:1 .
+voila run --rm myapp:1
+```
+
+`voila build` reads a Dockerfile, runs `RUN` steps rootless, and caches every
+step; see [doc/CLI.md](doc/CLI.md#building-images).
 
 ### Hosted registry
 
 The install script points at a free registry by default
 (`https://drift-registry-production.up.railway.app`). Public pulls need no
 account; chunks stream on first read. Sign up there to push under your org
-(`<org>/alpine:3.20`). Push needs an API key (`--token` on install, or
+(`<org>/alpine:3.20`). Push needs an API key (`voila login`, or
 `VOILA_REGISTRY_TOKEN`).
 
-Publish an imported image:
-
 ```bash
-voila tag registry-1.docker.io/library/alpine:3.20 saucisse/alpine:3.20
 voila push saucisse/alpine:3.20
+# on another machine, empty store:
+voila run saucisse/alpine:3.20 -- echo hi   # chunks fetch on read
 ```
-
-On another machine (empty store, same install + `voilad`):
-
-```bash
-voila pull saucisse/alpine:3.20          # manifest only
-voila run saucisse/alpine:3.20 -- /bin/echo hi   # chunks fetch on read
-```
-
-Cold start over the hosted registry on alpine has measured around 91 ms.
-A `python:3.13` `"hi"` run touches about 0.9% of the image.
 
 ### From source
 
 ```bash
-go install ./cmd/...
-voila import -root /tmp/voila python:3.13
-voilad -root /tmp/voila &
-voila run -root /tmp/voila python:3.13 -- python -c 'print("hi")'
+mise install             # pinned zig
+zig build -Doptimize=ReleaseFast
+zig build test
 ```
 
-Devcontainer: [doc/DEV_SETUP.md](doc/DEV_SETUP.md).
+See [doc/DEV_SETUP.md](doc/DEV_SETUP.md).
 
 ## How it works
 
-1. **Import** — pull from any OCI registry; store 1 MiB BLAKE3 chunks + a manifest.
-2. **Mount** — `voilad` serves the rootfs via EROFS+NBD (FUSE if the host lacks that).
-3. **Run** — hand an OCI bundle to runc.
+1. **Import / build** — store 1 MiB BLAKE3 chunks plus a manifest tree.
+2. **Mount** — a per-container FUSE server exposes the image read-only; a
+   chunk is read (or fetched from the registry) only when a file needs it.
+3. **Run** — the command runs in its own user, mount and PID namespaces on
+   top of that mount, with writes going to a per-container directory.
 
 ## Docs
 
 - [Architecture](doc/ARCHITECTURE.md) — how it fits together, benchmarks, limits
 - [CLI](doc/CLI.md) — commands and flags
+- [Testing](doc/TESTING.md)
 
 ## What's missing
 
-Writable layers, rootless runs, TTY, TLS on the registry, multi-node. Root is
-required today. Details in [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md).
+TLS on the registry, multi-node, a daemon/remote runtime, the EROFS+NBD mount
+backend in the CLI. Details in [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md).

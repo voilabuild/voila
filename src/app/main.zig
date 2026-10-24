@@ -35,7 +35,10 @@ pub fn main(init: std.process.Init) !void {
 
     var args = std.process.Args.Iterator.init(init.minimal.args);
     _ = args.next();
-    const sub = args.next() orelse "prove";
+    const sub = args.next() orelse {
+        printUsage();
+        std.process.exit(2);
+    };
 
     if (std.mem.eql(u8, sub, "userns-probe")) {
         std.process.exit(if (container_bind.probeUserNamespaces()) 0 else 1);
@@ -322,7 +325,8 @@ fn printUsage() void {
         \\  voila pull|push|import [-root <dir>] <image-ref>
         \\  voila build -t <ref> [-f Dockerfile] [--build-arg K=V] [--no-cache] [--push] <context>
         \\  voila run [-root <dir>] [-d] [--name NAME] [--rm] <image-ref> -- <cmd> [args...]
-        \\  voila ps|logs|images|stop|kill|rm [-root <dir>] ...
+        \\  voila exec <id> -- <cmd> [args...]
+        \\  voila ps|logs|images|rmi|stop|kill|rm [-root <dir>] ...
         \\
         \\  voila prove [fixture-dir]
         \\
@@ -668,18 +672,7 @@ fn ensureFixture(init: std.process.Init, dir: []const u8) !void {
     defer init.gpa.free(out_abs);
     const tree = try std.fmt.allocPrint(init.gpa, "{s}/tree.txt", .{out_abs});
     defer init.gpa.free(tree);
-    if (posix_util.access(tree)) return;
-
-    try posix_util.makePath(out_abs);
-    const voila_root = try findVoilaRoot(init.gpa);
-    defer init.gpa.free(voila_root);
-    const cmd = try std.fmt.allocPrint(init.gpa, "cd {s} && go run -tags zig_fuse_fixture ./poc/zig-fuse/fixture -o {s}", .{ voila_root, out_abs });
-    defer init.gpa.free(cmd);
-    const cmd_z = try init.gpa.allocSentinel(u8, cmd.len, 0);
-    defer init.gpa.free(cmd_z);
-    @memcpy(cmd_z, cmd);
-    const rc = posix_util.shell(cmd_z);
-    if (rc != 0) return error.FixtureFailed;
+    if (!posix_util.access(tree)) return error.FixtureNotFound;
 }
 
 fn openRuntime(allocator: std.mem.Allocator, cfg: voila_runtime.Config) !voila_runtime.Runtime {
@@ -1167,20 +1160,6 @@ fn resolveAbs(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     if (cwd_err != .SUCCESS) return allocator.dupe(u8, path);
     const cwd_slice = std.mem.sliceTo(@as([*:0]const u8, @ptrCast(cwd[0..].ptr)), 0);
     return std.fmt.allocPrint(allocator, "{s}/{s}", .{ cwd_slice, path });
-}
-
-fn findVoilaRoot(allocator: std.mem.Allocator) ![]const u8 {
-    const seeds = [_][]const u8{
-        "/agent/repos/voila",
-        "../../..",
-        "../..",
-    };
-    for (seeds) |seed| {
-        const gomod = try std.fmt.allocPrint(allocator, "{s}/go.mod", .{seed});
-        defer allocator.free(gomod);
-        if (posix_util.access(gomod)) return allocator.dupe(u8, seed);
-    }
-    return error.NoVoilaRoot;
 }
 
 test {
