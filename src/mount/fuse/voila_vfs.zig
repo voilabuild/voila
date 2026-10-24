@@ -136,16 +136,33 @@ pub const VoilaVfs = struct {
     }
 
     pub fn inoFromPath(self: *VoilaVfs, path: []const u8) ?u64 {
-        if (std.mem.eql(u8, path, "/")) return self.rootIno();
         if (path.len == 0 or path[0] != '/') return null;
+        return self.inoFromPathInner(path, 40);
+    }
+
+    fn inoFromPathInner(self: *VoilaVfs, path: []const u8, link_budget: u8) ?u64 {
+        if (link_budget == 0) return null;
+        if (std.mem.eql(u8, path, "/")) return self.rootIno();
         var ino = self.rootIno();
-        var rest = path[1..];
-        while (rest.len > 0) {
-            const slash = std.mem.indexOfScalar(u8, rest, '/');
-            const component = rest[0..(slash orelse rest.len)];
-            rest = if (slash) |s| rest[s + 1 ..] else "";
-            if (component.len == 0) continue;
+        var i: usize = 1;
+        while (i <= path.len) {
+            while (i < path.len and path[i] == '/') i += 1;
+            if (i >= path.len) return ino;
+            const start = i;
+            while (i < path.len and path[i] != '/') i += 1;
+            const component = path[start..i];
+            if (component.len == 0 or std.mem.eql(u8, component, ".")) continue;
+            if (std.mem.eql(u8, component, "..")) return null;
             ino = self.lookup(ino, component) orelse return null;
+            const tail = if (i < path.len) path[i..] else "";
+            if (self.readlink(ino)) |target| {
+                var link_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+                var join_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+                const dir = if (start > 1) path[0 .. start - 1] else "/";
+                const link_path = resolveSymlinkTarget(dir, target, &link_buf) orelse return null;
+                const joined = joinAbsPath(link_path, tail, &join_buf) orelse return null;
+                return self.inoFromPathInner(joined, link_budget - 1);
+            }
         }
         return ino;
     }
@@ -567,4 +584,74 @@ fn entryTypeTree(tree: *const voila_tree.Tree, ino: u64) u32 {
 
 fn mkdev(major: u32, minor: u32) u32 {
     return (minor & 0xff) | (major << 8) | ((minor & ~@as(u32, 0xff)) << 12);
+}
+
+fn trimSlashSuffix(s: []const u8) []const u8 {
+    var end = s.len;
+    while (end > 1 and s[end - 1] == '/') end -= 1;
+    return s[0..end];
+}
+
+fn resolveSymlinkTarget(dir: []const u8, target: []const u8, buf: []u8) ?[]const u8 {
+    if (target.len > 0 and target[0] == '/') return normalizeAbsPath(target, buf);
+    const d = trimSlashSuffix(dir);
+    if (d.len == 0) return normalizeAbsPathCat("", target, buf);
+    return normalizeAbsPathCat(d, target, buf);
+}
+
+fn joinAbsPath(prefix: []const u8, suffix: []const u8, buf: []u8) ?[]const u8 {
+    if (suffix.len == 0) return normalizeAbsPath(prefix, buf);
+    if (suffix[0] == '/') {
+        const p = trimSlashSuffix(prefix);
+        if (p.len == 0) return normalizeAbsPath(suffix, buf);
+        return normalizeAbsPathCat(p, suffix[1..], buf);
+    }
+    return normalizeAbsPathCat(prefix, suffix, buf);
+}
+
+fn normalizeAbsPath(path: []const u8, buf: []u8) ?[]const u8 {
+    if (path.len == 0) return null;
+    if (path[0] == '/') return normalizeAbsPathCat("", path[1..], buf);
+    return normalizeAbsPathCat("", path, buf);
+}
+
+fn normalizeAbsPathCat(prefix: []const u8, rest: []const u8, buf: []u8) ?[]const u8 {
+    var parts: [64][]const u8 = undefined;
+    var n: usize = 0;
+    if (prefix.len > 0) {
+        var it = std.mem.tokenizeScalar(u8, prefix, '/');
+        while (it.next()) |p| {
+            if (p.len == 0) continue;
+            if (n >= parts.len) return null;
+            parts[n] = p;
+            n += 1;
+        }
+    }
+    var it = std.mem.tokenizeScalar(u8, rest, '/');
+    while (it.next()) |p| {
+        if (p.len == 0 or std.mem.eql(u8, p, ".")) continue;
+        if (std.mem.eql(u8, p, "..")) {
+            if (n == 0) return null;
+            n -= 1;
+            continue;
+        }
+        if (n >= parts.len) return null;
+        parts[n] = p;
+        n += 1;
+    }
+    if (n == 0) {
+        if (buf.len < 2) return null;
+        buf[0] = '/';
+        buf[1] = 0;
+        return buf[0..1];
+    }
+    var pos: usize = 0;
+    for (parts[0..n]) |p| {
+        if (pos + 1 + p.len >= buf.len) return null;
+        buf[pos] = '/';
+        pos += 1;
+        @memcpy(buf[pos..][0..p.len], p);
+        pos += p.len;
+    }
+    return buf[0..pos];
 }
