@@ -18,7 +18,7 @@ pub fn tryImportFromHub(
     const push_ref = try registry_ref.hubPushRef(allocator, hub_ref, cfg.org);
     defer allocator.free(push_ref);
 
-    try voila_image_import.importImage(io, allocator, voila_root, cfg, hub_ref, push_ref);
+    try voila_image_import.importImage(io, allocator, voila_root, cfg, hub_ref, push_ref, .{ .push = true });
 }
 
 fn shouldImportFromDockerHub(user_ref: []const u8, org: []const u8) bool {

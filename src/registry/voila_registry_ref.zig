@@ -23,6 +23,11 @@ pub fn registryPullCandidates(
     var list: std.ArrayList([]const u8) = .empty;
     try pushUnique(allocator, &list, normalized);
 
+    if (try driftOrgLibraryAlias(allocator, normalized)) |alias| {
+        defer allocator.free(alias);
+        try pushUnique(allocator, &list, alias);
+    }
+
     if (try ocireg.canonical(allocator, normalized)) |canon| {
         defer allocator.free(canon);
         try pushUnique(allocator, &list, canon);
@@ -59,6 +64,19 @@ fn catalogRef(allocator: std.mem.Allocator, canon: []const u8) ![]const u8 {
         return std.fmt.allocPrint(allocator, "test/{s}", .{short});
     }
     return allocator.dupe(u8, canon);
+}
+
+/// Drift org mirror: `saucisse/alpine:3.20` → `saucisse/docker.io/library/alpine:3.20`.
+fn driftOrgLibraryAlias(allocator: std.mem.Allocator, normalized: []const u8) !?[]const u8 {
+    if (std.mem.indexOf(u8, normalized, "docker.io/") != null) return null;
+    const colon = std.mem.indexOfScalar(u8, normalized, ':') orelse return null;
+    const slash = std.mem.indexOfScalar(u8, normalized, '/') orelse return null;
+    if (slash >= colon) return null;
+    const org = normalized[0..slash];
+    if (org.len == 0 or std.mem.indexOfScalar(u8, org, '.') != null) return null;
+    const name_tag = normalized[slash + 1 ..];
+    if (std.mem.indexOfScalar(u8, name_tag, '/') != null) return null;
+    return try std.fmt.allocPrint(allocator, "{s}/docker.io/library/{s}", .{ org, name_tag });
 }
 
 /// `registry-1.docker.io/library/python:3.13` → `python:3.13`
