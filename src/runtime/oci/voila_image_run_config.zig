@@ -166,6 +166,15 @@ pub fn defaultArgv(
     return argv;
 }
 
+/// `WorkingDir` from the image config (empty when unset).
+pub fn imageWorkdir(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) ![]const u8 {
+    const raw = loadConfigJson(io, allocator, voila_root, image_ref) catch return allocator.dupe(u8, "");
+    defer allocator.free(raw);
+    const oci = parseOciConfig(allocator, raw) catch return allocator.dupe(u8, "");
+    defer freeOci(allocator, oci);
+    return allocator.dupe(u8, oci.workdir);
+}
+
 /// `Env` of the image config as key/value pairs (empty when the image has none).
 pub fn imageEnv(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) ![]run_cli_parse.EnvPair {
     const raw = loadConfigJson(io, allocator, voila_root, image_ref) catch return allocator.alloc(run_cli_parse.EnvPair, 0);

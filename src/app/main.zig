@@ -135,6 +135,13 @@ pub fn main(init: std.process.Init) !void {
         }
         const env = try std.mem.concat(init.gpa, run_cli_parse.EnvPair, &.{ image_env, parsed.env });
         defer init.gpa.free(env);
+        var workdir = parsed.workdir;
+        var workdir_from_image: ?[]const u8 = null;
+        if (workdir.len == 0) {
+            workdir_from_image = try voila_image_run_config.imageWorkdir(io, init.gpa, parsed.runtime_cfg.store_root, parsed.image);
+            workdir = workdir_from_image.?;
+        }
+        defer if (workdir_from_image) |w| init.gpa.free(w);
         const code = worker.run(io, init.gpa, .{
             .image = parsed.image,
             .argv = argv,
@@ -142,7 +149,7 @@ pub fn main(init: std.process.Init) !void {
             .name = parsed.name,
             .rm_on_exit = parsed.rm_on_exit,
             .env = env,
-            .workdir = parsed.workdir,
+            .workdir = workdir,
             .volumes = parsed.volumes,
             .ports = parsed.ports,
             .tty = parsed.tty,
