@@ -1,8 +1,8 @@
 //! Shared pieces of build steps: the RUN executor interface and path/argv helpers.
 const std = @import("std");
-const dockerfile = @import("../../core/dockerfile.zig");
-const dir_walk = @import("../../store/ingest/ingest_dir_walk.zig");
-const idmap = @import("../../core/idmap.zig");
+const dockerfile = @import("core").dockerfile;
+const dir_walk = @import("store").ingest.ingest_dir_walk;
+const idmap = @import("core").idmap;
 
 pub const default_path = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 

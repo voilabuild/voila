@@ -3,11 +3,11 @@
 //! With a subuid range the namespace maps 0 -> invoking uid and 1..N -> the range.
 const std = @import("std");
 const steps = @import("steps.zig");
-const fs = @import("../../sys/fs.zig");
-const process = @import("../../sys/process.zig");
-const idmap = @import("../../core/idmap.zig");
-const passwd = @import("../../core/passwd.zig");
-const dir_walk = @import("../../store/ingest/ingest_dir_walk.zig");
+const fs = @import("sys").fs;
+const process = @import("sys").process;
+const idmap = @import("core").idmap;
+const passwd = @import("core").passwd;
+const dir_walk = @import("store").ingest.ingest_dir_walk;
 const container_fuse_sibling = @import("../oci/container_fuse_sibling.zig");
 const container_bind = @import("../oci/container_bind.zig");
 const container_root = @import("../oci/container_root.zig");

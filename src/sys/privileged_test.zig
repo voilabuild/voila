@@ -1,6 +1,6 @@
 const std = @import("std");
 const linux = std.os.linux;
-const posix_util = @import("sys/posix_util.zig");
+const posix_util = @import("posix_util.zig");
 
 fn requireRoot() !void {
     if (linux.geteuid() != 0) return error.SkipZigTest;

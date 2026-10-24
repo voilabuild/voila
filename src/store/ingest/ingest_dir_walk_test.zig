@@ -1,12 +1,12 @@
 const std = @import("std");
-const fs = @import("../../sys/fs.zig");
+const fs = @import("sys").fs;
 const dir_walk = @import("ingest_dir_walk.zig");
 const layer_walk = @import("ingest_layer_walk.zig");
 const from_manifest = @import("ingest_from_manifest.zig");
 const manifest_mod = @import("ingest_manifest.zig");
 const merge_mod = @import("ingest_merge.zig");
 const tree_mod = @import("ingest_tree.zig");
-const idmap = @import("../../core/idmap.zig");
+const idmap = @import("core").idmap;
 
 const mtime = 1_700_000_000;
 

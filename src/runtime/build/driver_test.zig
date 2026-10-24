@@ -1,13 +1,13 @@
 const std = @import("std");
-const fs = @import("../../sys/fs.zig");
+const fs = @import("sys").fs;
 const driver = @import("driver.zig");
 const image_store = @import("image_store.zig");
-const dir_walk = @import("../../store/ingest/ingest_dir_walk.zig");
-const from_manifest = @import("../../store/ingest/ingest_from_manifest.zig");
-const manifest_mod = @import("../../store/ingest/ingest_manifest.zig");
-const chunk_store = @import("../../store/ingest/ingest_chunk_store.zig");
-const tree_mod = @import("../../store/ingest/ingest_tree.zig");
-const voila_resolve = @import("../../registry/voila_resolve.zig");
+const dir_walk = @import("store").ingest.ingest_dir_walk;
+const from_manifest = @import("store").ingest.ingest_from_manifest;
+const manifest_mod = @import("store").ingest.ingest_manifest;
+const chunk_store = @import("store").ingest.ingest_chunk_store;
+const tree_mod = @import("store").ingest.ingest_tree;
+const voila_resolve = @import("registry").voila_resolve;
 const run_config = @import("../oci/voila_image_run_config.zig");
 
 /// Interprets `write <path> <content>` and `fail` instead of running a shell.

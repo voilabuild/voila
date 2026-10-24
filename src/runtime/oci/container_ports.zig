@@ -1,7 +1,7 @@
 //! Host port publishing via socat (rootless; shares host network namespace).
 const std = @import("std");
 const run_flags = @import("../run_flags.zig");
-const posix_util = @import("../../sys/posix_util.zig");
+const posix_util = @import("sys").posix_util;
 
 pub const Forwarder = struct {
     pid: i32,

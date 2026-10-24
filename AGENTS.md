@@ -29,7 +29,7 @@ mount, runtime   Backend / Runtime interfaces + implementations
 cli, app         app/ is the only place that picks implementations and reads env
 ```
 
-`build.zig` does not enforce this yet (#83). Do not add imports that point up. The store reaches the registry only through an injected `voila_chunk_load.Fetcher`.
+Each layer is a module in `build.zig` (root: `src/<layer>/root.zig`) that can import only the layers below it, so an upward import does not compile. Import another layer by module name (`@import("store").voila_tree`), never with `../`. A new file goes in its layer's `root.zig`, which also lists the files whose tests run. The store reaches the registry only through an injected `voila_chunk_load.Fetcher`.
 
 ## Adding an implementation (backend, launcher, transport…)
 

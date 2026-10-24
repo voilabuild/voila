@@ -1,15 +1,15 @@
 //! Run libfuse in a child process so the parent can chroot into the mount without deadlocking.
 const std = @import("std");
-const fuse_linux = @import("../../mount/fuse/fuse_linux.zig");
-const fuse_vfs_mod = @import("../../mount/fuse/fuse_vfs.zig");
-const voila_vfs_mod = @import("../../mount/fuse/voila_vfs.zig");
+const fuse_linux = @import("mount").fuse.fuse_linux;
+const fuse_vfs_mod = @import("mount").fuse.fuse_vfs;
+const voila_vfs_mod = @import("mount").fuse.voila_vfs;
 const voila_loader = @import("../voila_loader.zig");
-const voila_registry = @import("../../registry/voila_registry.zig");
-const voila_registry_creds = @import("../../registry/voila_registry_creds.zig");
-const voila_login_creds = @import("../../registry/voila_login_creds.zig");
-const mount_exec = @import("../../mount/mount_exec.zig");
-const posix_util = @import("../../sys/posix_util.zig");
-const idmap = @import("../../core/idmap.zig");
+const voila_registry = @import("registry").voila_registry;
+const voila_registry_creds = @import("registry").voila_registry_creds;
+const voila_login_creds = @import("registry").voila_login_creds;
+const mount_exec = @import("mount").mount_exec;
+const posix_util = @import("sys").posix_util;
+const idmap = @import("core").idmap;
 
 const ServeCtx = struct {
     session: fuse_linux.Session,

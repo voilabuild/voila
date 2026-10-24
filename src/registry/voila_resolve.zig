@@ -1,10 +1,10 @@
 const std = @import("std");
 const sqlite = @import("sqlite_c");
 const ocireg = @import("./voila_ocireg.zig");
-const hex_util = @import("../core/hex_util.zig");
+const hex_util = @import("core").hex_util;
 const registry_ref = @import("./voila_registry_ref.zig");
 const voila_login_creds = @import("./voila_login_creds.zig");
-const voila_refkey = @import("../core/voila_refkey.zig");
+const voila_refkey = @import("core").voila_refkey;
 const voila_manifest_cache = @import("./voila_manifest_cache.zig");
 
 pub const Error = error{

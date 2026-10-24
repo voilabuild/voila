@@ -44,14 +44,14 @@ pub const FuseVfs = union(enum) {
 
     pub fn isDir(self: *FuseVfs, ino: u64) bool {
         return switch (self.*) {
-            .fixture => ino == @import("../../core/constants.zig").root_ino,
+            .fixture => ino == @import("core").constants.root_ino,
             .voila => |*v| v.isDir(ino),
         };
     }
 
     pub fn isFile(self: *FuseVfs, ino: u64) bool {
         return switch (self.*) {
-            .fixture => ino == @import("../../core/constants.zig").file_ino,
+            .fixture => ino == @import("core").constants.file_ino,
             .voila => |*v| v.isFile(ino),
         };
     }
@@ -59,7 +59,7 @@ pub const FuseVfs = union(enum) {
     pub fn readdirEntry(self: *FuseVfs, dir_ino: u64, index: usize) ?struct { name: []const u8, ino: u64, typ: u32 } {
         return switch (self.*) {
             .fixture => |*v| {
-                if (dir_ino != @import("../../core/constants.zig").root_ino) return null;
+                if (dir_ino != @import("core").constants.root_ino) return null;
                 const ent = v.readdirEntry(index) orelse return null;
                 return .{ .name = ent.name, .ino = ent.ino, .typ = ent.typ };
             },

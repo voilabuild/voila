@@ -1,6 +1,6 @@
 //! Enter user/mount/PID namespaces and pivot into the image root without holding FUSE fds (re-exec entrypoint).
 const std = @import("std");
-const ns = @import("../../sys/ns.zig");
+const ns = @import("sys").ns;
 const container_bind = @import("container_bind.zig");
 const container_root = @import("container_root.zig");
 const container_run_opts = @import("container_run_opts.zig");

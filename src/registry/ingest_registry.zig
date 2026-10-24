@@ -1,9 +1,9 @@
 const std = @import("std");
 const ocireg = @import("./voila_ocireg.zig");
-const chunk_store = @import("../store/ingest/ingest_chunk_store.zig");
-const layer_walk = @import("../store/ingest/ingest_layer_walk.zig");
-const tar_mod = @import("../store/ingest/ingest_tar.zig");
-const build_mod = @import("../store/ingest/ingest_build.zig");
+const chunk_store = @import("store").ingest.ingest_chunk_store;
+const layer_walk = @import("store").ingest.ingest_layer_walk;
+const tar_mod = @import("store").ingest.ingest_tar;
+const build_mod = @import("store").ingest.ingest_build;
 
 pub const OciManifest = struct {
     config_digest: []const u8,
@@ -62,7 +62,7 @@ pub fn ingestRegistry(
     defer allocator.free(cfg_blob);
     const config_chunk = try chunk_store.putBytes(allocator, voila_root, cfg_blob);
 
-    var layer_trees: std.ArrayList(*@import("../store/ingest/ingest_tree.zig").LayerTree) = .empty;
+    var layer_trees: std.ArrayList(*@import("store").ingest.ingest_tree.LayerTree) = .empty;
     var agg_bytes: u64 = 0;
     var agg_chunks: u64 = 0;
     var agg_deduped: u64 = 0;
@@ -109,7 +109,7 @@ fn digestToBytes(allocator: std.mem.Allocator, digest: []const u8) ![]u8 {
 pub const Error = error{BadDigest};
 
 const crypto = std.crypto.hash.sha2;
-const fs = @import("../sys/fs.zig");
+const fs = @import("sys").fs;
 
 test "ingest registry smoke" {
     const gpa = std.testing.allocator;

@@ -1,6 +1,6 @@
 const std = @import("std");
-const posix_util = @import("../sys/posix_util.zig");
-const fs = @import("../sys/fs.zig");
+const posix_util = @import("sys").posix_util;
+const fs = @import("sys").fs;
 const zstd = @import("zstd");
 const blake3_c = @import("blake3_c");
 

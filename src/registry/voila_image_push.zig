@@ -4,8 +4,8 @@ const voila_registry_hub = @import("./voila_registry_hub.zig");
 const voila_resolve = @import("./voila_resolve.zig");
 const voila_manifest_cache = @import("./voila_manifest_cache.zig");
 const voila_reachable = @import("./voila_reachable.zig");
-const voila_store = @import("../store/voila_store.zig");
-const voila_manifest_json = @import("../codec/voila_manifest_json.zig");
+const voila_store = @import("store").voila_store;
+const voila_manifest_json = @import("codec").voila_manifest_json;
 
 const missing_batch = 16384;
 const zstd_magic: [4]u8 = .{ 0x28, 0xb5, 0x2f, 0xfd };
@@ -63,7 +63,7 @@ pub fn pushImage(
         if (code != 200 and code != 201) return error.ChunkPut;
         uploaded += 1;
         const cid = chunkIdFromHex(chunk_hex);
-        const algo = @import("../store/voila_chunk_index.zig").compAlgoForChunk(voila_root, &cid) catch voila_store.AlgoRaw;
+        const algo = @import("store").voila_chunk_index.compAlgoForChunk(voila_root, &cid) catch voila_store.AlgoRaw;
         const raw = voila_store.loadChunkRaw(allocator, voila_root, chunk_hex, algo) catch return error.MissingChunk;
         defer allocator.free(raw);
         upload_bytes += raw.len;
@@ -96,7 +96,7 @@ fn chunkWireBody(allocator: std.mem.Allocator, voila_root: []const u8, chunk_hex
         return allocator.dupe(u8, stored);
     }
     const cid = chunkIdFromHex(chunk_hex);
-    const algo = @import("../store/voila_chunk_index.zig").compAlgoForChunk(voila_root, &cid) catch voila_store.AlgoRaw;
+    const algo = @import("store").voila_chunk_index.compAlgoForChunk(voila_root, &cid) catch voila_store.AlgoRaw;
     const raw = voila_store.loadChunkRaw(allocator, voila_root, chunk_hex, algo) catch return error.MissingChunk;
     defer allocator.free(raw);
     return voila_store.compressZstdPublic(allocator, raw);

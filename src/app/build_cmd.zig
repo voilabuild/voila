@@ -1,15 +1,15 @@
 //! `voila build`: argument parsing, progress output and error reporting.
 const std = @import("std");
-const posix_util = @import("../sys/posix_util.zig");
-const voila_paths = @import("../sys/voila_paths.zig");
-const dockerfile = @import("../core/dockerfile.zig");
-const driver = @import("../runtime/build/driver.zig");
-const run_step = @import("../runtime/build/run_step.zig");
-const userns_ids = @import("../runtime/oci/userns_ids.zig");
-const registry_session = @import("../registry/registry_session.zig");
-const voila_registry = @import("../registry/voila_registry.zig");
-const voila_image_push = @import("../registry/voila_image_push.zig");
-const registry_ref = @import("../registry/voila_registry_ref.zig");
+const posix_util = @import("sys").posix_util;
+const voila_paths = @import("sys").voila_paths;
+const dockerfile = @import("core").dockerfile;
+const driver = @import("runtime").build.driver;
+const run_step = @import("runtime").build.run_step;
+const userns_ids = @import("runtime").oci.userns_ids;
+const registry_session = @import("registry").registry_session;
+const voila_registry = @import("registry").voila_registry;
+const voila_image_push = @import("registry").voila_image_push;
+const registry_ref = @import("registry").voila_registry_ref;
 
 const Args = struct {
     root: []const u8,
@@ -186,7 +186,7 @@ const Printer = struct {
 };
 
 fn monotonic() u64 {
-    return @import("../sys/clock.zig").monotonicNs();
+    return @import("sys").clock.monotonicNs();
 }
 
 fn secs(ns: u64) f64 {

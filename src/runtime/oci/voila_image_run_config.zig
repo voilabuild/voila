@@ -1,16 +1,16 @@
 //! Default container argv from stored ImageManifest + OCI config chunk.
 const std = @import("std");
-const voila_refkey = @import("../../core/voila_refkey.zig");
-const voila_resolve = @import("../../registry/voila_resolve.zig");
-const voila_chunk_index = @import("../../store/voila_chunk_index.zig");
-const voila_store = @import("../../store/voila_store.zig");
-const voila_chunk_load = @import("../../store/voila_chunk_load.zig");
-const voila_registry_fetch = @import("../../registry/voila_registry_fetch.zig");
-const voila_manifest_cache = @import("../../registry/voila_manifest_cache.zig");
-const hex_util = @import("../../core/hex_util.zig");
-const posix_util = @import("../../sys/posix_util.zig");
-const registry_ref = @import("../../registry/voila_registry_ref.zig");
-const voila_image_pull = @import("../../registry/voila_image_pull.zig");
+const voila_refkey = @import("core").voila_refkey;
+const voila_resolve = @import("registry").voila_resolve;
+const voila_chunk_index = @import("store").voila_chunk_index;
+const voila_store = @import("store").voila_store;
+const voila_chunk_load = @import("store").voila_chunk_load;
+const voila_registry_fetch = @import("registry").voila_registry_fetch;
+const voila_manifest_cache = @import("registry").voila_manifest_cache;
+const hex_util = @import("core").hex_util;
+const posix_util = @import("sys").posix_util;
+const registry_ref = @import("registry").voila_registry_ref;
+const voila_image_pull = @import("registry").voila_image_pull;
 const run_flags = @import("../run_flags.zig");
 
 const OciConfig = struct {

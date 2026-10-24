@@ -1,5 +1,5 @@
 const std = @import("std");
-const constants = @import("../../core/constants.zig");
+const constants = @import("core").constants;
 
 pub const ChunkSize = constants.chunk_size;
 
@@ -102,7 +102,7 @@ pub const Walker = struct {
     }
 };
 
-const posix_util = @import("../../sys/posix_util.zig");
+const posix_util = @import("sys").posix_util;
 
 fn readChunkFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     _ = io;
