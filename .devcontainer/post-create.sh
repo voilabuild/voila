@@ -6,8 +6,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 # fuse3: fusermount3 for the per-container FUSE server.
 # uidmap: newuidmap/newgidmap for subid-range user namespaces in RUN.
-# skopeo: image fixtures for e2e gates.
-apt-get install -y --no-install-recommends fuse3 uidmap skopeo
+apt-get install -y --no-install-recommends fuse3 uidmap
 
 if ! grep -q '^user_allow_other' /etc/fuse.conf 2>/dev/null; then
     echo 'user_allow_other' >> /etc/fuse.conf
@@ -22,4 +21,4 @@ eval "$("$HOME/.local/bin/mise" activate bash)"
 mise install
 echo 'eval "$("$HOME/.local/bin/mise" activate bash)"' >> "$HOME/.bashrc"
 
-echo "post-create done: zig $(zig version), $(skopeo --version)"
+echo "post-create done: zig $(zig version), $(uv --version)"

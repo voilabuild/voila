@@ -1,5 +1,4 @@
 # ci.yml — fast checks on every pull request (and pushes to main).
-# Privileged gate scripts (FUSE, user namespaces) stay manual/devcontainer — see doc/TESTING.md.
 
 name: ci
 
@@ -33,6 +32,40 @@ jobs:
 
       - name: zig build test
         run: zig build test
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.17.0
+        env:
+          ZIG_VERSION: 0.17.0
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
+            | tar -xJ
+          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Allow FUSE and unprivileged user namespaces
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fuse3
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: zig build
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: pyright
+        working-directory: test/e2e
+        run: uv run pyright
+
+      - name: pytest
+        working-directory: test/e2e
+        run: uv run pytest -v
 
   lint-openapi:
     runs-on: ubuntu-latest
