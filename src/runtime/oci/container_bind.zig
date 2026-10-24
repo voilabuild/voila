@@ -106,7 +106,7 @@ fn ensureParent(path: []const u8) !void {
     try posix_util.makePath(parent);
 }
 
-fn writeGidMapFor(host_gid: std.c.uid_t) void {
+pub fn writeGidMapFor(host_gid: std.c.uid_t) void {
     const deny = "/proc/self/setgroups";
     const deny_z = std.heap.page_allocator.allocSentinel(u8, deny.len, 0) catch return;
     defer std.heap.page_allocator.free(deny_z);
@@ -121,7 +121,7 @@ fn writeGidMapFor(host_gid: std.c.uid_t) void {
     _ = writeProcMap("/proc/self/gid_map", data_slice);
 }
 
-fn writeUidMapFor(host_uid: std.c.uid_t) bool {
+pub fn writeUidMapFor(host_uid: std.c.uid_t) bool {
     var data: [64]u8 = undefined;
     const data_slice = std.fmt.bufPrint(&data, "0 {d} 1\n", .{host_uid}) catch return false;
     return writeProcMap("/proc/self/uid_map", data_slice);

@@ -218,6 +218,17 @@ pub fn setMtime(path: []const u8, sec: i64) Error!void {
     _ = try check(linux.utimensat(linux.AT.FDCWD, try toZ(&zb, path), &ts, linux.AT.SYMLINK_NOFOLLOW));
 }
 
+/// Changes owner without following symlinks.
+pub fn lchown(path: []const u8, uid: u32, gid: u32) Error!void {
+    var zb: Z = undefined;
+    _ = try check(linux.fchownat(linux.AT.FDCWD, try toZ(&zb, path), uid, gid, linux.AT.SYMLINK_NOFOLLOW));
+}
+
+pub fn chmod(path: []const u8, perm: u32) Error!void {
+    var zb: Z = undefined;
+    _ = try check(linux.fchmodat(linux.AT.FDCWD, try toZ(&zb, path), perm));
+}
+
 /// `rm -rf`; a missing path is not an error.
 pub fn removeTree(allocator: std.mem.Allocator, path: []const u8) Error!void {
     const st = lstat(path) catch |e| switch (e) {

@@ -10,6 +10,7 @@ const voila_login_creds = @import("../../registry/voila_login_creds.zig");
 const voila_image_pull = @import("../../registry/voila_image_pull.zig");
 const mount_exec = @import("../../mount/mount_exec.zig");
 const posix_util = @import("../../sys/posix_util.zig");
+const idmap = @import("../../core/idmap.zig");
 
 const ServeCtx = struct {
     session: fuse_linux.Session,
@@ -46,6 +47,9 @@ pub const Handle = struct {
 pub const Options = struct {
     /// Present image uid/gid 0 as the calling user (rootless writes through overlayfs).
     map_root: bool = false,
+    /// With `map_root`: also present image ids 1..N as these subordinate host ranges.
+    subuid: ?idmap.Range = null,
+    subgid: ?idmap.Range = null,
 };
 
 pub fn start(
@@ -88,7 +92,7 @@ pub fn startWith(
         _ = std.c.close(ready[0]);
         _ = std.c.close(stop[1]);
         closeInheritedFds(ready[1], stop[0], -1);
-        execFuseServe(exe, voila_root, image, mount_dir, ready[1], stop[0], opts.map_root);
+        execFuseServe(exe, voila_root, image, mount_dir, ready[1], stop[0], opts);
         std.c._exit(127);
     }
     _ = std.c.close(ready[1]);
@@ -116,7 +120,7 @@ pub fn startWith(
 }
 
 pub fn runServe(io: std.Io, cli: ServeCli) void {
-    serveChild(io, cli.root, cli.image, cli.mount, cli.ready_fd, cli.stop_fd, cli.map_root);
+    serveChild(io, cli.root, cli.image, cli.mount, cli.ready_fd, cli.stop_fd, .{ .map_root = cli.map_root, .subuid = cli.subuid, .subgid = cli.subgid });
 }
 
 fn execFuseServe(
@@ -126,14 +130,15 @@ fn execFuseServe(
     mount_dir: []const u8,
     ready_w: std.posix.fd_t,
     stop_r: std.posix.fd_t,
-    map_root: bool,
+    opts: Options,
 ) void {
     const allocator = std.heap.page_allocator;
     const rw = std.fmt.allocPrint(allocator, "{d}", .{ready_w}) catch return;
     const sw = std.fmt.allocPrint(allocator, "{d}", .{stop_r}) catch return;
     const parts = [_][]const u8{
-        exe,          "container-fuse-serve", "-root",     voila_root, "-image",                                        image, "-mount", mount_dir,
-        "--ready-fd", rw,                     "--stop-fd", sw,         if (map_root) "--map-root" else "--no-map-root",
+        exe,                                              "container-fuse-serve", "-root",     voila_root, "-image",                                             image,      "-mount",                                         mount_dir,
+        "--ready-fd",                                     rw,                     "--stop-fd", sw,         if (opts.map_root) "--map-root" else "--no-map-root", "--subuid", formatRange(allocator, opts.subuid) catch return, "--subgid",
+        formatRange(allocator, opts.subgid) catch return,
     };
     var zargs: [parts.len][:0]const u8 = undefined;
     for (parts, 0..) |s, i| {
@@ -154,7 +159,7 @@ fn serveChild(
     mount_dir: []const u8,
     ready_w: std.posix.fd_t,
     stop_r: std.posix.fd_t,
-    map_root: bool,
+    opts: Options,
 ) void {
     const allocator = std.heap.page_allocator;
     if (!fuse_linux.canUseFuse()) return;
@@ -167,7 +172,10 @@ fn serveChild(
     const tree = voila_loader.loadTreeRoot(io, allocator, voila_root, image) catch return;
     var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(allocator, tree) };
     defer fuse_vfs.deinit();
-    if (map_root) fuse_vfs.voila.root_owner = .{ .uid = std.c.getuid(), .gid = std.c.getgid() };
+    if (opts.map_root) fuse_vfs.voila.owner_map = .{
+        .uid = .{ .host = std.c.getuid(), .sub = opts.subuid },
+        .gid = .{ .host = std.c.getgid(), .sub = opts.subgid },
+    };
     posix_util.makePath(mount_dir) catch return;
     var ctx: ServeCtx = .{
         .session = fuse_linux.mountSession(allocator, mount_dir, &fuse_vfs) catch return,
@@ -229,7 +237,24 @@ pub const ServeCli = struct {
     ready_fd: std.posix.fd_t,
     stop_fd: std.posix.fd_t,
     map_root: bool = false,
+    subuid: ?idmap.Range = null,
+    subgid: ?idmap.Range = null,
 };
+
+/// `start:count`, or `-` for none.
+fn formatRange(a: std.mem.Allocator, r: ?idmap.Range) ![]const u8 {
+    const v = r orelse return "-";
+    return std.fmt.allocPrint(a, "{d}:{d}", .{ v.start, v.count });
+}
+
+fn parseRange(s: []const u8) error{BadArgs}!?idmap.Range {
+    if (std.mem.eql(u8, s, "-")) return null;
+    const colon = std.mem.indexOfScalar(u8, s, ':') orelse return error.BadArgs;
+    return .{
+        .start = std.fmt.parseInt(u32, s[0..colon], 10) catch return error.BadArgs,
+        .count = std.fmt.parseInt(u32, s[colon + 1 ..], 10) catch return error.BadArgs,
+    };
+}
 
 pub fn parseServeCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !ServeCli {
     var root: ?[]const u8 = null;
@@ -238,6 +263,8 @@ pub fn parseServeCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.I
     var ready_fd: std.posix.fd_t = -1;
     var stop_fd: std.posix.fd_t = -1;
     var map_root = false;
+    var subuid: ?idmap.Range = null;
+    var subgid: ?idmap.Range = null;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "-root")) {
             root = try allocator.dupe(u8, args.next() orelse return error.BadArgs);
@@ -255,6 +282,10 @@ pub fn parseServeCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.I
             map_root = true;
         } else if (std.mem.eql(u8, arg, "--no-map-root")) {
             map_root = false;
+        } else if (std.mem.eql(u8, arg, "--subuid")) {
+            subuid = try parseRange(args.next() orelse return error.BadArgs);
+        } else if (std.mem.eql(u8, arg, "--subgid")) {
+            subgid = try parseRange(args.next() orelse return error.BadArgs);
         } else {
             return error.BadArgs;
         }
@@ -267,6 +298,8 @@ pub fn parseServeCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.I
         .ready_fd = ready_fd,
         .stop_fd = stop_fd,
         .map_root = map_root,
+        .subuid = subuid,
+        .subgid = subgid,
     };
 }
 

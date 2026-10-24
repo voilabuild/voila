@@ -5,6 +5,7 @@ const voila_paths = @import("../core/voila_paths.zig");
 const dockerfile = @import("../core/dockerfile.zig");
 const driver = @import("../runtime/build/driver.zig");
 const run_step = @import("../runtime/build/run_step.zig");
+const userns_ids = @import("../runtime/oci/userns_ids.zig");
 const registry_session = @import("../registry/registry_session.zig");
 const voila_registry = @import("../registry/voila_registry.zig");
 const voila_image_push = @import("../registry/voila_image_push.zig");
@@ -75,7 +76,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, it: *std.process.Args.Iterator) !
     };
     registry_session.prepare(io, gpa, args.root) catch {};
 
-    var runner: run_step.NamespaceRunner = .{ .allocator = gpa };
+    var runner: run_step.NamespaceRunner = .{ .allocator = gpa, .ids = userns_ids.detect(a, .{}) };
     var printer: Printer = .{};
     var diag: driver.Diagnostic = .{};
     const t0 = monotonic();
@@ -110,6 +111,9 @@ fn reportError(df_path: []const u8, e: anyerror, diag: driver.Diagnostic) void {
     const what: []const u8 = switch (e) {
         error.RunFailed => "RUN command failed",
         error.OverlayFailed, error.UserNamespacesRequired => "could not set up the RUN sandbox (needs unprivileged user namespaces and overlayfs; re-run install.sh for the AppArmor profile)",
+        error.UnknownUser => "USER names a user missing from the image's /etc/passwd",
+        error.UnknownGroup => "USER names a group missing from the image's /etc/group",
+        error.UserSwitchFailed => "could not switch to the USER for RUN (ids other than 0 need a /etc/subuid range and newuidmap/newgidmap)",
         error.MountFailed => "could not FUSE-mount the image for RUN (is /dev/fuse available?)",
         error.BaseImageNotFound => "base image not found locally or on the registry (try `voila import <ref>` first)",
         error.CopySourceMissing => "COPY source not found in the build context",
