@@ -8,6 +8,7 @@ test {
     _ = @import("core/glob.zig");
     _ = @import("core/passwd.zig");
     _ = @import("sys/fs.zig");
+    _ = @import("sys/ns.zig");
     _ = @import("store/build_cache.zig");
     _ = @import("store/voila_store.zig");
     _ = @import("store/voila_loader_test.zig");
@@ -25,5 +26,7 @@ test {
     _ = @import("runtime/build/copy_sources.zig");
     _ = @import("runtime/build/driver_test.zig");
     _ = @import("runtime/build/steps.zig");
+    _ = @import("runtime/oci/container_root.zig");
+    _ = @import("runtime/oci/container_isolated_exec.zig");
     _ = @import("cli/run_cli_parse.zig");
 }

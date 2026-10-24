@@ -4,26 +4,11 @@ const c = std.c;
 const TIOCGWINSZ: u64 = 0x5413;
 const TIOCSWINSZ: u64 = 0x5414;
 
-extern "c" fn openpty(
-    amaster: *c_int,
-    aslave: *c_int,
-    name: ?*c_char,
-    termp: ?*anyopaque,
-    winp: ?*anyopaque,
-) c_int;
-
 extern "c" fn login_tty(fd: c_int) c_int;
 
 pub const Pty = struct {
     master: std.posix.fd_t,
     slave: std.posix.fd_t,
-
-    pub fn open() !Pty {
-        var master: c_int = -1;
-        var slave: c_int = -1;
-        if (openpty(&master, &slave, null, null, null) != 0) return error.PtyOpenFailed;
-        return .{ .master = master, .slave = slave };
-    }
 
     pub fn close(self: *Pty) void {
         if (self.master >= 0) _ = c.close(self.master);

@@ -35,7 +35,6 @@ pub fn exec(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, sp
         allocator,
         st.mount_dir,
         vfs_exec,
-        st.log_path,
         spec.argv,
         use_tty,
         opts,
