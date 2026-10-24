@@ -64,7 +64,10 @@ unchanged.
 - `USER` applies to later `RUN` steps: `user[:group]` names are looked up in
   the image's `/etc/passwd` and `/etc/group`, numeric ids always work (gid
   defaults to the user's group, or 0), and `HOME` is set from `/etc/passwd`
-  when unset. A non-root `USER` needs the subid range.
+  when unset. Without the subid range, a non-root `USER` is not applied to
+  `RUN` (it runs as root, as before) and `voila build` prints one warning.
+- Each `RUN` command is pid 1 of its own PID namespace; background processes
+  it leaves behind are killed when it exits.
 
 ## Running containers
 

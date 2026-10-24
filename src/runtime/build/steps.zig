@@ -28,6 +28,8 @@ pub const RunResult = struct {
     code: u8,
     /// Id map the command ran under; null means the single invoking uid/gid.
     ids: ?idmap.Mapping = null,
+    /// `USER` was set but its ids are not mapped, so the command ran as root.
+    user_not_applied: bool = false,
 };
 
 pub const RunnerError = error{

@@ -26,5 +26,7 @@ test {
     _ = @import("runtime/build/copy_sources.zig");
     _ = @import("runtime/build/driver_test.zig");
     _ = @import("runtime/build/steps.zig");
+    _ = @import("runtime/build/run_step.zig");
+    _ = @import("runtime/oci/userns_ids.zig");
     _ = @import("cli/run_cli_parse.zig");
 }

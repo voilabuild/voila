@@ -18,6 +18,7 @@ extern "c" fn mount(source: ?[*:0]const u8, target: [*:0]const u8, fstype: ?[*:0
 
 const CLONE_NEWNS: c_int = 0x00020000;
 const CLONE_NEWUSER: c_int = 0x10000000;
+const CLONE_NEWPID: c_int = 0x20000000;
 const MS_BIND: usize = 4096;
 const MS_PRIVATE: usize = 1 << 18;
 const MS_REC: usize = 16384;
@@ -91,7 +92,7 @@ pub const NamespaceRunner = struct {
         defer _ = std.c.close(status[0]);
         if (pid < 0) return error.SpawnFailed;
 
-        var ids = idmap.Mapping.single(self.ids.uid.host, self.ids.gid.host);
+        var ids = userns_ids.effective(self.ids, 0);
         var byte: u8 = 0;
         if (std.c.read(up[0], @ptrCast(&byte), 1) == 1) {
             var written: u8 = 0;
@@ -111,9 +112,31 @@ pub const NamespaceRunner = struct {
                 _ => error.OverlayFailed,
             };
         }
-        return .{ .code = exitCode(wst), .ids = ids };
+        return .{ .code = exitCode(wst), .ids = ids, .user_not_applied = userSwitch(plan.cred, ids) == .not_mapped };
     }
 };
+
+pub const UserSwitch = enum { none, apply, not_mapped };
+
+/// Whether RUN can switch to `cred`: a single-id namespace only maps root, and then the
+/// command runs as root as it did before subuid support.
+pub fn userSwitch(cred: ?passwd.Cred, ids: idmap.Mapping) UserSwitch {
+    const c = cred orelse return .none;
+    if (ids.uid.toHost(c.uid) == null or ids.gid.toHost(c.gid) == null) return .not_mapped;
+    return .apply;
+}
+
+/// The mapped subset of `groups`; setgroups rejects unmapped ids.
+fn mappedGroups(groups: []const u32, ids: idmap.Mapping, buf: []u32) []const u32 {
+    var n: usize = 0;
+    for (groups) |g| {
+        if (n == buf.len) break;
+        if (ids.gid.toHost(g) == null) continue;
+        buf[n] = g;
+        n += 1;
+    }
+    return buf[0..n];
+}
 
 fn closeBoth(fds: [2]std.posix.fd_t) void {
     _ = std.c.close(fds[0]);
@@ -217,7 +240,9 @@ const Plan = struct {
         if (std.c.read(fds.down, @ptrCast(&written), 1) != 1) fail(fds.status, .setup);
         if (written & userns_ids.uid_written == 0 and !container_bind.writeUidMapFor(self.ids.uid.host)) fail(fds.status, .setup);
         if (written & userns_ids.gid_written == 0) container_bind.writeGidMapFor(self.ids.gid.host);
-        if (unshare(CLONE_NEWNS) != 0) fail(fds.status, .setup);
+        // The command becomes pid 1 of its own namespace: when it exits, background
+        // processes die with it, so nothing changes the upper dir during `release`.
+        if (unshare(CLONE_NEWNS | CLONE_NEWPID) != 0) fail(fds.status, .setup);
         _ = mount(null, "/", null, MS_REC | MS_PRIVATE, null);
         if (mount("overlay", self.merged_z, "overlay", 0, self.overlay_opts.ptr) != 0) fail(fds.status, .setup);
         // A created mountpoint is fine: steps.mountpoints keeps it out of the layer.
@@ -227,7 +252,7 @@ const Plan = struct {
 
         const pid = std.c.fork();
         if (pid < 0) fail(fds.status, .setup);
-        if (pid == 0) self.command(fds.status);
+        if (pid == 0) self.command(fds.status, userns_ids.effective(self.ids, written));
         var wst: c_int = 0;
         while (std.c.waitpid(pid, &wst, 0) < 0) {}
         _ = std.os.linux.umount2(self.merged_z, std.os.linux.MNT.DETACH);
@@ -235,13 +260,17 @@ const Plan = struct {
         std.c._exit(exitCode(wst));
     }
 
-    fn command(self: Plan, status_fd: std.posix.fd_t) noreturn {
+    fn command(self: Plan, status_fd: std.posix.fd_t, ids: idmap.Mapping) noreturn {
         container_chroot.enterRootfs(self.merged) catch fail(status_fd, .setup);
         if (self.workdir_z) |wd| {
             makePathZ(wd);
             if (std.c.chdir(wd) != 0) fail(status_fd, .setup);
         }
-        if (self.cred) |c| process.switchUser(c.uid, c.gid, c.groups) catch fail(status_fd, .user);
+        if (userSwitch(self.cred, ids) == .apply) {
+            const c = self.cred.?;
+            var buf: [64]u32 = undefined;
+            process.switchUser(c.uid, c.gid, mappedGroups(c.groups, ids, &buf)) catch fail(status_fd, .user);
+        }
         _ = std.c.umask(0o022);
         const devnull = std.c.open("/dev/null", .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
         if (devnull >= 0) _ = std.c.dup2(devnull, 0);
@@ -273,10 +302,12 @@ fn releaseDir(a: std.mem.Allocator, abs: []const u8, rel: []const u8, out: *std.
         const p = try std.fmt.allocPrint(a, "{s}/{s}", .{ abs, n });
         const r = try steps.joinRel(a, rel, n);
         const st = try fs.lstat(p);
+        // A later hard link to an inode chowned here reads 0:0 and is not recorded; the
+        // walker shares one node per inode, so the first path's owner covers it.
         if (st.uid != 0 or st.gid != 0) {
             try dir_walk.appendOwner(a, out, r, .{ .uid = st.uid, .gid = st.gid });
             try fs.lchown(p, 0, 0);
-            if (st.kind != .symlink) try fs.chmod(p, st.perm);
+            if (st.kind != .symlink) try fs.chmodNoFollow(p, st.perm);
         }
         if (st.kind == .dir) try releaseDir(a, p, r, out);
     }
@@ -301,4 +332,25 @@ fn chmodTree(a: std.mem.Allocator, dir: []const u8) void {
         const p = std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ dir, n }, 0) catch return;
         _ = std.c.chmod(p, 0o700);
     }
+}
+
+const testing = std.testing;
+
+test "userSwitch runs as root when the single-id map cannot hold USER" {
+    const single = idmap.Mapping.single(1000, 1000);
+    const range: idmap.Mapping = .{
+        .uid = .{ .host = 1000, .sub = .{ .start = 100000, .count = 65536 } },
+        .gid = .{ .host = 1000, .sub = .{ .start = 100000, .count = 65536 } },
+    };
+    const app: passwd.Cred = .{ .uid = 1234, .gid = 1234, .groups = &.{ 1234, 29 } };
+    const root: passwd.Cred = .{ .uid = 0, .gid = 0, .groups = &.{0} };
+    try testing.expectEqual(UserSwitch.none, userSwitch(null, single));
+    try testing.expectEqual(UserSwitch.not_mapped, userSwitch(app, single));
+    try testing.expectEqual(UserSwitch.apply, userSwitch(root, single));
+    try testing.expectEqual(UserSwitch.apply, userSwitch(app, range));
+    const big: passwd.Cred = .{ .uid = 70000, .gid = 1, .groups = &.{1} };
+    try testing.expectEqual(UserSwitch.not_mapped, userSwitch(big, range));
+    var buf: [4]u32 = undefined;
+    try testing.expectEqualSlices(u32, &.{}, mappedGroups(app.groups, single, &buf));
+    try testing.expectEqualSlices(u32, &.{ 1234, 29 }, mappedGroups(app.groups, range, &buf));
 }

@@ -41,17 +41,18 @@ pub const Applied = struct { written: u8, ids: idmap.Mapping };
 /// Run from the parent once `pid` has unshared its user namespace. Returns the maps that
 /// were written and the mapping now in effect; the child writes single-id maps for the rest.
 pub fn applyHelpers(pid: std.posix.pid_t, want: idmap.Mapping, paths: Paths) Applied {
-    var got = idmap.Mapping.single(want.uid.host, want.gid.host);
     var written: u8 = 0;
-    if (want.uid.sub != null and runHelper(paths.newuidmap, pid, want.uid)) {
-        got.uid = want.uid;
-        written |= uid_written;
-    }
-    if (want.gid.sub != null and runHelper(paths.newgidmap, pid, want.gid)) {
-        got.gid = want.gid;
-        written |= gid_written;
-    }
-    return .{ .written = written, .ids = got };
+    if (want.uid.sub != null and runHelper(paths.newuidmap, pid, want.uid)) written |= uid_written;
+    if (want.gid.sub != null and runHelper(paths.newgidmap, pid, want.gid)) written |= gid_written;
+    return .{ .written = written, .ids = effective(want, written) };
+}
+
+/// Mapping in effect once the helpers in `written` succeeded; the rest is single-id.
+pub fn effective(want: idmap.Mapping, written: u8) idmap.Mapping {
+    var got = idmap.Mapping.single(want.uid.host, want.gid.host);
+    if (written & uid_written != 0) got.uid = want.uid;
+    if (written & gid_written != 0) got.gid = want.gid;
+    return got;
 }
 
 fn runHelper(helper: []const u8, pid: std.posix.pid_t, m: idmap.IdMap) bool {
@@ -69,4 +70,15 @@ fn runHelper(helper: []const u8, pid: std.posix.pid_t, m: idmap.IdMap) bool {
     };
     const code = process.run(&args) catch return false;
     return code == 0;
+}
+
+test "effective keeps only the ranges whose helper succeeded" {
+    const want: idmap.Mapping = .{
+        .uid = .{ .host = 1000, .sub = .{ .start = 100000, .count = 65536 } },
+        .gid = .{ .host = 1000, .sub = .{ .start = 100000, .count = 65536 } },
+    };
+    try std.testing.expect(!effective(want, 0).isRange());
+    const uid_only = effective(want, uid_written);
+    try std.testing.expect(uid_only.uid.sub != null and uid_only.gid.sub == null);
+    try std.testing.expectEqual(want, effective(want, uid_written | gid_written));
 }
