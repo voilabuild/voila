@@ -165,9 +165,7 @@ pub fn spawnAndWait(_: std.Io, allocator: std.mem.Allocator, spec: Spec, pty_mas
     if (out_thread) |t| t.join();
     const st: u32 = @bitCast(status);
     if (!std.c.W.IFEXITED(st)) return 1;
-    const code: u8 = @intCast(std.c.W.EXITSTATUS(st));
-    if (code == 127) return error.UserNamespacesRequired;
-    return code;
+    return @intCast(std.c.W.EXITSTATUS(st));
 }
 
 pub fn parseCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !Spec {
