@@ -88,7 +88,13 @@ pub fn main(init: std.process.Init) !void {
     }
     if (std.mem.eql(u8, sub, "container-isolated-exec")) {
         const spec = try container_isolated_exec.parseCliArgs(init.gpa, &args);
-        const code = container_isolated_exec.run(spec) catch 127;
+        const code = container_isolated_exec.run(spec) catch |e| {
+            switch (e) {
+                error.UserNamespacesRequired => std.debug.print("voila: cannot enter a user namespace for the image root (re-run install.sh for the AppArmor voila profile)\n", .{}),
+                else => std.debug.print("voila: cannot exec {s} in the image: {s}\n", .{ spec.vfs_argv0, @errorName(e) }),
+            }
+            std.process.exit(127);
+        };
         std.process.exit(code);
     }
     if (std.mem.eql(u8, sub, "container-worker")) {
@@ -128,7 +134,7 @@ pub fn main(init: std.process.Init) !void {
         }
         const env = try std.mem.concat(init.gpa, run_cli_parse.EnvPair, &.{ image_env, parsed.env });
         defer init.gpa.free(env);
-        const code = try worker.run(io, init.gpa, .{
+        const code = worker.run(io, init.gpa, .{
             .image = parsed.image,
             .argv = argv,
             .detach = parsed.detach,
@@ -140,7 +146,10 @@ pub fn main(init: std.process.Init) !void {
             .ports = parsed.ports,
             .tty = parsed.tty,
             .interactive = parsed.interactive,
-        });
+        }) catch |e| {
+            if (e == error.UserNamespacesRequired) std.process.exit(1);
+            return e;
+        };
         std.process.exit(code);
     }
     if (std.mem.eql(u8, sub, "exec")) {

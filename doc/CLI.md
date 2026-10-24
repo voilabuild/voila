@@ -59,6 +59,14 @@ unchanged.
   another user (`su`, `apt-get`'s `_apt` sandbox) or `chown` to other ids
   fail; `USER` only sets the image's default user.
 
+## Running containers
+
+`voila run` always runs the command chrooted into the image root, so absolute
+paths resolve inside the image, with or without `-w`, `-v`, `-it` or `-p`. It
+needs `/dev/fuse` and unprivileged user namespaces (on Ubuntu 24.04+, the
+AppArmor profile installed by `install.sh`). When they are unavailable, `run`
+exits with an error. It does not fall back to running on the host.
+
 ## Environment variables
 
 - `VOILA_ROOT`: voila data root directory (default `/var/lib/voila`);
