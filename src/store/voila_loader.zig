@@ -27,7 +27,9 @@ fn normalizeImageRef(allocator: std.mem.Allocator, image_ref: []const u8) ![]con
     return registry_ref.normalizeUserRef(allocator, image_ref);
 }
 
+/// `image_ref` may also be `@<64 hex>`: a merged root manifest chunk with no ref (build steps).
 pub fn loadTreeRoot(io: ?std.Io, allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) !voila_tree.Tree {
+    if (rootChunkRef(image_ref)) |root| return voila_tree.openTree(allocator, voila_root, &root);
     const ref_norm = try normalizeImageRef(allocator, image_ref);
     defer allocator.free(ref_norm);
     if (io) |i| _ = voila_image_pull.autoPull(i, allocator, voila_root, ref_norm) catch {};
@@ -39,6 +41,13 @@ pub fn loadTreeRoot(io: ?std.Io, allocator: std.mem.Allocator, voila_root: []con
     }
     if (rec.merged_root_manifest.len != 32) return error.BadRootManifest;
     return voila_tree.openTree(allocator, voila_root, rec.merged_root_manifest);
+}
+
+pub fn rootChunkRef(image_ref: []const u8) ?[32]u8 {
+    if (image_ref.len != 65 or image_ref[0] != '@') return null;
+    var out: [32]u8 = undefined;
+    _ = std.fmt.hexToBytes(&out, image_ref[1..]) catch return null;
+    return out;
 }
 
 pub const Error = error{BadRootManifest};

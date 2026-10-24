@@ -22,6 +22,7 @@ This repo still ships the registry **client** (`voila push` / `pull` / `login`).
 | `voila ingest <tarball> [-ref override] [-platform os/arch]` | Convert an OCI-layout or legacy `docker save` tarball into chunks + manifests | no |
 | `voila import <ref> [-ref override] [-platform os/arch] [-user user] [-password pwd] [-plain-http] [-push target] [-registry URL]` | Pull an image straight from an OCI registry (Docker Hub / quay.io / ghcr.io / …) and ingest it, no Docker daemon needed. Credentials also via `$VOILA_REGISTRY_USER` / `$VOILA_REGISTRY_PASSWORD`. `-push myorg/img:tag` retags + publishes to a voila registry in the same command; in an interactive terminal with `$VOILA_REGISTRY` set, import offers this via a `[y/N]` prompt (`$VOILA_ORG` pre-fills the suggested org) | no |
 | `voila images [info <ref> \| rm <ref> \| gc \| prune [-f]]` | List / inspect / remove ingested images; `gc` reclaims unreachable chunks; `prune` wipes ALL local images + chunks | no |
+| `voila build -t <ref> [-f Dockerfile] [--build-arg K=V]... [--no-cache] [--push] [-root dir] <context>` | Build an image from a Dockerfile into the local store (see [Building images](#building-images)); `--push` publishes it to the configured registry | no |
 | `voila run <ref> [--] <cmd...> [-memory bytes] [-cpus pct]` | Run an ingested image via the worker daemon | yes |
 | `voila exec <ctx-id> [--] <cmd...>` | Run an extra process in a running context | yes |
 | `voila logs [-follow] <ctx-id>` | Replay (and optionally follow) a context's ring-buffered output | yes |
@@ -33,6 +34,30 @@ This repo still ships the registry **client** (`voila push` / `pull` / `login`).
 | `voila logout` | Remove saved registry credentials | no |
 | `voilad [-root dir] [-socket path] [-registry URL] [-trace]` | The worker daemon (root, Linux); serves gRPC on `/var/run/voila.sock`. `-trace` records a per-run chunk-access trace (JSONL: every chunk Get with hit/miss, wait time, demand/prefetch source, plus exec/exit phase markers) under `<root>/traces/` — explore with `jq`/`duckdb` | **is** the daemon |
 | `voilad mount <ref> <mountpoint> [-allow-other]` | Debug: mount a read-only FUSE view of an ingested image | no |
+
+## Building images
+
+`voila build` runs a single-stage Dockerfile against the chunk store and tags
+the result like any imported image, so `voila run` and `voila push` work on it
+unchanged.
+
+- Supported: `FROM` (any local or registry image, or `scratch`), `RUN` (shell
+  and exec form), `COPY`/`ADD` from the build context (`--chown=uid[:gid]`
+  numeric only, `*`/`?` wildcards in the last path segment), `ENV`, `ARG`
+  (with `--build-arg`), `WORKDIR`, `USER`, `CMD`, `ENTRYPOINT`, `EXPOSE`,
+  `LABEL`, line continuations, comments and `.dockerignore`.
+- Not supported yet: multi-stage builds, `RUN --mount`, `COPY --from`, `ADD`
+  of URLs or tar auto-extraction, heredocs, `SHELL`, `HEALTHCHECK`, `ONBUILD`,
+  `VOLUME`.
+- Every `RUN`, `COPY` and `ADD` step is cached under `<root>/build-cache/`,
+  keyed by the parent image, the instruction, its environment and (for
+  `COPY`) the content of its sources. A rebuild with no changes does no work;
+  `--no-cache` ignores the cache.
+- `RUN` is rootless: it needs `/dev/fuse` and unprivileged user namespaces
+  (on Ubuntu 24.04+, the AppArmor profile installed by `install.sh`). It runs
+  as root inside a single-uid user namespace, so commands that switch to
+  another user (`su`, `apt-get`'s `_apt` sandbox) or `chown` to other ids
+  fail; `USER` only sets the image's default user.
 
 ## Environment variables
 

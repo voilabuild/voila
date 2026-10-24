@@ -24,6 +24,7 @@ const voila_login_creds = @import("../registry/voila_login_creds.zig");
 const run_cli_parse = @import("../cli/run_cli_parse.zig");
 const voila_image_import = @import("../registry/voila_image_import.zig");
 const registry_ref_mod = @import("../registry/voila_registry_ref.zig");
+const build_cmd = @import("./build_cmd.zig");
 
 pub const std_options_debug_io = zio.debug_io;
 
@@ -82,7 +83,7 @@ pub fn main(init: std.process.Init) !void {
     }
     if (std.mem.eql(u8, sub, "container-fuse-serve")) {
         const parsed = try container_fuse_sibling.parseServeCliArgs(init.gpa, &args);
-        container_fuse_sibling.runServe(io, parsed.root, parsed.image, parsed.mount, parsed.ready_fd, parsed.stop_fd);
+        container_fuse_sibling.runServe(io, parsed);
         std.process.exit(1);
     }
     if (std.mem.eql(u8, sub, "container-isolated-exec")) {
@@ -96,6 +97,9 @@ pub fn main(init: std.process.Init) !void {
         defer init.gpa.free(parsed.container_id);
         const code = try container_run.runWorker(io, init.gpa, parsed.store_root, parsed.container_id);
         std.process.exit(code);
+    }
+    if (std.mem.eql(u8, sub, "build")) {
+        std.process.exit(try build_cmd.run(io, init.gpa, &args));
     }
     if (std.mem.eql(u8, sub, "run")) {
         const parsed = try parseRunArgs(init.gpa, &args);
@@ -113,13 +117,24 @@ pub fn main(init: std.process.Init) !void {
             for (a) |s| init.gpa.free(s);
             init.gpa.free(a);
         };
+        // Image config Env first so `-e` overrides it.
+        const image_env = try voila_image_run_config.imageEnv(io, init.gpa, parsed.runtime_cfg.store_root, parsed.image);
+        defer {
+            for (image_env) |e| {
+                init.gpa.free(e.key);
+                init.gpa.free(e.value);
+            }
+            init.gpa.free(image_env);
+        }
+        const env = try std.mem.concat(init.gpa, run_cli_parse.EnvPair, &.{ image_env, parsed.env });
+        defer init.gpa.free(env);
         const code = try worker.run(io, init.gpa, .{
             .image = parsed.image,
             .argv = argv,
             .detach = parsed.detach,
             .name = parsed.name,
             .rm_on_exit = parsed.rm_on_exit,
-            .env = parsed.env,
+            .env = env,
             .workdir = parsed.workdir,
             .volumes = parsed.volumes,
             .ports = parsed.ports,
@@ -288,6 +303,7 @@ fn printUsage() void {
         \\  voila login [registry-url]
         \\  voila logout
         \\  voila pull|push|import [-root <dir>] <image-ref>
+        \\  voila build -t <ref> [-f Dockerfile] [--build-arg K=V] [--no-cache] [--push] <context>
         \\  voila run [-root <dir>] [-d] [--name NAME] [--rm] <image-ref> -- <cmd> [args...]
         \\  voila ps|logs|images|stop|kill|rm [-root <dir>] ...
         \\
@@ -1151,4 +1167,12 @@ test {
     _ = @import("../store/ingest/ingest_merge.zig");
     _ = @import("../core/dockerfile.zig");
     _ = @import("../core/build_cache_key.zig");
+    _ = @import("../sys/fs.zig");
+    _ = @import("../store/build_cache.zig");
+    _ = @import("../store/ingest/ingest_dir_walk_test.zig");
+    _ = @import("../codec/oci_image_config.zig");
+    _ = @import("../core/glob.zig");
+    _ = @import("../runtime/build/steps.zig");
+    _ = @import("../runtime/build/copy_sources.zig");
+    _ = @import("../runtime/build/driver_test.zig");
 }
