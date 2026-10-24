@@ -245,7 +245,7 @@ const Builder = struct {
         });
         defer w.deinit();
         try w.add(upper, "");
-        try self.commit(key, w.finish().tree);
+        try self.commit(key, (try w.finish()).tree);
         return false;
     }
 
@@ -276,7 +276,7 @@ const Builder = struct {
             const target = if (s.is_dir or !into_dir) dest_rel else try steps.joinRel(self.a, dest_rel, std.fs.path.basename(s.rel));
             try w.add(s.abs, target);
         }
-        try self.commit(key, w.finish().tree);
+        try self.commit(key, (try w.finish()).tree);
         return false;
     }
 

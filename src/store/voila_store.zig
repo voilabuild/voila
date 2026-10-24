@@ -94,6 +94,7 @@ const chunks_schema =
     \\);
 ;
 
+/// A blob with no index row is raw (AlgoRaw).
 /// Bulk chunk writer: one SQLite connection, inserts batched per transaction, blobs written atomically.
 pub const ChunkWriter = struct {
     voila_root: []const u8,
@@ -107,16 +108,21 @@ pub const ChunkWriter = struct {
 
     /// Commits any open batch and closes the index.
     pub fn deinit(self: *ChunkWriter) void {
-        self.flush();
+        self.flush() catch {};
         if (self.insert) |st| _ = sqlite.sqlite3_finalize(st);
         if (self.db) |db| _ = sqlite.sqlite3_close(db);
         self.* = init(self.voila_root);
     }
 
-    pub fn flush(self: *ChunkWriter) void {
+    /// Commits the open batch. Callers must flush before returning control to code that opens its own connection.
+    pub fn flush(self: *ChunkWriter) !void {
         if (self.pending == 0) return;
-        if (self.db) |db| _ = sqlite.sqlite3_exec(db, "COMMIT", null, null, null);
         self.pending = 0;
+        const db = self.db orelse return;
+        if (sqlite.sqlite3_exec(db, "COMMIT", null, null, null) != sqlite.SQLITE_OK) {
+            _ = sqlite.sqlite3_exec(db, "ROLLBACK", null, null, null);
+            return error.SqliteCommit;
+        }
     }
 
     /// Caller guarantees `chunk_hex` is the BLAKE3 id of `raw` (no re-hash here).
@@ -157,7 +163,7 @@ pub const ChunkWriter = struct {
         if (self.db == null) try self.open(allocator);
         const db = self.db.?;
         const stmt = self.insert;
-        if (self.pending == 0) _ = sqlite.sqlite3_exec(db, "BEGIN", null, null, null);
+        if (self.pending == 0 and sqlite.sqlite3_exec(db, "BEGIN", null, null, null) != sqlite.SQLITE_OK) return error.SqliteBegin;
 
         var ts: std.c.timespec = undefined;
         _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
@@ -168,17 +174,22 @@ pub const ChunkWriter = struct {
         _ = sqlite.sqlite3_bind_int64(stmt, 4, algo);
         _ = sqlite.sqlite3_bind_int64(stmt, 5, now);
         _ = sqlite.sqlite3_bind_int64(stmt, 6, now);
-        _ = sqlite.sqlite3_step(stmt);
+        const rc = sqlite.sqlite3_step(stmt);
         _ = sqlite.sqlite3_reset(stmt);
+        if (rc != sqlite.SQLITE_DONE) {
+            self.pending = 0;
+            _ = sqlite.sqlite3_exec(db, "ROLLBACK", null, null, null);
+            return error.SqliteInsert;
+        }
         self.pending += 1;
-        if (self.pending >= batch_size) self.flush();
+        if (self.pending >= batch_size) try self.flush();
     }
 };
 
 /// Writes `bytes` to `<path>.tmp.<random>` then renames over `path`; creates parent dirs on demand.
 pub fn writeBlobAtomic(path: []const u8, bytes: []const u8) !void {
     var rnd: [8]u8 = undefined;
-    _ = std.os.linux.getrandom(&rnd, rnd.len, 0);
+    try fs.randomBytes(&rnd);
     var tmp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const tmp = std.fmt.bufPrint(&tmp_buf, "{s}.tmp.{x}", .{ path, rnd }) catch return error.NameTooLong;
 
@@ -297,8 +308,9 @@ test "ChunkWriter stores chunks atomically and indexes them in batches" {
         defer a.free(back);
         try std.testing.expectEqualSlices(u8, &payload, back);
     }
-    w.deinit();
+    try w.flush();
     try std.testing.expectEqual(@as(i64, n), try countIndexRows(a, root));
+    w.deinit();
 
     const probe = "chunk-payload-000000000000000000";
     const hex = testHex(probe);
@@ -308,6 +320,25 @@ test "ChunkWriter stores chunks atomically and indexes them in batches" {
     const names = try fs.listDir(a, dir);
     defer fs.freeNames(a, names);
     for (names) |name| try std.testing.expect(std.mem.indexOf(u8, name, ".tmp.") == null);
+}
+
+test "second writer is not blocked by a flushed first writer" {
+    const a = std.testing.allocator;
+    const root = try fs.makeTempDir(a, "voila-store-test");
+    defer a.free(root);
+    defer fs.removeTree(a, root) catch {};
+
+    var w1 = ChunkWriter.init(root);
+    defer w1.deinit();
+    const p1 = "first-payload";
+    const h1 = testHex(p1);
+    try w1.putTrusted(a, &h1, p1);
+    try w1.flush();
+
+    const p2 = "second-payload";
+    const h2 = testHex(p2);
+    try putChunkRaw(a, root, &h2, p2);
+    try std.testing.expectEqual(@as(i64, 2), try countIndexRows(a, root));
 }
 
 test "putChunkRaw verifies the id and tolerates rewriting a chunk" {

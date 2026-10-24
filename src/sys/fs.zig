@@ -200,6 +200,11 @@ pub fn makePath(path: []const u8) Error!void {
     }
 }
 
+pub fn randomBytes(buf: []u8) Error!void {
+    var off: usize = 0;
+    while (off < buf.len) off += try check(linux.getrandom(buf[off..].ptr, buf.len - off, 0));
+}
+
 pub fn symlink(target: []const u8, path: []const u8) Error!void {
     var zt: Z = undefined;
     var zp: Z = undefined;

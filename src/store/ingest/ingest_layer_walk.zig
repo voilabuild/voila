@@ -61,14 +61,14 @@ pub fn walkLayer(
             layer_tree.root.implicit = false;
             continue;
         }
-        try walkEntry(allocator, voila_root, &tr, hdr, clean, layer_tree, &writer, &seen, &chunk_buf, &res);
+        try walkEntry(allocator, &tr, hdr, clean, layer_tree, &writer, &seen, &chunk_buf, &res);
     }
+    try writer.flush();
     return res;
 }
 
 fn walkEntry(
     allocator: std.mem.Allocator,
-    voila_root: []const u8,
     tr: *tar_mod.TarStream,
     hdr: tar_mod.TarHeader,
     clean: []const u8,
@@ -97,7 +97,7 @@ fn walkEntry(
                 .children = std.StringHashMap(*tree_mod.Node).init(allocator),
                 .allocator = allocator,
             };
-            try chunkFile(allocator, voila_root, tr, hdr.size, node, writer, seen, chunk_buf, res);
+            try chunkFile(allocator, tr, hdr.size, node, writer, seen, chunk_buf, res);
             try attachChild(allocator, parent, parts.base, node);
             try layer_tree.put(node);
         },
@@ -129,7 +129,6 @@ fn walkEntry(
 
 fn chunkFile(
     allocator: std.mem.Allocator,
-    voila_root: []const u8,
     tr: *tar_mod.TarStream,
     size: u64,
     node: *tree_mod.Node,
@@ -147,7 +146,7 @@ fn chunkFile(
         remaining -= slice.len;
         res.bytes_in += slice.len;
         node.size += slice.len;
-        const put_res = try putChunk(allocator, voila_root, writer, seen, slice);
+        const put_res = try putChunk(allocator, writer, seen, slice);
         try node.blocks.append(allocator, .{
             .offset = offset,
             .chunk_id = put_res.id,
@@ -164,14 +163,13 @@ pub const PutChunkResult = struct { id: chunk_store.ChunkId, is_new: bool, store
 
 pub fn putChunk(
     allocator: std.mem.Allocator,
-    voila_root: []const u8,
     writer: *voila_store.ChunkWriter,
     seen: *std.AutoHashMap(chunk_store.ChunkId, void),
     buf: []const u8,
 ) !PutChunkResult {
     const id = chunk_store.hashRaw(buf);
     if (seen.contains(id)) return .{ .id = id, .is_new = false, .stored_add = 0 };
-    const existed = chunk_store.chunkExists(allocator, voila_root, id);
+    const existed = chunk_store.chunkExists(allocator, writer.voila_root, id);
     if (existed) {
         seen.put(id, {}) catch {};
         return .{ .id = id, .is_new = false, .stored_add = 0 };

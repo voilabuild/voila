@@ -76,7 +76,7 @@ const Env = struct {
         var w = try dir_walk.Walker.init(a, self.root, .{ .mode = .copy });
         defer w.deinit();
         try w.add(try std.fmt.allocPrint(a, "{s}/base", .{self.ctx}), "");
-        const tree = w.finish().tree;
+        const tree = (try w.finish()).tree;
         try image_store.persist(a, self.root, ref, .{
             .root = try manifest_mod.buildAndStoreManifest(a, self.root, tree, false),
             .config = try chunk_store.putBytes(a, self.root, config_json),

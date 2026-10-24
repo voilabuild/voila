@@ -81,7 +81,9 @@ pub const Walker = struct {
         try self.addEntry(src, dest, st);
     }
 
-    pub fn finish(self: *Walker) layer_walk.LayerWalkResult {
+    /// Commits pending index rows; call before anything else writes chunks.
+    pub fn finish(self: *Walker) !layer_walk.LayerWalkResult {
+        try self.writer.flush();
         return self.res;
     }
 
@@ -191,7 +193,7 @@ pub const Walker = struct {
         while (true) {
             const n = try f.readFull(self.buf);
             if (n == 0) break;
-            const put = try layer_walk.putChunk(self.allocator, self.voila_root, &self.writer, &self.seen, self.buf[0..n]);
+            const put = try layer_walk.putChunk(self.allocator, &self.writer, &self.seen, self.buf[0..n]);
             try node.blocks.append(self.allocator, .{ .offset = offset, .chunk_id = put.id, .logical_len = n });
             offset += n;
             self.res.bytes_in += n;
