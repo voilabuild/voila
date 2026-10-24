@@ -91,7 +91,7 @@ everything afterwards is lazy.
 image without tarballs or OCI blobs. The base image is mounted read-only with
 the FUSE backend (image root shown as the build user), an unprivileged
 overlayfs on top captures each `RUN`'s writes in an upper dir, and the command
-runs chrooted in a user + mount namespace. The upper dir is walked straight
+runs in the rootless sandbox described below. The upper dir is walked straight
 into a layer tree with the same chunking as ingest (0/0 char devices become
 whiteouts, `user.overlay.opaque` marks opaque dirs) and merged over the
 current tree; `COPY` walks the context the same way and needs no sandbox.
@@ -103,6 +103,25 @@ and grafts its nodes into the layer, reusing their chunk ids, and is keyed by
 the source root chunk plus the paths. For `COPY --from=<image>` on a lazily
 pulled image, the grafted chunk ids may not be local; push relies on the
 registry already having them.
+
+**Rootless sandbox** (`voila run`, build `RUN`; `runtime/oci/container_root.zig`):
+a user, mount and PID namespace. PID 1 is a small voila init that runs the
+command as PID 2, forwards signals to it, reaps orphans and exits with the
+command's status (128 + signal when it is killed). `voila run` makes the
+read-only FUSE root writable with an overlayfs whose upper and work dirs live
+on disk in `<root>/containers/<id>/rw` (removed with the container); `voila
+exec` and kernels that refuse the overlay get a read-only bind of the FUSE
+root. The root gets a fresh `proc`, a tmpfs `/dev` with the host's `null`,
+`zero`, `full`, `random`, `urandom` and `tty` bound in, a new `devpts`
+instance (the `-it` terminal is allocated there and its master is passed back
+over a unix socket) and a tmpfs `/dev/shm`. The host's `/sys` is bound
+read-only, submounts included (`mount_setattr`, Linux 5.12+), so host sysfs
+is visible but not writable; mounting a fresh `sysfs` would need a network
+namespace. The process then `pivot_root`s into the root and detaches the old
+one, so the host filesystem is no longer mounted in the namespace; plain
+`chroot` is used only if `pivot_root` is refused. The log file is opened
+before the root changes, so a non-`-it` command's output lands in
+`container.log`.
 
 **runc bundle**: `root.readonly: true`, env/args/cwd from the image config,
 tmpfs on `/tmp`/`/var/tmp`/`/dev`/`/dev/shm`, default namespaces,

@@ -41,19 +41,18 @@ This repo still ships the registry **client** (`voila push` / `pull` / `login`).
 like any imported image, so `voila run` and `voila push` work on it unchanged.
 
 - Supported: `FROM` (any local or registry image, or `scratch`), `RUN` (shell
-  and exec form), `COPY`/`ADD` from the build context (`--chown=uid[:gid]`
-  numeric only, `*`/`?` wildcards in the last path segment), `ENV`, `ARG`
+  and exec form), `COPY`/`ADD` from the build context (`--chown=user[:group]`
+  by number or name in the image's `/etc/passwd` and `/etc/group`;
+  `--chmod=<octal>`; `*`/`?` wildcards in the last path segment), `ENV`, `ARG`
   (with `--build-arg`), `WORKDIR`, `USER`, `CMD`, `ENTRYPOINT`, `EXPOSE`,
-  `LABEL`, line continuations, comments and `.dockerignore`.
-- Multi-stage: `FROM <image|earlier stage> [AS name]`, global `ARG`s before
-  the first `FROM` usable in `FROM` refs, and `COPY --from=<stage name|index|image>`
-  (with `--chown`). `COPY --from` reuses the source's chunks, so it reads no
-  file data; it keeps the source's ownership unless `--chown` is given. Only
-  the stages the target depends on are built; `--target <stage>` builds and
-  tags that stage. Progress lines show the stage: `[builder 2/4] RUN ...`
-  (`stage-N` for unnamed stages).
-- Not supported yet: `RUN --mount`, `ADD --from`, `ADD` of URLs or tar auto-extraction, heredocs, `SHELL`, `HEALTHCHECK`, `ONBUILD`,
-  `VOLUME`.
+  `LABEL`, `SHELL`, `HEALTHCHECK`, `STOPSIGNAL`, `VOLUME`, `MAINTAINER`, line
+  continuations, comments and `.dockerignore`.
+- Multi-stage: `FROM <image|earlier stage> [AS name]`, global `ARG`s before the
+  first `FROM`, `COPY --from=<stage name|index|image>` (with `--chown` /
+  `--chmod`). Only stages the target depends on are built; `--target <stage>`
+  tags that stage. Progress lines show the stage: `[builder 2/4] RUN ...`.
+- Not supported yet: `RUN --mount`, `ADD --from`, `ADD` of URLs or tar
+  auto-extraction, heredocs, `ONBUILD`, symbolic `--chmod` modes.
 - Every `RUN`, `COPY` and `ADD` step is cached under `<root>/build-cache/`,
   keyed by the parent image, the instruction, its environment and (for
   `COPY`) the content of its sources, or for `COPY --from` the source
@@ -67,11 +66,23 @@ like any imported image, so `voila run` and `voila push` work on it unchanged.
 
 ## Running containers
 
-`voila run` always runs the command chrooted into the image root, so absolute
-paths resolve inside the image, with or without `-w`, `-v`, `-it` or `-p`. It
-needs `/dev/fuse` and unprivileged user namespaces (on Ubuntu 24.04+, the
-AppArmor profile installed by `install.sh`). When they are unavailable, `run`
-exits with an error. It does not fall back to running on the host.
+`voila run` always runs the command inside the image root, so absolute
+paths resolve inside the image, with or without `-w`, `-v`, `-it` or `-p`. The
+command runs as PID 2 under a small init in its own user, mount and PID
+namespaces, with a fresh `/proc`, a minimal `/dev` (`null`, `zero`, `full`,
+`random`, `urandom`, `tty`, `pts`, `shm`) and a read-only view of the host's
+`/sys`; the host filesystem is not reachable. The image root is writable: writes
+go to `<root>/containers/<id>/rw` on disk and are deleted with the container
+(`--rm` or `voila rm`). A `-v` target missing from the image is created. With
+`-it` the terminal comes from the container's own `/dev/pts`, so `tty` works.
+Without `-it`, output goes to the container log (`voila logs`) and a foreground
+run prints it when the command exits. Signals such as the `SIGTERM` from `voila
+stop` are forwarded to the command. Exit codes: the command's own, 128 + signal
+when it is killed, 125 when the sandbox cannot be set up, 126 when the command
+cannot be executed and 127 when it is not found. It needs `/dev/fuse` and
+unprivileged user namespaces (on Ubuntu 24.04+, the AppArmor profile installed
+by `install.sh`). When they are unavailable, `run` exits with an error. It does
+not fall back to running on the host.
 
 ## Environment variables
 

@@ -4,6 +4,7 @@ const dockerfile = @import("../../core/dockerfile.zig");
 const cache_key = @import("../../core/build_cache_key.zig");
 const build_stages = @import("../../core/build_stages.zig");
 const glob = @import("../../core/glob.zig");
+const passwd = @import("../../core/passwd.zig");
 const fs = @import("../../sys/fs.zig");
 const clock = @import("../../sys/clock.zig");
 const oci_config = @import("../../codec/oci_image_config.zig");
@@ -13,6 +14,9 @@ const from_manifest = @import("../../store/ingest/ingest_from_manifest.zig");
 const manifest_mod = @import("../../store/ingest/ingest_manifest.zig");
 const merge_mod = @import("../../store/ingest/ingest_merge.zig");
 const ingest_build = @import("../../store/ingest/ingest_build.zig");
+const voila_chunk_load = @import("../../store/voila_chunk_load.zig");
+const voila_chunk_index = @import("../../store/voila_chunk_index.zig");
+const voila_store = @import("../../store/voila_store.zig");
 const chunk_store = @import("../../store/ingest/ingest_chunk_store.zig");
 const build_cache = @import("../../store/build_cache.zig");
 const image_store = @import("image_store.zig");
@@ -64,7 +68,18 @@ pub const Result = struct {
     cached: usize,
 };
 
-pub const Error = error{ RunFailed, UnsupportedChown, EmptyBuild, Unsupported, StageNotBuilt };
+pub const Error = error{
+    RunFailed,
+    UnsupportedChown,
+    UnknownChownName,
+    ImageFileUnreadable,
+    EmptyBuild,
+    Unsupported,
+    StageNotBuilt,
+    DuplicateStage,
+    UnknownTarget,
+    StageNotFound,
+};
 
 pub fn build(io: std.Io, gpa: std.mem.Allocator, opts: Options, diag: *Diagnostic) !Result {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -199,6 +214,7 @@ const Builder = struct {
     ignore: glob.Ignore = .{ .rules = &.{} },
     cached: usize = 0,
     cmd_from_build: bool = false,
+    shell: []const []const u8 = &steps.default_shell,
 
     fn emit(self: *Builder, index: usize, total: usize, text: []const u8, cached: bool, ns: u64) void {
         const p = self.opts.progress orelse return;
@@ -284,12 +300,20 @@ const Builder = struct {
             .expose => |ports| for (ports) |p| try self.config.addExposedPort(try self.expand(p)),
             .user => |u| try self.config.setString("User", try self.expand(u)),
             .workdir => |w| try self.config.setString("WorkingDir", try steps.joinPath(self.a, try self.config.getString("WorkingDir"), try self.expand(w))),
+            .shell => |sh| {
+                self.shell = sh;
+                try self.config.setStrings("Shell", sh);
+            },
+            .healthcheck => |hc| try self.config.setHealthcheck(hc),
+            .stopsignal => |s| try self.config.setString("StopSignal", try self.expand(s)),
+            .volume => |vols| for (vols) |v| try self.config.addVolume(try self.expand(v)),
+            .maintainer => |m| try self.config.setAuthor(m),
             .cmd => |f| {
-                try self.config.setStrings("Cmd", try steps.formArgv(self.a, f));
+                try self.config.setStrings("Cmd", try steps.formArgv(self.a, f, self.shell));
                 self.cmd_from_build = true;
             },
             .entrypoint => |f| {
-                try self.config.setStrings("Entrypoint", try steps.formArgv(self.a, f));
+                try self.config.setStrings("Entrypoint", try steps.formArgv(self.a, f, self.shell));
                 if (!self.cmd_from_build) try self.config.setStrings("Cmd", null);
             },
             .run => |f| return self.run(ins.text, f),
@@ -315,7 +339,12 @@ const Builder = struct {
         const env = try self.runEnv();
         const workdir = try self.config.getString("WorkingDir");
         const user = try self.config.getString("User");
-        const key = cache_key.compute(.{ .parent_root = self.root, .instruction = text, .env = env, .workdir = workdir, .user = user });
+        const shell_key = try std.mem.join(self.a, "\x00", self.shell);
+        const instruction = if (form == .shell and !std.mem.eql(u8, shell_key, "/bin/sh\x00-c"))
+            try std.fmt.allocPrint(self.a, "{s}\x00SHELL {s}", .{ text, shell_key })
+        else
+            text;
+        const key = cache_key.compute(.{ .parent_root = self.root, .instruction = instruction, .env = env, .workdir = workdir, .user = user });
         if (self.cacheHit(key)) return true;
 
         const scratch = try fs.makeTempDir(self.a, "voila-build");
@@ -327,7 +356,7 @@ const Builder = struct {
             .root = self.root,
             .scratch_dir = scratch,
             .upper_dir = upper,
-            .argv = try steps.formArgv(self.a, form),
+            .argv = try steps.formArgv(self.a, form, self.shell),
             .env = env,
             .workdir = workdir,
             .user = user,
@@ -344,7 +373,7 @@ const Builder = struct {
         });
         defer w.deinit();
         try w.add(upper, "");
-        try self.commit(key, w.finish().tree);
+        try self.commit(key, (try w.finish()).tree);
         return false;
     }
 
@@ -352,13 +381,14 @@ const Builder = struct {
         var srcs: std.ArrayList([]const u8) = .empty;
         for (c.srcs) |s| try srcs.append(self.a, try self.expand(s));
         const dest_raw = try self.expand(c.dest);
-        const owner = try steps.parseChown(try self.expand(c.chown));
+        const owner = try self.resolveOwner(try self.expand(c.chown));
         const sources = try copy_sources.resolve(self.a, self.opts.context_dir, srcs.items, self.ignore);
         const dest = try steps.joinPath(self.a, try self.config.getString("WorkingDir"), dest_raw);
         const into_dir = std.mem.endsWith(u8, dest_raw, "/") or sources.len > 1 or
             (sources.len == 1 and sources[0].is_dir) or glob.hasWildcard(srcs.items[0]);
 
-        const norm = try std.fmt.allocPrint(self.a, "COPY {d}:{d} {s} {s}", .{ owner.uid, owner.gid, dest, if (into_dir) "dir" else "file" });
+        const chmod_key = if (c.chmod) |m| try std.fmt.allocPrint(self.a, "{o}", .{m}) else "-";
+        const norm = try std.fmt.allocPrint(self.a, "COPY {d}:{d} {s} {s} {s}", .{ owner.uid, owner.gid, chmod_key, dest, if (into_dir) "dir" else "file" });
         const key = cache_key.compute(.{
             .parent_root = self.root,
             .instruction = norm,
@@ -366,7 +396,7 @@ const Builder = struct {
         });
         if (self.cacheHit(key)) return true;
 
-        var w = try dir_walk.Walker.init(self.a, self.opts.voila_root, .{ .mode = .copy, .owner = owner });
+        var w = try dir_walk.Walker.init(self.a, self.opts.voila_root, .{ .mode = .copy, .owner = owner, .chmod = c.chmod });
         defer w.deinit();
         const dest_rel = std.mem.trimStart(u8, dest, "/");
         for (sources) |s| {
@@ -375,8 +405,47 @@ const Builder = struct {
             const target = if (s.is_dir or !into_dir) dest_rel else try steps.joinRel(self.a, dest_rel, std.fs.path.basename(s.rel));
             try w.add(s.abs, target);
         }
-        try self.commit(key, w.finish().tree);
+        try self.commit(key, (try w.finish()).tree);
         return false;
+    }
+
+    fn currentTree(self: *Builder) !*tree_mod.LayerTree {
+        if (self.tree) |t| return t;
+        const t = try from_manifest.loadTree(self.a, self.opts.voila_root, self.root);
+        self.tree = t;
+        return t;
+    }
+
+    fn readImageFile(self: *Builder, path: []const u8) ![]const u8 {
+        const tree = try self.currentTree();
+        var cur = path;
+        for (0..8) |_| {
+            const node = tree.lookup(cur) orelse return "";
+            switch (node.node_type) {
+                .regular => {
+                    var out: std.ArrayList(u8) = .empty;
+                    for (node.blocks.items) |blk| {
+                        const hex = chunk_store.idToHex(blk.chunk_id);
+                        const algo = voila_chunk_index.compAlgoForChunk(self.opts.voila_root, &blk.chunk_id) catch voila_store.AlgoRaw;
+                        const data = voila_chunk_load.loadChunkRaw(self.io, self.a, self.opts.voila_root, &hex, algo) catch return error.ImageFileUnreadable;
+                        try out.appendSlice(self.a, data);
+                    }
+                    return out.items;
+                },
+                .symlink => {
+                    const dir = try std.fmt.allocPrint(self.a, "/{s}", .{std.fs.path.dirname(cur) orelse ""});
+                    cur = (try steps.joinPath(self.a, dir, node.target))[1..];
+                },
+                else => return "",
+            }
+        }
+        return "";
+    }
+
+    fn resolveOwner(self: *Builder, spec: []const u8) !dir_walk.Owner {
+        if (steps.parseChown(spec)) |o| return o else |_| {}
+        const ids = passwd.resolve(spec, try self.readImageFile("etc/passwd"), try self.readImageFile("etc/group")) catch return error.UnknownChownName;
+        return .{ .uid = ids.uid, .gid = ids.gid };
     }
 
     fn copyFrom(self: *Builder, c: dockerfile.Copy) !bool {
@@ -384,7 +453,7 @@ const Builder = struct {
         for (c.srcs) |s| try srcs.append(self.a, try self.expand(s));
         const dest_raw = try self.expand(c.dest);
         const chown = try self.expand(c.chown);
-        const owner = try steps.parseChown(chown);
+        const owner = if (chown.len > 0) try self.resolveOwner(chown) else dir_walk.Owner{ .uid = 0, .gid = 0 };
         const dest = try steps.joinPath(self.a, try self.config.getString("WorkingDir"), dest_raw);
         const src_root, const src_tree = switch (try build_stages.resolve(self.session.df, self.index, try self.expand(c.from), true)) {
             .stage => |i| blk: {
@@ -394,7 +463,6 @@ const Builder = struct {
             .image => |ref| .{ (try image_store.loadBase(self.io, self.a, self.opts.voila_root, ref)).root, null },
         };
 
-        // The source root pins the whole source tree, so its paths are enough.
         var h: cache_key.InputsHasher = .{};
         h.entry("from", 0, &src_root);
         for (srcs.items) |s| h.entry(s, 0, "");

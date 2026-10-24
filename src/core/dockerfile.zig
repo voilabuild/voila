@@ -17,6 +17,16 @@ pub const Copy = struct {
     chown: []const u8 = "",
     /// `--from=<stage name|index|image>`; empty copies from the build context.
     from: []const u8 = "",
+    chmod: ?u32 = null,
+};
+
+pub const Healthcheck = struct {
+    /// `NONE`, `CMD` + exec argv, or `CMD-SHELL` + command, as in the OCI config.
+    test_cmd: []const []const u8,
+    interval_ns: ?u64 = null,
+    timeout_ns: ?u64 = null,
+    start_period_ns: ?u64 = null,
+    retries: ?u32 = null,
 };
 
 pub const Arg = struct {
@@ -43,6 +53,11 @@ pub const Op = union(enum) {
     workdir: []const u8,
     user: []const u8,
     expose: []const []const u8,
+    shell: []const []const u8,
+    healthcheck: Healthcheck,
+    stopsignal: []const u8,
+    volume: []const []const u8,
+    maintainer: []const u8,
 };
 
 pub const Instruction = struct {
@@ -83,6 +98,7 @@ pub const Error = error{
     MissingFrom,
     DuplicateStage,
     BadQuote,
+    BadValue,
 };
 
 pub fn parse(gpa: std.mem.Allocator, text: []const u8, diag: *Diagnostic) Error!Dockerfile {
@@ -169,9 +185,7 @@ fn parseOp(a: std.mem.Allocator, keyword: []const u8, rest: []const u8) Error!Op
     if (keyword.len > kw_buf.len) return error.UnknownInstruction;
     const kw = std.ascii.lowerString(&kw_buf, keyword);
     const eql = std.mem.eql;
-    if (eql(u8, kw, "healthcheck") or eql(u8, kw, "onbuild") or eql(u8, kw, "shell") or
-        eql(u8, kw, "stopsignal") or eql(u8, kw, "volume") or eql(u8, kw, "maintainer"))
-        return error.Unsupported;
+    if (eql(u8, kw, "onbuild")) return error.Unsupported;
     if (rest.len == 0) return error.MissingArgument;
     if (eql(u8, kw, "from")) return .{ .from = try parseFrom(a, rest) };
     if (eql(u8, kw, "run")) {
@@ -188,6 +202,11 @@ fn parseOp(a: std.mem.Allocator, keyword: []const u8, rest: []const u8) Error!Op
     if (eql(u8, kw, "workdir")) return .{ .workdir = rest };
     if (eql(u8, kw, "user")) return .{ .user = rest };
     if (eql(u8, kw, "expose")) return .{ .expose = try splitWords(a, rest) };
+    if (eql(u8, kw, "shell")) return .{ .shell = try parseShell(a, rest) };
+    if (eql(u8, kw, "healthcheck")) return .{ .healthcheck = try parseHealthcheck(a, rest) };
+    if (eql(u8, kw, "stopsignal")) return .{ .stopsignal = rest };
+    if (eql(u8, kw, "volume")) return .{ .volume = try parseList(a, rest) };
+    if (eql(u8, kw, "maintainer")) return .{ .maintainer = rest };
     return error.UnknownInstruction;
 }
 
@@ -219,6 +238,7 @@ fn parseCopy(a: std.mem.Allocator, rest: []const u8) Error!Copy {
         try splitWords(a, rest);
     var chown: []const u8 = "";
     var from: []const u8 = "";
+    var chmod: ?u32 = null;
     while (flags_end < all.len and std.mem.startsWith(u8, all[flags_end], "--")) : (flags_end += 1) {
         const flag = all[flags_end];
         if (std.mem.startsWith(u8, flag, "--chown=")) {
@@ -226,11 +246,92 @@ fn parseCopy(a: std.mem.Allocator, rest: []const u8) Error!Copy {
         } else if (std.mem.startsWith(u8, flag, "--from=")) {
             from = flag["--from=".len..];
             if (from.len == 0) return error.MissingArgument;
+        } else if (std.mem.startsWith(u8, flag, "--chmod=")) {
+            const v = flag["--chmod=".len..];
+            if (std.mem.indexOfScalar(u8, v, '$') != null) return error.Unsupported;
+            chmod = std.fmt.parseInt(u32, v, 8) catch return error.BadValue;
+            if (chmod.? > 0o7777) return error.BadValue;
         } else return error.Unsupported;
     }
     words = all[flags_end..];
     if (words.len < 2) return error.MissingArgument;
-    return .{ .srcs = words[0 .. words.len - 1], .dest = words[words.len - 1], .chown = chown, .from = from };
+    return .{ .srcs = words[0 .. words.len - 1], .dest = words[words.len - 1], .chown = chown, .from = from, .chmod = chmod };
+}
+
+fn parseShell(a: std.mem.Allocator, rest: []const u8) Error![]const []const u8 {
+    if (rest[0] != '[') return error.BadValue;
+    const argv = std.json.parseFromSliceLeaky([]const []const u8, a, rest, .{}) catch return error.BadValue;
+    if (argv.len == 0) return error.BadValue;
+    return argv;
+}
+
+/// JSON array or whitespace-separated words.
+fn parseList(a: std.mem.Allocator, rest: []const u8) Error![]const []const u8 {
+    if (rest[0] == '[') {
+        if (std.json.parseFromSliceLeaky([]const []const u8, a, rest, .{})) |list| return list else |_| {}
+    }
+    return splitWords(a, rest);
+}
+
+fn parseHealthcheck(a: std.mem.Allocator, rest: []const u8) Error!Healthcheck {
+    var hc: Healthcheck = .{ .test_cmd = &.{} };
+    var tail = rest;
+    while (std.mem.startsWith(u8, tail, "--")) {
+        const end = std.mem.indexOfAny(u8, tail, " \t") orelse return error.MissingArgument;
+        const flag = tail[0..end];
+        tail = std.mem.trimStart(u8, tail[end..], " \t");
+        const eq = std.mem.indexOfScalar(u8, flag, '=') orelse return error.BadValue;
+        const name = flag[2..eq];
+        const val = flag[eq + 1 ..];
+        if (std.mem.eql(u8, name, "interval")) {
+            hc.interval_ns = parseDuration(val) orelse return error.BadValue;
+        } else if (std.mem.eql(u8, name, "timeout")) {
+            hc.timeout_ns = parseDuration(val) orelse return error.BadValue;
+        } else if (std.mem.eql(u8, name, "start-period")) {
+            hc.start_period_ns = parseDuration(val) orelse return error.BadValue;
+        } else if (std.mem.eql(u8, name, "retries")) {
+            hc.retries = std.fmt.parseInt(u32, val, 10) catch return error.BadValue;
+        } else return error.Unsupported;
+    }
+    const end = std.mem.indexOfAny(u8, tail, " \t") orelse tail.len;
+    const sub = std.mem.trim(u8, tail[end..], " \t");
+    if (std.ascii.eqlIgnoreCase(tail[0..end], "none")) {
+        if (sub.len != 0) return error.BadValue;
+        hc.test_cmd = try a.dupe([]const u8, &.{"NONE"});
+        return hc;
+    }
+    if (!std.ascii.eqlIgnoreCase(tail[0..end], "cmd") or sub.len == 0) return error.MissingArgument;
+    switch (try parseForm(a, sub)) {
+        .exec => |argv| {
+            const t = try a.alloc([]const u8, argv.len + 1);
+            t[0] = "CMD";
+            @memcpy(t[1..], argv);
+            hc.test_cmd = t;
+        },
+        .shell => |cmd| hc.test_cmd = try a.dupe([]const u8, &.{ "CMD-SHELL", cmd }),
+    }
+    return hc;
+}
+
+/// Go-style duration (`30s`, `1m30s`, `500ms`) in nanoseconds.
+pub fn parseDuration(s: []const u8) ?u64 {
+    if (s.len == 0) return null;
+    var total: u64 = 0;
+    var i: usize = 0;
+    while (i < s.len) {
+        const ds = i;
+        while (i < s.len and std.ascii.isDigit(s[i])) i += 1;
+        if (i == ds) return null;
+        const n = std.fmt.parseInt(u64, s[ds..i], 10) catch return null;
+        const us = i;
+        while (i < s.len and std.ascii.isAlphabetic(s[i])) i += 1;
+        const unit = s[us..i];
+        const mult: u64 = if (std.mem.eql(u8, unit, "ns")) 1 else if (std.mem.eql(u8, unit, "us")) 1_000 else if (std.mem.eql(u8, unit, "ms")) 1_000_000 else if (std.mem.eql(u8, unit, "s")) 1_000_000_000 else if (std.mem.eql(u8, unit, "m")) 60_000_000_000 else if (std.mem.eql(u8, unit, "h")) 3_600_000_000_000 else return null;
+        const part = std.math.mul(u64, n, mult) catch return null;
+        total = std.math.add(u64, total, part) catch return null;
+    }
+    if (total > std.math.maxInt(i64)) return null;
+    return total;
 }
 
 fn parseArg(rest: []const u8) Arg {
@@ -471,4 +572,81 @@ test "expand variables" {
         defer testing.allocator.free(got);
         try testing.expectEqualStrings(c[1], got);
     }
+}
+
+test "parse SHELL, STOPSIGNAL, VOLUME and MAINTAINER" {
+    var df = try parseOk(
+        \\FROM a
+        \\SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+        \\STOPSIGNAL SIGQUIT
+        \\VOLUME ["/data", "/logs"]
+        \\VOLUME /a /b
+        \\MAINTAINER Jane <jane@example.com>
+    );
+    defer df.deinit();
+    const ins = df.instructions;
+    try testing.expectEqual(@as(usize, 4), ins[1].op.shell.len);
+    try testing.expectEqualStrings("pipefail", ins[1].op.shell[2]);
+    try testing.expectEqualStrings("SIGQUIT", ins[2].op.stopsignal);
+    try testing.expectEqualStrings("/logs", ins[3].op.volume[1]);
+    try testing.expectEqualStrings("/b", ins[4].op.volume[1]);
+    try testing.expectEqualStrings("Jane <jane@example.com>", ins[5].op.maintainer);
+}
+
+test "parse HEALTHCHECK" {
+    var df = try parseOk(
+        \\FROM a
+        \\HEALTHCHECK --interval=30s --timeout=1m30s --start-period=500ms --retries=3 CMD curl -f http://localhost/
+        \\HEALTHCHECK CMD ["pg_isready", "-q"]
+        \\HEALTHCHECK NONE
+    );
+    defer df.deinit();
+    const a = df.instructions[1].op.healthcheck;
+    try testing.expectEqualStrings("CMD-SHELL", a.test_cmd[0]);
+    try testing.expectEqualStrings("curl -f http://localhost/", a.test_cmd[1]);
+    try testing.expectEqual(@as(?u64, 30_000_000_000), a.interval_ns);
+    try testing.expectEqual(@as(?u64, 90_000_000_000), a.timeout_ns);
+    try testing.expectEqual(@as(?u64, 500_000_000), a.start_period_ns);
+    try testing.expectEqual(@as(?u32, 3), a.retries);
+    const b = df.instructions[2].op.healthcheck;
+    try testing.expectEqual(@as(usize, 3), b.test_cmd.len);
+    try testing.expectEqualStrings("CMD", b.test_cmd[0]);
+    try testing.expectEqual(@as(?u64, null), b.interval_ns);
+    try testing.expectEqualStrings("NONE", df.instructions[3].op.healthcheck.test_cmd[0]);
+}
+
+test "parse COPY --chmod and malformed extras" {
+    var df = try parseOk("FROM a\nCOPY --chmod=0755 --chown=app x /y\n");
+    defer df.deinit();
+    try testing.expectEqual(@as(?u32, 0o755), df.instructions[1].op.copy.chmod);
+    try testing.expectEqualStrings("app", df.instructions[1].op.copy.chown);
+
+    const cases = [_]struct { text: []const u8, err: Error }{
+        .{ .text = "FROM a\nCOPY --chmod=u+x x /y", .err = error.BadValue },
+        .{ .text = "FROM a\nCOPY --chmod=9 x /y", .err = error.BadValue },
+        .{ .text = "FROM a\nSHELL /bin/bash -c", .err = error.BadValue },
+        .{ .text = "FROM a\nSHELL []", .err = error.BadValue },
+        .{ .text = "FROM a\nHEALTHCHECK --interval=xx CMD true", .err = error.BadValue },
+        .{ .text = "FROM a\nHEALTHCHECK --retries=-1 CMD true", .err = error.BadValue },
+        .{ .text = "FROM a\nHEALTHCHECK --interval=3000000h CMD true", .err = error.BadValue },
+        .{ .text = "FROM a\nHEALTHCHECK --interval=1s", .err = error.MissingArgument },
+        .{ .text = "FROM a\nHEALTHCHECK CMD", .err = error.MissingArgument },
+        .{ .text = "FROM a\nHEALTHCHECK NONE x", .err = error.BadValue },
+        .{ .text = "FROM a\nVOLUME", .err = error.MissingArgument },
+    };
+    for (cases) |c| {
+        var diag: Diagnostic = .{};
+        try testing.expectError(c.err, parse(testing.allocator, c.text, &diag));
+        try testing.expectEqual(@as(usize, 2), diag.line);
+    }
+}
+
+test "parseDuration" {
+    try testing.expectEqual(@as(?u64, null), parseDuration("3000000h"));
+    try testing.expectEqual(@as(?u64, null), parseDuration("1.5s"));
+    try testing.expectEqual(@as(?u64, 1_500_000_000), parseDuration("1s500ms"));
+    try testing.expectEqual(@as(?u64, 3_600_000_000_000), parseDuration("1h"));
+    try testing.expectEqual(@as(?u64, null), parseDuration("10"));
+    try testing.expectEqual(@as(?u64, null), parseDuration(""));
+    try testing.expectEqual(@as(?u64, null), parseDuration("s"));
 }

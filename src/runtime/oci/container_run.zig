@@ -7,6 +7,7 @@ const voila_registry = @import("../../registry/voila_registry.zig");
 const voila_registry_creds = @import("../../registry/voila_registry_creds.zig");
 const voila_login_creds = @import("../../registry/voila_login_creds.zig");
 const posix_util = @import("../../sys/posix_util.zig");
+const ns = @import("../../sys/ns.zig");
 const container_store = @import("./container_store.zig");
 const container_lifecycle = @import("./container_lifecycle.zig");
 const mount_exec = @import("../../mount/mount_exec.zig");
@@ -17,7 +18,6 @@ const container_isolated_exec = @import("./container_isolated_exec.zig");
 const container_fuse_sibling = @import("./container_fuse_sibling.zig");
 const voila_image_pull = @import("../../registry/voila_image_pull.zig");
 const container_ports = @import("./container_ports.zig");
-const container_pty = @import("./container_pty.zig");
 const run_cli_parse = @import("../../cli/run_cli_parse.zig");
 
 const ServeCtx = struct {
@@ -93,7 +93,9 @@ pub fn runWorker(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u
     defer allocator.free(log_path);
     const opts = try container_run_opts.readRunOpts(allocator, voila_root, container_id);
     defer opts.deinit(allocator);
-    const code = runMounted(io, allocator, voila_root, image, mount_dir, log_path, argv, opts) catch |e| {
+    const rw_dir = try rwDir(allocator, voila_root, container_id);
+    defer allocator.free(rw_dir);
+    const code = runMounted(io, allocator, voila_root, image, mount_dir, log_path, rw_dir, argv, opts) catch |e| {
         std.debug.print("voila: run failed: {}\n", .{e});
         return 1;
     };
@@ -118,7 +120,7 @@ fn runForeground(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u
     const opts = try runOptsFromSpec(allocator, spec);
     defer opts.deinit(allocator);
     try container_run_opts.writeRunOpts(allocator, voila_root, id, opts);
-    const code = try spawnContainerWorkerAndWait(io, allocator, voila_root, id, log_path, &st);
+    const code = try spawnContainerWorkerAndWait(io, allocator, voila_root, id, log_path, spec.tty or spec.interactive, &st);
     var st_exit = try container_store.readState(allocator, voila_root, id);
     defer container_store.freeState(allocator, st_exit);
     markExited(allocator, &st_exit);
@@ -133,6 +135,7 @@ fn spawnContainerWorkerAndWait(
     voila_root: []const u8,
     id: []const u8,
     log_path: []const u8,
+    use_tty: bool,
     st: *container_store.State,
 ) !u8 {
     const exe = try selfExePath(allocator);
@@ -152,12 +155,19 @@ fn spawnContainerWorkerAndWait(
         },
         .pgid = 0,
     });
+    var took_terminal = false;
     if (worker.id) |wp| {
+        // The worker has its own process group; it must own the terminal to read it.
+        if (use_tty and ns.setForeground(std.c.STDIN_FILENO, @intCast(wp))) {
+            took_terminal = true;
+            _ = std.c.kill(-@as(std.c.pid_t, @intCast(wp)), std.c.SIG.CONT);
+        }
         st.pid = @intCast(wp);
         setStatus(allocator, st, "running");
         try container_store.writeState(allocator, voila_root, st.*);
     }
     const term = try worker.wait(io);
+    if (took_terminal) _ = ns.setForeground(std.c.STDIN_FILENO, ns.processGroup());
     try printLogFile(log_path);
     return switch (term) {
         .exited => |c| c,
@@ -228,6 +238,7 @@ fn runMounted(
     image: []const u8,
     mount_dir: []const u8,
     log_path: []const u8,
+    rw_dir: []const u8,
     cmd_argv: []const []const u8,
     opts: container_run_opts.RunOpts,
 ) !u8 {
@@ -250,22 +261,28 @@ fn runMounted(
     try mount_exec.waitMountRootReady(mount_dir, io);
     if (!fuse_server.alive()) return error.FuseServerFailed;
 
-    const use_tty = opts.tty or opts.interactive;
-    var pty: ?container_pty.Pty = null;
-    if (use_tty) pty = try container_pty.Pty.open();
-    defer if (pty) |*p| p.close();
-    const pty_master: std.posix.fd_t = if (pty) |p| p.master else -1;
-    if (pty_master >= 0) container_pty.syncWindowSize(pty_master);
-
+    defer releaseRwDir(allocator, rw_dir);
     return container_isolated_exec.spawnAndWait(io, allocator, .{
         .mount_dir = mount_dir,
         .log_path = log_path,
         .vfs_argv0 = vfs_exec,
         .cmd_argv = cmd_argv,
         .opts = opts,
-        .use_tty = use_tty,
-        .pty_slave = if (pty) |p| p.slave else -1,
-    }, pty_master, 0);
+        .rw_dir = rw_dir,
+        .use_tty = opts.tty or opts.interactive,
+    }, 0);
+}
+
+/// Disk-backed overlay upper for the container's writable root; removed with the container.
+fn rwDir(allocator: std.mem.Allocator, voila_root: []const u8, id: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}/containers/{s}/rw", .{ voila_root, id });
+}
+
+/// overlayfs leaves `work/work` mode 000; make it removable by `voila rm`.
+fn releaseRwDir(allocator: std.mem.Allocator, rw_dir: []const u8) void {
+    const path = std.fmt.allocPrintSentinel(allocator, "{s}/work/work", .{rw_dir}, 0) catch return;
+    defer allocator.free(path);
+    _ = std.c.chmod(path, 0o700);
 }
 
 pub fn execInMount(
@@ -273,20 +290,18 @@ pub fn execInMount(
     allocator: std.mem.Allocator,
     mount_dir: []const u8,
     vfs_argv0: []const u8,
-    log_path: []const u8,
     cmd_argv: []const []const u8,
     use_tty: bool,
     opts: container_run_opts.RunOpts,
 ) !u8 {
     return container_isolated_exec.spawnAndWait(io, allocator, .{
         .mount_dir = mount_dir,
-        .log_path = log_path,
+        .log_path = "",
         .vfs_argv0 = vfs_argv0,
         .cmd_argv = cmd_argv,
         .opts = opts,
         .use_tty = use_tty,
-        .pty_slave = -1,
-    }, -1, 120_000);
+    }, 120_000);
 }
 
 fn writeAllFd(fd: std.posix.fd_t, data: []const u8) void {

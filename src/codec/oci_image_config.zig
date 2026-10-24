@@ -2,6 +2,7 @@
 const std = @import("std");
 const Value = std.json.Value;
 const ObjectMap = std.json.ObjectMap;
+const dockerfile = @import("../core/dockerfile.zig");
 
 pub const ImageConfig = struct {
     arena: std.heap.ArenaAllocator,
@@ -93,6 +94,30 @@ pub const ImageConfig = struct {
             gop.value_ptr.* = .{ .object = .empty };
         }
         try gop.value_ptr.object.put(a, try a.dupe(u8, key), value);
+    }
+
+    /// `Healthcheck` with only the fields that were given; durations in nanoseconds.
+    pub fn setHealthcheck(self: *ImageConfig, hc: dockerfile.Healthcheck) !void {
+        const a = self.arena.allocator();
+        var obj: ObjectMap = .empty;
+        var test_arr = std.json.Array.init(a);
+        for (hc.test_cmd) |s| try test_arr.append(.{ .string = try a.dupe(u8, s) });
+        try obj.put(a, "Test", .{ .array = test_arr });
+        if (hc.interval_ns) |v| try obj.put(a, "Interval", .{ .integer = @intCast(v) });
+        if (hc.timeout_ns) |v| try obj.put(a, "Timeout", .{ .integer = @intCast(v) });
+        if (hc.start_period_ns) |v| try obj.put(a, "StartPeriod", .{ .integer = @intCast(v) });
+        if (hc.retries) |v| try obj.put(a, "Retries", .{ .integer = v });
+        try (try self.config()).put(a, "Healthcheck", .{ .object = obj });
+    }
+
+    pub fn addVolume(self: *ImageConfig, path: []const u8) !void {
+        try self.putMapEntry("Volumes", path, .{ .object = .empty });
+    }
+
+    /// Top-level `author` (not part of `config`).
+    pub fn setAuthor(self: *ImageConfig, author: []const u8) !void {
+        const a = self.arena.allocator();
+        try self.root.object.put(a, "author", .{ .string = try a.dupe(u8, author) });
     }
 
     pub fn setLabel(self: *ImageConfig, key: []const u8, value: []const u8) !void {
