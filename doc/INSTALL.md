@@ -1,80 +1,51 @@
 # Install voila
 
-This guide covers installing the `voila` binaries and connecting them to the
+This guide covers installing the `voila` binary and connecting them to the
 hosted registry at `https://drift-registry-production.up.railway.app`, which
 requires an account and an API key.
 
-If you only want the binaries (no remote registry), the **Install the binaries**
+If you only want the binary (no remote registry), the **Install the binaries**
 section is all you need — the registry + auth sections are only required to
 `voila push`/`voila pull` against the hosted service.
 
 ---
 
-## 1. Install the binaries
+## 1. Install the binary
 
-### One-shot installer (Linux)
-
-On a Linux host (amd64 or arm64), the quickest path for the **daemonless Zig CLI**
-(`zig-fuse`, `run` and lifecycle commands) is the installer script. It downloads
-the per-arch release binary, verifies `zig-fuse-checksums.txt`, installs
-`zig-fuse` into `/usr/local/bin`, enables `user_allow_other` in `/etc/fuse.conf`
-when run with sudo, and configures `VOILA_ROOT` / optional registry env:
-
-The Go stack (`voila` + `voilad`) is still published on the same GitHub
-releases as tarballs (`voila_<tag>_linux_<arch>.tar.gz`); use those for the
-EROFS+NBD daemon path. The standalone `voila-registry` server is no longer in
-those tarballs (see branch `backup/main-before-go-registry-move` and
-[voilabuild/cloud-registry](https://github.com/voilabuild/cloud-registry)).
-The installer script targets the Zig CLI only.
+### One-shot installer (Linux, amd64 or arm64)
 
 ```bash
-curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sudo bash
+curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sh
 ```
 
-When run from a terminal, the installer **prompts you to install any missing
-prerequisites** (e.g. `runc`) via your distro's package manager, and then
-**asks whether you want to configure a registry API key** for auth — enter it
-to enable push/private-image access, or decline to bypass (public reads still
-work). For a fully non-interactive install, pass the flags below (needed when
-piping via `curl | sudo bash`).
+It downloads the static `voila` binary for your architecture, verifies the
+release checksum, and installs it to `/usr/local/bin` when writable (or with
+`sudo`), otherwise `~/.local/bin`. With `sudo` it also enables
+`user_allow_other` in `/etc/fuse.conf`. On Ubuntu 24.04+ it installs an
+AppArmor profile that lets `voila` create unprivileged user namespaces,
+which `voila run` and `voila build` need. From a terminal it offers to install
+missing prerequisites and to configure a registry API key.
 
-Useful flags (see `install.sh --help`):
+Flags (see `install.sh --help`):
 
-- `--prefix <dir>` — install elsewhere (default `/usr/local/bin`).
-- `--version <tag>` — pin a specific release instead of latest.
-- `--install-prereqs` — install missing `runc` and `fuse3` via the distro package
-  manager (apt-get / dnf / yum / zypper).
-- `--registry <url>` / `--registry ""` — set or clear the default registry
-  (the installer writes it into `/etc/profile.d/voila.sh`).
-- `--token <key>` — configure a registry API key (`dreg_...`) non-interactively
-  (writes `VOILA_REGISTRY_TOKEN` into the shell env + daemon config). Omit it
-  to be prompted, or decline to skip auth.
+- `--prefix <dir>`: install directory.
+- `--version <tag>`: pin a release instead of the latest.
+- `--install-prereqs`: install missing `fuse3` via apt-get / dnf / yum / zypper.
+- `--registry <url>` / `--registry ""`: set or clear the default registry.
+- `--token <key>`: configure a registry API key (`dreg_...`) non-interactively.
+- `--yes`: accept prompts.
 
-### Manual install (Linux or macOS)
+Optional: install `uidmap` (`newuidmap`/`newgidmap`) and give your user an
+`/etc/subuid` / `/etc/subgid` range, so `RUN` steps can switch users and
+`chown` (see [CLI.md](CLI.md#building-images)).
 
-The `voila` client ships for both linux and darwin; `voilad` is linux-only.
-Download the matching tarball from the
-[latest release](https://github.com/voilabuild/voila/releases/latest),
-verify it, and extract:
+### Manual install
 
-```bash
-VERSION=v0.1.0                       # replace with the latest tag
-OS=linux   ARCH=amd64                # darwin / arm64 also work
-curl -fsSL -o voila.tar.gz \
-  "https://github.com/voilabuild/voila/releases/download/${VERSION}/voila_${VERSION}_${OS}_${ARCH}.tar.gz"
-curl -fsSL -o checksums.txt \
-  "https://github.com/voilabuild/voila/releases/download/${VERSION}/checksums.txt"
-sha256sum -c --ignore-missing checksums.txt
-sudo tar -xzf voila.tar.gz -C /usr/local/bin
-voila -version
-```
-
-Verify the install:
-
-```bash
-voila -version
-voilad -version        # linux only
-```
+Download `voila_<tag>_linux_<arch>` and the checksums file from the
+[latest release](https://github.com/voilabuild/voila/releases/latest), verify
+it with `sha256sum -c --ignore-missing`, and copy it to a directory on your
+`PATH` as `voila`. On Ubuntu 24.04+ you also need the AppArmor profile that
+`install.sh` writes to `/etc/apparmor.d/voila`.
 
 ---
 
@@ -138,30 +109,6 @@ If you installed via `install.sh` with a registry URL, it may also add
 `VOILA_REGISTRY` to `/etc/profile.d/voila.sh` and your shell rc — env vars win
 over `voila login` when both are set.
 
-### The daemon (voilad)
-
-`voilad` lazy-fetches chunks + manifests on demand when it mounts an image.
-For **public images** it needs **no token** — chunk reads and public manifest
-reads are anonymous on the hosted registry (chunks are capability-by-hash).
-
-The CLI hands registry credentials to `voilad` automatically: before `voila
-run`/`push`/`pull`, it writes `<root>/registry.creds` and calls `SetRegistry`
-on the worker socket. You configure `VOILA_REGISTRY` + `VOILA_REGISTRY_TOKEN`
-in your user shell only — do **not** put the token in `voilad`'s environment
-(the `sudo voilad` footgun).
-
-For a systemd install, set only the registry URL (no token):
-
-```bash
-sudo tee -a /etc/default/voilad >/dev/null <<'EOF'
-VOILA_REGISTRY=https://drift-registry-production.up.railway.app/registry
-EOF
-sudo systemctl restart voilad
-```
-
-Run any `voila push`/`pull`/`run` once from a shell that has your API key;
-`voilad` picks up the handed-off creds for private images.
-
 ---
 
 ## 5. Use it
@@ -176,9 +123,6 @@ voila pull <org>/<image>:<tag>
 voila import python:3.13
 voila push <org>/python:3.13
 ```
-
-On Linux, if EROFS+NBD is unavailable, set `VOILA_MOUNT_BACKEND=fuse` before
-starting `voilad` so `voila run` can mount images via FUSE.
 
 Auth rules to keep in mind:
 
@@ -198,9 +142,9 @@ Auth rules to keep in mind:
   `voila login` again or re-check the key on the Keys page.
 - **`voila push` fails with 403** — you're pushing to an org you don't own.
   Use your own org path.
-- **`voilad` can't fetch a private image** — run `voila login`, then
-  `voila pull` or `voila run` once so the CLI hands creds off to the daemon
-  (see the daemon section above). Check `<root>/registry.creds` exists and
-  `voilad` has `VOILA_REGISTRY` (or `-registry`) for the base URL.
+- **`voila run` fails with a user-namespace or FUSE error** — check that
+  `/dev/fuse` exists and, on Ubuntu 24.04+, that the AppArmor profile from
+  `install.sh` is loaded (`sudo apparmor_parser -r /etc/apparmor.d/voila`).
+  The profile is tied to the installed binary's path.
 - **`voila pull` of a private image 404s** — either the image is private and
   you're not the owner, or the ref is wrong.

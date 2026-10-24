@@ -15,7 +15,7 @@ Linux only. Privileged tests (`zig build test -Dprivileged`) need root, `/dev/fu
 ## Rules
 
 - **Layout.** `src/<layer>/` for libraries, `cmd/<binary>/main.zig` for thin entry points. Interfaces sit at the directory root; implementations go in subdirectories.
-- **Dependencies point down:** `core ← codec ← store/registry ← mount/runtime ← daemon ← cli/app ← cmd`. `build.zig` enforces this.
+- **Dependencies point down:** `core ← codec ← store/registry ← mount/runtime ← cli/app ← cmd`. `build.zig` will enforce this (#83); until then, review for it.
 - **No globals, no `getenv` in libraries.** Pass `Io`, `Allocator` and config explicitly. Only `app/` reads the environment.
 - **No shell.** Use `sys.process.run(argv)` or a syscall, never `sh -c`.
 - **Errors.** Specific error sets on `pub` functions. A `catch {}` needs a reason. Libraries don't print.
