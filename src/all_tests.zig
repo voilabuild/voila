@@ -6,6 +6,7 @@ test {
     _ = @import("core/build_cache_key.zig");
     _ = @import("core/dockerfile.zig");
     _ = @import("core/glob.zig");
+    _ = @import("core/passwd.zig");
     _ = @import("sys/fs.zig");
     _ = @import("store/build_cache.zig");
     _ = @import("store/voila_store.zig");
