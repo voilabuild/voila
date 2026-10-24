@@ -215,7 +215,7 @@ pub fn build(b: *std.Build) void {
     });
     const optimize = b.standardOptimizeOption(.{});
 
-    const privileged = b.option(bool, "privileged", "Run tests needing root, /dev/fuse, nbd, erofs, runc") orelse false;
+    const privileged = b.option(bool, "privileged", "Run tests needing /dev/fuse and user namespaces") orelse false;
     const test_options = b.addOptions();
     test_options.addOption(bool, "privileged", privileged);
 

@@ -1,5 +1,5 @@
 # ci.yml — fast checks on every pull request (and pushes to main).
-# Privileged gate scripts (FUSE/runc/NBD) stay manual/devcontainer — see doc/TESTING.md.
+# Privileged gate scripts (FUSE, user namespaces) stay manual/devcontainer — see doc/TESTING.md.
 
 name: ci
 

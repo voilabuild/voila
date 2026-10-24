@@ -10,7 +10,7 @@ zig build
 zig build test
 ```
 
-Linux only. Privileged tests (`zig build test -Dprivileged`) need root, `/dev/fuse`, `nbd`, `erofs` and `runc`.
+Linux only. Privileged tests (`zig build test -Dprivileged`) need `/dev/fuse` and user namespaces.
 
 ## Rules
 

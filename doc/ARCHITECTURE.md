@@ -38,12 +38,6 @@ address. Because the address is the content hash:
 - `voila push`/`pull` only move manifests up front; chunks stream on first
   touch.
 
-## EROFS + NBD
-
-The Go release line could serve the rootfs as an EROFS image over a userspace
-NBD device instead of FUSE. That code lives under `src/mount/erofs_nbd/` but
-is not wired into `voila`; whether to finish or remove it is tracked in #85.
-
 ## Other components
 
 **Ingest** (`voila import` / `voila ingest`): streaming tar parser over OCI
@@ -120,9 +114,9 @@ Zig CLI; treat them as history until the gates are ported.
 | Cold-start over the network (empty machine, alpine) | **91 ms**, 5 chunks / 1.59 MiB (5.6% of image) |
 | FUSE sequential read (gate 3 `dd`) | **714 MB/s** |
 | `voila run` echo (warm, gate 4) | **12 ms** wall |
-| alpine `echo hi` local cold start (drop_caches, fresh daemon) | FUSE **45 ms** / EROFS **241 ms** |
-| `python:3.13` `print("hi")` local cold start | FUSE **147 ms** / EROFS **2.3 s** |
-| `libpython` 28 MiB sequential `dd` | FUSE 362 MB/s / EROFS 415 MB/s |
+| alpine `echo hi` local cold start (drop_caches, fresh daemon) | **45 ms** |
+| `python:3.13` `print("hi")` local cold start | **147 ms** |
+| `libpython` 28 MiB sequential `dd` | 362 MB/s |
 | `python:3.13` ingest / re-ingest (gate 8) | 9.7 s cold; **0.68 s** re-ingest (7/7 layers cached) |
 | One-file change in a 60 MiB image, push delta (gate 8) | **3 chunks / 3.3 KiB** uploaded |
 

@@ -79,5 +79,4 @@ See [doc/DEV_SETUP.md](doc/DEV_SETUP.md).
 
 ## What's missing
 
-TLS on the registry, multi-node, a daemon/remote runtime, the EROFS+NBD mount
-backend in the CLI. Details in [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md).
+TLS on the registry, multi-node, a daemon/remote runtime. Details in [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md).
