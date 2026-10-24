@@ -123,8 +123,47 @@ fn walkEntry(
         '5' => {
             _ = ensureDirEx(allocator, layer_tree, clean, hdr);
         },
+        '1' => {
+            const target = whiteouts.cleanEntryPath(allocator, hdr.linkname) catch return;
+            if (layer_tree.lookup(target)) |t| if (t.node_type == .regular) {
+                allocator.free(target);
+                try attachChild(allocator, parent, parts.base, t);
+                try layer_tree.by_path.put(try allocator.dupe(u8, clean), t);
+                return;
+            };
+            const node = try newNode(allocator, clean, parts.base, .pending_hardlink, hdr);
+            node.link_target = target;
+            try attachChild(allocator, parent, parts.base, node);
+            try layer_tree.put(node);
+        },
+        '3', '4' => {
+            const node = try newNode(allocator, clean, parts.base, .device, hdr);
+            node.major = hdr.devmajor;
+            node.minor = hdr.devminor;
+            node.char_device = hdr.typeflag == '3';
+            try attachChild(allocator, parent, parts.base, node);
+            try layer_tree.put(node);
+        },
         else => {},
     }
+}
+
+fn newNode(allocator: std.mem.Allocator, path: []const u8, base: []const u8, t: tree_mod.NodeType, hdr: tar_mod.TarHeader) !*tree_mod.Node {
+    const node = try allocator.create(tree_mod.Node);
+    node.* = .{
+        .path = try allocator.dupe(u8, path),
+        .name = try allocator.dupe(u8, base),
+        .node_type = t,
+        .mode = hdr.mode,
+        .uid = hdr.uid,
+        .gid = hdr.gid,
+        .mtime_ns = @as(u64, @intCast(hdr.mtime)) * 1_000_000_000,
+        .blocks = .empty,
+        .xattrs = std.StringHashMap([]const u8).init(allocator),
+        .children = std.StringHashMap(*tree_mod.Node).init(allocator),
+        .allocator = allocator,
+    };
+    return node;
 }
 
 fn chunkFile(

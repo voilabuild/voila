@@ -60,7 +60,11 @@ fn pinDirTimes(fx: *Fixture, rel: []const u8) !void {
 
 fn tarHeader(out: *std.ArrayList(u8), a: std.mem.Allocator, name: []const u8, st: fs.Stat, typeflag: u8, size: u64, link: []const u8) !void {
     var h: [512]u8 = @splat(0);
-    @memcpy(h[0..name.len], name);
+    if (name.len > 100) {
+        const cut = std.mem.lastIndexOfScalar(u8, name[0..@min(name.len, 155)], '/').?;
+        @memcpy(h[345 .. 345 + cut], name[0..cut]);
+        @memcpy(h[0 .. name.len - cut - 1], name[cut + 1 ..]);
+    } else @memcpy(h[0..name.len], name);
     _ = try std.fmt.bufPrint(h[100..107], "{o:0>7}", .{st.perm});
     _ = try std.fmt.bufPrint(h[108..115], "{o:0>7}", .{0});
     _ = try std.fmt.bufPrint(h[116..123], "{o:0>7}", .{0});
@@ -72,8 +76,10 @@ fn tarHeader(out: *std.ArrayList(u8), a: std.mem.Allocator, name: []const u8, st
     try out.appendSlice(a, &h);
 }
 
+const Links = std.AutoHashMap(u64, []const u8);
+
 /// Minimal ustar writer over a host directory, as an independent oracle for `walkLayer`.
-fn tarDir(a: std.mem.Allocator, out: *std.ArrayList(u8), root: []const u8, rel: []const u8) !void {
+fn tarDir(a: std.mem.Allocator, out: *std.ArrayList(u8), links: *Links, root: []const u8, rel: []const u8) !void {
     const abs = if (rel.len == 0) root else try std.fmt.allocPrint(a, "{s}/{s}", .{ root, rel });
     const names = try fs.listDir(a, abs);
     for (names) |n| {
@@ -83,10 +89,17 @@ fn tarDir(a: std.mem.Allocator, out: *std.ArrayList(u8), root: []const u8, rel: 
         switch (st.kind) {
             .dir => {
                 try tarHeader(out, a, child_rel, st, '5', 0, "");
-                try tarDir(a, out, root, child_rel);
+                try tarDir(a, out, links, root, child_rel);
             },
             .symlink => try tarHeader(out, a, child_rel, st, '2', 0, try fs.readLink(a, child_abs)),
             .file => {
+                if (st.nlink > 1) {
+                    if (links.get(st.ino)) |first| {
+                        try tarHeader(out, a, child_rel, st, '1', 0, first);
+                        continue;
+                    }
+                    try links.put(st.ino, child_rel);
+                }
                 try tarHeader(out, a, child_rel, st, '0', st.size, "");
                 const f = try fs.File.openRead(child_abs);
                 defer f.close();
@@ -116,15 +129,22 @@ test "walkDir and tar ingest of the same tree produce the same manifest" {
     for (big, 0..) |*b, i| b.* = @truncate(i *% 31);
     try fx.file("src/big.bin", big, 0o644);
     try fs.symlink("a.txt", fx.path("src/link"));
+    try fs.hardLink(fx.path("src/a.txt"), fx.path("src/z-hard"));
+    const long_dir = "src/node_modules/@scope/package-with-a-long-name/dist/__generated__/google/protobuf";
+    try fx.dir(long_dir);
+    try fx.file(long_dir ++ "/descriptor_with_long_name.js", "x\n", 0o644);
     try pinDirTimes(&fx, "src");
 
     const walked = try fx.walk(store, "src", "", .copy);
     var tar: std.ArrayList(u8) = .empty;
-    try tarDir(a, &tar, fx.path("src"), "");
+    var links: Links = .init(a);
+    try tarDir(a, &tar, &links, fx.path("src"), "");
     try tar.appendNTimes(a, 0, 1024);
     const from_tar = try layer_walk.walkLayer(a, store, tar.items);
 
     try std.testing.expectEqual(@as(usize, 2), walked.lookup("big.bin").?.blocks.items.len);
+    try std.testing.expect(from_tar.tree.lookup(long_dir[4..] ++ "/descriptor_with_long_name.js") != null);
+    try std.testing.expect(from_tar.tree.lookup("z-hard").? == from_tar.tree.lookup("a.txt").?);
     const m1 = try manifest_mod.buildAndStoreManifest(a, store, walked, false);
     const m2 = try manifest_mod.buildAndStoreManifest(a, store, from_tar.tree, false);
     try std.testing.expectEqualSlices(u8, &m2, &m1);
