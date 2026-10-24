@@ -20,11 +20,9 @@ jobs:
           - runner: blacksmith-4vcpu-ubuntu-2404
             arch: amd64
             zig_target: x86_64-linux-musl
-            zig_archive: zig-x86_64-linux-0.17.0
           - runner: blacksmith-4vcpu-ubuntu-2404-arm
             arch: arm64
             zig_target: aarch64-linux-musl
-            zig_archive: zig-aarch64-linux-0.17.0
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
@@ -32,14 +30,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Zig 0.17.0
-        env:
-          ZIG_VERSION: 0.17.0
-        run: |
-          set -euo pipefail
-          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/${{ matrix.zig_archive }}.tar.xz" \
-            | tar -xJ
-          echo "$PWD/${{ matrix.zig_archive }}" >> "$GITHUB_PATH"
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+          cache-key: ${{ matrix.zig_target }}
 
       - name: Build voila
         run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.zig_target }}
