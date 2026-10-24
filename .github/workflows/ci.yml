@@ -13,19 +13,14 @@ concurrency:
 
 jobs:
   zig:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: useblacksmith/checkout@v1
 
-      - name: Install Zig 0.17.0
-        env:
-          ZIG_VERSION: 0.17.0
-        run: |
-          set -euo pipefail
-          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
-            | tar -xJ
-          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
 
       - name: zig fmt --check
         run: zig fmt --check .
@@ -68,10 +63,10 @@ jobs:
         run: uv run pytest -v
 
   lint-openapi:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: useblacksmith/checkout@v1
       - name: Install vacuum (prebuilt binary)
         run: |
           VACUUM=v0.30.0
