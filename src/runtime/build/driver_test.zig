@@ -21,7 +21,7 @@ const FakeRunner = struct {
         return .{ .ptr = self, .runFn = run };
     }
 
-    fn run(ptr: *anyopaque, _: std.Io, req: driver.RunRequest) driver.steps.RunnerError!u8 {
+    fn run(ptr: *anyopaque, _: std.Io, req: driver.RunRequest) driver.steps.RunnerError!driver.steps.RunResult {
         const self: *FakeRunner = @ptrCast(@alignCast(ptr));
         self.calls += 1;
         var env: std.ArrayList([]const u8) = .empty;
@@ -29,15 +29,15 @@ const FakeRunner = struct {
         self.last_env = env.items;
         self.last_workdir = self.arena.dupe(u8, req.workdir) catch return error.OutOfMemory;
         const cmd = req.argv[req.argv.len - 1];
-        if (std.mem.eql(u8, cmd, "fail")) return 1;
+        if (std.mem.eql(u8, cmd, "fail")) return .{ .code = 1 };
         var it = std.mem.tokenizeScalar(u8, cmd, ' ');
         _ = it.next();
-        const path = it.next() orelse return 2;
+        const path = it.next() orelse return .{ .code = 2 };
         const body = it.rest();
         const abs = std.fmt.allocPrint(self.arena, "{s}{s}", .{ req.upper_dir, path }) catch return error.OutOfMemory;
         fs.makePath(std.fs.path.dirname(abs).?) catch return error.SpawnFailed;
         fs.writeFile(abs, body, 0o644) catch return error.SpawnFailed;
-        return 0;
+        return .{ .code = 0 };
     }
 };
 

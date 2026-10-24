@@ -8,6 +8,7 @@ const hub = @import("../../registry/voila_registry_hub.zig");
 const voila_resolve = @import("../../runtime/voila_resolve.zig");
 const voila_chunk_index = @import("../../store/voila_chunk_index.zig");
 const voila_manifest_proto = @import("../../codec/voila_manifest_proto.zig");
+const idmap = @import("../../core/idmap.zig");
 const posix_util = @import("../../sys/posix_util.zig");
 
 pub const DirEnt = struct {
@@ -24,8 +25,9 @@ pub const VoilaVfs = struct {
     readdir_by_ino: std.AutoHashMap(u64, []DirEnt),
     chunk_cache: std.StringHashMap([]const u8),
     allocator: std.mem.Allocator,
-    /// When set, entries owned by uid/gid 0 are reported as this owner instead.
-    root_owner: ?struct { uid: u32, gid: u32 } = null,
+    /// When set, image ids are reported as the host ids that a user namespace with this
+    /// map sees as those image ids.
+    owner_map: ?idmap.Mapping = null,
 
     pub fn load(allocator: std.mem.Allocator, index_json_path: []const u8) !VoilaVfs {
         const json_bytes = try posix_util.readFileAlloc(allocator, index_json_path, 256 * 1024 * 1024);
@@ -171,9 +173,9 @@ pub const VoilaVfs = struct {
                 break :blk attrFromTree(tree, ino, mtime_sec, mtime_nsec);
             },
         } orelse return null;
-        if (self.root_owner) |o| {
-            if (a.uid == 0) a.uid = o.uid;
-            if (a.gid == 0) a.gid = o.gid;
+        if (self.owner_map) |m| {
+            a.uid = m.uid.lowerHostId(a.uid);
+            a.gid = m.gid.lowerHostId(a.gid);
         }
         return a;
     }

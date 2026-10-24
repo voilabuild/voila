@@ -2,6 +2,7 @@
 const std = @import("std");
 const dockerfile = @import("../../core/dockerfile.zig");
 const dir_walk = @import("../../store/ingest/ingest_dir_walk.zig");
+const idmap = @import("../../core/idmap.zig");
 
 pub const default_path = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
@@ -18,6 +19,17 @@ pub const RunRequest = struct {
     env: []const []const u8,
     workdir: []const u8,
     user: []const u8,
+    /// Where the runner may write `dir_walk.appendOwner` records for entries it handed
+    /// back to the build user; absent when it had none.
+    owners_path: []const u8,
+};
+
+pub const RunResult = struct {
+    code: u8,
+    /// Id map the command ran under; null means the single invoking uid/gid.
+    ids: ?idmap.Mapping = null,
+    /// `USER` was set but its ids are not mapped, so the command ran as root.
+    user_not_applied: bool = false,
 };
 
 pub const RunnerError = error{
@@ -26,14 +38,17 @@ pub const RunnerError = error{
     UserNamespacesRequired,
     OverlayFailed,
     SpawnFailed,
+    UnknownUser,
+    UnknownGroup,
+    UserSwitchFailed,
 };
 
-/// Executes one RUN command; returns its exit status.
+/// Executes one RUN command.
 pub const StepRunner = struct {
     ptr: *anyopaque,
-    runFn: *const fn (ptr: *anyopaque, io: std.Io, req: RunRequest) RunnerError!u8,
+    runFn: *const fn (ptr: *anyopaque, io: std.Io, req: RunRequest) RunnerError!RunResult,
 
-    pub fn run(self: StepRunner, io: std.Io, req: RunRequest) RunnerError!u8 {
+    pub fn run(self: StepRunner, io: std.Io, req: RunRequest) RunnerError!RunResult {
         return self.runFn(self.ptr, io, req);
     }
 };

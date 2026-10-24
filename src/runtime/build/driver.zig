@@ -5,6 +5,8 @@ const cache_key = @import("../../core/build_cache_key.zig");
 const glob = @import("../../core/glob.zig");
 const fs = @import("../../sys/fs.zig");
 const clock = @import("../../sys/clock.zig");
+const posix_util = @import("../../sys/posix_util.zig");
+const idmap = @import("../../core/idmap.zig");
 const oci_config = @import("../../codec/oci_image_config.zig");
 const tree_mod = @import("../../store/ingest/ingest_tree.zig");
 const dir_walk = @import("../../store/ingest/ingest_dir_walk.zig");
@@ -223,7 +225,8 @@ const Builder = struct {
         defer fs.removeTree(self.a, scratch) catch {};
         const upper = try std.fmt.allocPrint(self.a, "{s}/upper", .{scratch});
         try fs.mkdir(upper, 0o755);
-        const code = try self.opts.runner.run(self.io, .{
+        const owners_path = try std.fmt.allocPrint(self.a, "{s}/owners", .{scratch});
+        const res = try self.opts.runner.run(self.io, .{
             .voila_root = self.opts.voila_root,
             .root = self.root,
             .scratch_dir = scratch,
@@ -232,15 +235,21 @@ const Builder = struct {
             .env = env,
             .workdir = workdir,
             .user = user,
+            .owners_path = owners_path,
         });
-        if (code != 0) {
-            self.diag.exit_code = code;
+        if (res.code != 0) {
+            self.diag.exit_code = res.code;
             return error.RunFailed;
         }
+        var owners: dir_walk.Owners = .empty;
+        if (posix_util.readFileAlloc(self.a, owners_path, 1 << 30)) |bytes| {
+            owners = try dir_walk.parseOwners(self.a, bytes);
+        } else |e| if (e != error.FileNotFound) return e;
         var skip: steps.MountpointSkip = .{};
         var w = try dir_walk.Walker.init(self.a, self.opts.voila_root, .{
             .mode = .overlay_upper,
-            .host_root = .{ .uid = std.os.linux.getuid(), .gid = std.os.linux.getgid() },
+            .ids = res.ids orelse idmap.Mapping.single(std.os.linux.getuid(), std.os.linux.getgid()),
+            .owners = &owners,
             .skip = skip.skip(),
         });
         defer w.deinit();

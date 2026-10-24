@@ -218,6 +218,28 @@ pub fn setMtime(path: []const u8, sec: i64) Error!void {
     _ = try check(linux.utimensat(linux.AT.FDCWD, try toZ(&zb, path), &ts, linux.AT.SYMLINK_NOFOLLOW));
 }
 
+/// Changes owner without following symlinks.
+pub fn lchown(path: []const u8, uid: u32, gid: u32) Error!void {
+    var zb: Z = undefined;
+    _ = try check(linux.fchownat(linux.AT.FDCWD, try toZ(&zb, path), uid, gid, linux.AT.SYMLINK_NOFOLLOW));
+}
+
+/// chmod that fails instead of following a symlink (fchmodat2, Linux 6.6+; older
+/// kernels go through an O_NOFOLLOW fd).
+pub fn chmodNoFollow(path: []const u8, perm: u32) Error!void {
+    var zb: Z = undefined;
+    const z = try toZ(&zb, path);
+    const rc = linux.fchmodat2(linux.AT.FDCWD, z, perm, linux.AT.SYMLINK_NOFOLLOW);
+    if (linux.errno(rc) != .NOSYS) {
+        _ = try check(rc);
+        return;
+    }
+    const flags: linux.O = .{ .NOFOLLOW = true, .NONBLOCK = true, .NOCTTY = true, .CLOEXEC = true };
+    const fd: linux.fd_t = @intCast(try check(linux.openat(linux.AT.FDCWD, z, flags, 0)));
+    defer _ = linux.close(fd);
+    _ = try check(linux.fchmod(fd, perm));
+}
+
 /// `rm -rf`; a missing path is not an error.
 pub fn removeTree(allocator: std.mem.Allocator, path: []const u8) Error!void {
     const st = lstat(path) catch |e| switch (e) {
