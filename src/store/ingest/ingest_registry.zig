@@ -109,6 +109,7 @@ fn digestToBytes(allocator: std.mem.Allocator, digest: []const u8) ![]u8 {
 pub const Error = error{BadDigest};
 
 const crypto = std.crypto.hash.sha2;
+const fs = @import("../../sys/fs.zig");
 
 test "ingest registry smoke" {
     const gpa = std.testing.allocator;
@@ -116,10 +117,11 @@ test "ingest registry smoke" {
     var fake = try newFakeRegistryClient(gpa, content);
     defer fake.deinit(gpa);
 
-    const tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(gpa, ".");
+    const root = try fs.makeTempDir(gpa, "voila-ingest-registry-test");
     defer gpa.free(root);
+    defer fs.removeTree(gpa, root) catch {};
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
 
     const ref = ocireg.Ref{
         .host = try gpa.dupe(u8, "registry.example.com"),
@@ -135,12 +137,7 @@ test "ingest registry smoke" {
     }
 
     const client = fake.client();
-    const res = try ingestRegistry(gpa, root, client, ref, .{});
-    defer {
-        gpa.free(res.ref);
-        gpa.free(res.image_digest);
-        gpa.free(res.layers);
-    }
+    const res = try ingestRegistry(arena.allocator(), root, client, ref, .{});
     try std.testing.expect(res.layers.len == 1);
     try std.testing.expect(res.chunk_count == 1);
     try std.testing.expect(res.bytes_in == content.len);
@@ -160,12 +157,8 @@ const FakeRegistry = struct {
         gpa.free(self.config_digest);
         for (self.layer_digests) |d| gpa.free(d);
         gpa.free(self.layer_digests);
-        gpa.free(self.manifest.config_digest);
         gpa.free(self.manifest.config_media_type);
-        for (self.manifest.layers) |l| {
-            gpa.free(l.digest);
-            gpa.free(l.media_type);
-        }
+        for (self.manifest.layers) |l| gpa.free(l.media_type);
         gpa.free(self.manifest.layers);
         gpa.free(self.manifest.manifest_digest);
     }
@@ -231,7 +224,7 @@ fn tarHeader(name: []const u8, size: usize) ![512]u8 {
 }
 
 fn writeOct(block: *[512]u8, off: usize, value: usize) void {
-    _ = std.fmt.bufPrint(block[off .. off + 12], "{o:0>11}", .{value});
+    _ = std.fmt.bufPrint(block[off .. off + 12], "{o:0>11}", .{value}) catch unreachable;
 }
 
 fn digestPrefixed(gpa: std.mem.Allocator, data: []const u8) ![]const u8 {
