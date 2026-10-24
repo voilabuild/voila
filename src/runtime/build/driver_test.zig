@@ -328,3 +328,17 @@ test "COPY --chown resolves names from the image's passwd and group" {
     try std.testing.expectError(error.UnknownChownName, env.build(&runner, "FROM test/base:1\nCOPY --chown=app:nogroup g.txt /e\n", &diag));
     try std.testing.expectError(error.UnknownChownName, env.build(&runner, "FROM scratch\nCOPY --chown=app g.txt /e\n", &diag));
 }
+
+test "COPY --chmod leaves symlinks alone" {
+    var env = try Env.init();
+    defer env.deinit();
+    try env.file("d/real", "r\n");
+    const link = try std.fmt.allocPrint(env.arena.allocator(), "{s}/d/link", .{env.ctx});
+    try fs.symlink("real", link);
+    var runner: FakeRunner = .{ .arena = env.arena.allocator() };
+    var diag: driver.Diagnostic = .{};
+    const res = try env.build(&runner, "FROM scratch\nCOPY --chmod=0600 d /d\n", &diag);
+    const t = try env.imageTree(res.root);
+    try std.testing.expectEqual(@as(u32, 0o600), t.lookup("d/real").?.mode & 0o7777);
+    try std.testing.expect(t.lookup("d/link").?.mode & 0o7777 != 0o600);
+}

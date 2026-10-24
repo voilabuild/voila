@@ -49,7 +49,8 @@ unchanged.
   `ENTRYPOINT`, `EXPOSE`, `LABEL`, `SHELL`, `HEALTHCHECK`
   (`--interval`/`--timeout`/`--start-period`/`--retries`, `CMD` or `NONE`),
   `STOPSIGNAL`, `VOLUME`, `MAINTAINER`, line continuations, comments and
-  `.dockerignore`. `HEALTHCHECK`, `STOPSIGNAL` and `VOLUME` are recorded in
+  `.dockerignore`. Durations are integers with units (`30s`, `1m30s`);
+  fractions such as `1.5s` are rejected. `HEALTHCHECK`, `STOPSIGNAL` and `VOLUME` are recorded in
   the image config only; `voila run` does not act on them yet.
 - Not supported yet: multi-stage builds, `RUN --mount`, `COPY --from`, `ADD`
   of URLs or tar auto-extraction, heredocs, `ONBUILD`, symbolic

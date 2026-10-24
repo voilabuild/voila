@@ -13,6 +13,9 @@ const from_manifest = @import("../../store/ingest/ingest_from_manifest.zig");
 const manifest_mod = @import("../../store/ingest/ingest_manifest.zig");
 const merge_mod = @import("../../store/ingest/ingest_merge.zig");
 const ingest_build = @import("../../store/ingest/ingest_build.zig");
+const voila_chunk_load = @import("../../store/voila_chunk_load.zig");
+const voila_chunk_index = @import("../../store/voila_chunk_index.zig");
+const voila_store = @import("../../store/voila_store.zig");
 const chunk_store = @import("../../store/ingest/ingest_chunk_store.zig");
 const build_cache = @import("../../store/build_cache.zig");
 const image_store = @import("image_store.zig");
@@ -58,7 +61,7 @@ pub const Result = struct {
     cached: usize,
 };
 
-pub const Error = error{ RunFailed, UnsupportedChown, UnknownChownName, EmptyBuild };
+pub const Error = error{ RunFailed, UnsupportedChown, UnknownChownName, ImageFileUnreadable, EmptyBuild };
 
 pub fn build(io: std.Io, gpa: std.mem.Allocator, opts: Options, diag: *Diagnostic) !Result {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -276,7 +279,8 @@ const Builder = struct {
         const into_dir = std.mem.endsWith(u8, dest_raw, "/") or sources.len > 1 or
             (sources.len == 1 and sources[0].is_dir) or glob.hasWildcard(srcs.items[0]);
 
-        const norm = try std.fmt.allocPrint(self.a, "COPY {d}:{d} {o} {s} {s}", .{ owner.uid, owner.gid, c.chmod orelse 0xffff, dest, if (into_dir) "dir" else "file" });
+        const chmod_key = if (c.chmod) |m| try std.fmt.allocPrint(self.a, "{o}", .{m}) else "-";
+        const norm = try std.fmt.allocPrint(self.a, "COPY {d}:{d} {s} {s} {s}", .{ owner.uid, owner.gid, chmod_key, dest, if (into_dir) "dir" else "file" });
         const key = cache_key.compute(.{
             .parent_root = self.root,
             .instruction = norm,
@@ -313,7 +317,13 @@ const Builder = struct {
             switch (node.node_type) {
                 .regular => {
                     var out: std.ArrayList(u8) = .empty;
-                    for (node.blocks.items) |blk| try out.appendSlice(self.a, try chunk_store.getBytes(self.a, self.opts.voila_root, blk.chunk_id));
+                    for (node.blocks.items) |blk| {
+                        // Fetches from the registry on a local miss (lazily pulled bases).
+                        const hex = chunk_store.idToHex(blk.chunk_id);
+                        const algo = voila_chunk_index.compAlgoForChunk(self.opts.voila_root, &blk.chunk_id) catch voila_store.AlgoRaw;
+                        const data = voila_chunk_load.loadChunkRaw(self.io, self.a, self.opts.voila_root, &hex, algo) catch return error.ImageFileUnreadable;
+                        try out.appendSlice(self.a, data);
+                    }
                     return out.items;
                 },
                 .symlink => {

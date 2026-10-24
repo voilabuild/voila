@@ -176,7 +176,9 @@ pub const Walker = struct {
             .copy => {
                 node.uid = self.opts.owner.uid;
                 node.gid = self.opts.owner.gid;
-                if (self.opts.chmod) |m| node.mode = m;
+                if (node.node_type != .symlink) if (self.opts.chmod) |m| {
+                    node.mode = m;
+                };
             },
             .overlay_upper => {
                 const hr = self.opts.host_root;

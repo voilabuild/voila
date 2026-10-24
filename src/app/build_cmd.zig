@@ -117,6 +117,7 @@ fn reportError(df_path: []const u8, e: anyerror, diag: driver.Diagnostic) void {
         error.UnsupportedWildcard => "COPY wildcards are only supported in the last path segment",
         error.UnsupportedChown => "invalid --chown",
         error.UnknownChownName => "COPY --chown names a user or group missing from the image's /etc/passwd or /etc/group",
+        error.ImageFileUnreadable => "could not read /etc/passwd or /etc/group from the image (chunk missing locally and not fetchable)",
         error.BadValue => "invalid flag value or argument",
         error.MultiStage => "multi-stage builds are not supported yet",
         error.Unsupported => "instruction or flag not supported yet",

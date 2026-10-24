@@ -299,6 +299,7 @@ pub fn parseDuration(s: []const u8) ?u64 {
         const part = std.math.mul(u64, n, mult) catch return null;
         total = std.math.add(u64, total, part) catch return null;
     }
+    if (total > std.math.maxInt(i64)) return null;
     return total;
 }
 
@@ -564,6 +565,7 @@ test "parse COPY --chmod and malformed extras" {
         .{ .text = "FROM a\nSHELL []", .err = error.BadValue },
         .{ .text = "FROM a\nHEALTHCHECK --interval=xx CMD true", .err = error.BadValue },
         .{ .text = "FROM a\nHEALTHCHECK --retries=-1 CMD true", .err = error.BadValue },
+        .{ .text = "FROM a\nHEALTHCHECK --interval=3000000h CMD true", .err = error.BadValue },
         .{ .text = "FROM a\nHEALTHCHECK --interval=1s", .err = error.MissingArgument },
         .{ .text = "FROM a\nHEALTHCHECK CMD", .err = error.MissingArgument },
         .{ .text = "FROM a\nHEALTHCHECK NONE x", .err = error.BadValue },
@@ -577,6 +579,8 @@ test "parse COPY --chmod and malformed extras" {
 }
 
 test "parseDuration" {
+    try testing.expectEqual(@as(?u64, null), parseDuration("3000000h"));
+    try testing.expectEqual(@as(?u64, null), parseDuration("1.5s"));
     try testing.expectEqual(@as(?u64, 1_500_000_000), parseDuration("1s500ms"));
     try testing.expectEqual(@as(?u64, 3_600_000_000_000), parseDuration("1h"));
     try testing.expectEqual(@as(?u64, null), parseDuration("10"));
