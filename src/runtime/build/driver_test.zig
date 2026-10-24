@@ -86,13 +86,19 @@ const Env = struct {
     }
 
     fn build(self: *Env, runner: *FakeRunner, text: []const u8, diag: *driver.Diagnostic) !driver.Result {
+        return self.buildWith(runner, text, "", null, diag);
+    }
+
+    fn buildWith(self: *Env, runner: *FakeRunner, text: []const u8, target: []const u8, progress: ?driver.Progress, diag: *driver.Diagnostic) !driver.Result {
         return driver.build(std.testing.io, std.testing.allocator, .{
             .voila_root = self.root,
             .context_dir = self.ctx,
             .dockerfile_text = text,
             .tag = "test/app:1",
+            .target = target,
             .build_args = &.{},
             .runner = runner.runner(),
+            .progress = progress,
         }, diag);
     }
 
@@ -211,4 +217,110 @@ test "FROM scratch with COPY of a single file to a file path" {
     try std.testing.expectEqual(@as(u32, 10), n.uid);
     try std.testing.expectEqual(@as(u32, 20), n.gid);
     try std.testing.expect(t.lookup("opt/tool") != null);
+}
+
+const multi_stage =
+    \\ARG BASE=test/base:1
+    \\FROM ${BASE} AS builder
+    \\ENV MODE=release
+    \\COPY main.c /src/main.c
+    \\RUN write /out/app binary-$MODE
+    \\RUN write /out/lib/x.so lib
+    \\FROM ${BASE} AS unused
+    \\RUN fail
+    \\FROM builder AS tester
+    \\RUN write /tested $MODE
+    \\FROM scratch
+    \\COPY --from=builder /out/app /bin/
+    \\COPY --from=Builder --chown=5:6 /out/lib /lib/
+    \\COPY --from=0 /src/*.c /usr/src/
+    \\COPY --from=test/base:1 /etc/os-release /etc/os-release
+;
+
+const Labels = struct {
+    seen: std.ArrayList(u8) = .empty,
+    a: std.mem.Allocator,
+
+    fn progress(self: *Labels) driver.Progress {
+        return .{ .ptr = self, .func = on };
+    }
+
+    fn on(ptr: *anyopaque, ev: driver.StepEvent) void {
+        const self: *Labels = @ptrCast(@alignCast(ptr));
+        if (ev.index != 0) return;
+        self.seen.print(self.a, "{s};", .{ev.stage}) catch {};
+    }
+};
+
+fn chunkOf(t: *tree_mod.LayerTree, path: []const u8) [32]u8 {
+    return t.lookup(path).?.blocks.items[0].chunk_id;
+}
+
+test "multi-stage build copies by chunk reference, prunes, targets and caches" {
+    var env = try Env.init();
+    defer env.deinit();
+    try env.file("base/etc/os-release", "ID=test\n");
+    try env.file("main.c", "int main;\n");
+    try env.baseImage("test/base:1", "{\"os\":\"linux\",\"config\":{\"Env\":[\"PATH=/bin\"]}}");
+    var runner: FakeRunner = .{ .arena = env.arena.allocator() };
+    var diag: driver.Diagnostic = .{};
+    var labels: Labels = .{ .a = env.arena.allocator() };
+
+    const first = try env.buildWith(&runner, multi_stage, "", labels.progress(), &diag);
+    try std.testing.expectEqual(@as(usize, 2), runner.calls);
+    try std.testing.expectEqualStrings("builder;stage-3;", labels.seen.items);
+    try std.testing.expectEqual(@as(usize, 8), first.steps);
+    const t = try env.imageTree(first.root);
+    try std.testing.expectEqual(@as(u64, 12), t.lookup("bin/app").?.size);
+    try std.testing.expectEqual(@as(u32, 6), t.lookup("lib/x.so").?.gid);
+    try std.testing.expect(t.lookup("usr/src/main.c") != null);
+    try std.testing.expect(t.lookup("etc/os-release") != null);
+    try std.testing.expect(t.lookup("src") == null);
+    try std.testing.expect(t.lookup("out") == null);
+    try std.testing.expect(t.lookup("tested") == null);
+
+    const again = try env.buildWith(&runner, multi_stage, "", null, &diag);
+    try std.testing.expectEqual(@as(usize, 2), runner.calls);
+    try std.testing.expectEqual(@as(usize, 7), again.cached);
+    try std.testing.expectEqualSlices(u8, &first.root, &again.root);
+
+    const b = try env.buildWith(&runner, multi_stage, "builder", null, &diag);
+    try std.testing.expectEqual(@as(usize, 4), b.steps);
+    try std.testing.expectEqual(@as(usize, 3), b.cached);
+    const bt = try env.imageTree(b.root);
+    try std.testing.expect(bt.lookup("etc/os-release") != null);
+    try std.testing.expectEqualSlices(u8, &chunkOf(bt, "out/app"), &chunkOf(t, "bin/app"));
+    try std.testing.expectEqualSlices(u8, &chunkOf(bt, "out/lib/x.so"), &chunkOf(t, "lib/x.so"));
+
+    const tester = try env.buildWith(&runner, multi_stage, "tester", null, &diag);
+    try std.testing.expectEqual(@as(usize, 3), runner.calls);
+    const tt = try env.imageTree(tester.root);
+    try std.testing.expectEqual(@as(u64, 5), tt.lookup("tested").?.size);
+    try std.testing.expect(tt.lookup("out/app") != null);
+
+    try std.testing.expectError(error.RunFailed, env.buildWith(&runner, multi_stage, "unused", null, &diag));
+    try std.testing.expectEqual(@as(usize, 8), diag.line);
+    try std.testing.expectError(error.UnknownTarget, env.buildWith(&runner, multi_stage, "nope", null, &diag));
+
+    try env.file("main.c", "int main(void);\n");
+    const changed = try env.buildWith(&runner, multi_stage, "", null, &diag);
+    try std.testing.expectEqual(@as(usize, 6), runner.calls);
+    try std.testing.expectEqual(@as(usize, 0), changed.cached);
+    try std.testing.expect(!std.mem.eql(u8, &first.root, &changed.root));
+    try std.testing.expectEqual(@as(u64, 16), (try env.imageTree(changed.root)).lookup("usr/src/main.c").?.size);
+}
+
+test "COPY --from reports missing sources and bad stage indexes" {
+    var env = try Env.init();
+    defer env.deinit();
+    try env.file("a.txt", "a\n");
+    var runner: FakeRunner = .{ .arena = env.arena.allocator() };
+    var diag: driver.Diagnostic = .{};
+    const base = "FROM scratch AS s\nCOPY a.txt /a.txt\nFROM scratch\n";
+    try std.testing.expectError(error.CopySourceMissing, env.build(&runner, base ++ "COPY --from=s /nope /\n", &diag));
+    try std.testing.expectEqual(@as(usize, 4), diag.line);
+    try std.testing.expectError(error.StageNotFound, env.build(&runner, base ++ "COPY --from=1 /a.txt /\n", &diag));
+    try std.testing.expectError(error.BaseImageNotFound, env.build(&runner, base ++ "COPY --from=nope/x:1 /a.txt /\n", &diag));
+    const res = try env.build(&runner, base ++ "WORKDIR /w\nCOPY --from=s a.txt b.txt\n", &diag);
+    try std.testing.expectEqual(@as(u64, 2), (try env.imageTree(res.root)).lookup("w/b.txt").?.size);
 }
