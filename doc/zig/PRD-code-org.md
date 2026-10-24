@@ -37,10 +37,10 @@ src/
   core/      pure logic, no I/O: ChunkId, digest, hex, Manifest/Tree model, constants
   codec/     proto wire format, manifest proto/json, OCI json
   c/         translate-c shims: blake3.h zstd.h sqlite.h fuse.h
-  sys/       the only code that touches std.c / std.os.linux: mount, nbd ioctl, process, fs
+  sys/       the only code that touches std.c / std.os.linux: mount, process, fs
   store/     Store interface; local/ (sqlite + blob files); chunk cache
   registry/  Registry client interface; http/ (OCI, hub, creds, pull)
-  mount/     Backend interface; fuse/, erofs_nbd/; probe.zig
+  mount/     Backend interface; fuse/; probe.zig
   runtime/   container Runtime interface; local/, remote/; oci/ (runc launcher)
   daemon/    contexts, lifecycle, events; transport/ interface
   cli/       argv parsing, command table, output formatting
@@ -75,7 +75,7 @@ There are five swappable boundaries:
 
 | Interface | Implementations today | Next likely |
 |---|---|---|
-| `mount.Backend` | fuse, erofs_nbd | composefs, overlay |
+| `mount.Backend` | fuse | erofs+nbd (removed in #85), composefs, overlay |
 | `runtime.Runtime` | local (in-proc), remote (daemon) | — |
 | `runtime.oci.Launcher` | runc | crun, youki |
 | `store.Store` | local | remote/cached tiers |
@@ -175,7 +175,7 @@ Good: says why the shortcut is correct.
 |---|---|---|---|
 | unit | `test` blocks next to the code | `zig build test` | nothing |
 | integration | `test` blocks using `testing.zig` fakes + temp dirs | `zig build test` | nothing |
-| privileged | FUSE/NBD/EROFS/runc | `zig build test -Dprivileged` | root, Linux |
+| privileged | FUSE, user namespaces | `zig build test -Dprivileged` | root, Linux |
 | e2e | `test/e2e/*.sh` | see `doc/TESTING.md` | root, built binaries |
 
 - Tests use `std.testing.allocator`, so a leak fails the test.

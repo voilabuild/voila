@@ -5,7 +5,7 @@
 | Tier | Where | Command | Needs |
 |---|---|---|---|
 | unit + integration | `test` blocks next to the code, listed in the layer's `src/<layer>/root.zig` | `zig build test` (one test binary per layer) | nothing (temp dirs, fakes) |
-| privileged | `src/sys/privileged_test.zig` | `zig build test -Dprivileged` | root or userns, `/dev/fuse`, nbd, erofs |
+| privileged | `src/sys/privileged_test.zig` | `zig build test -Dprivileged` | user namespaces, `/dev/fuse` |
 | build gate | `test/gates/build.sh [voila]` | see below | `/dev/fuse`, user namespaces, static busybox |
 | legacy gates | `test/gates/gate*.sh`, `pg_coldstart.sh`, `e2e_auth.sh` | not maintained | Go release line |
 
@@ -30,7 +30,7 @@ namespaces for the installed binary's path, so pass that binary, not
 
 ## Legacy gates
 
-`gate3.sh` … `gate9.sh`, `pg_coldstart.sh` and `e2e_auth.sh` were written for
+`gate3.sh` … `gate8.sh`, `pg_coldstart.sh` and `e2e_auth.sh` were written for
 the Go release line (`voilad`, runc, `go build`). Several still build Go code
 and source `_build_standalone_registry.sh`. They are kept as references for
 the scenarios and the benchmark numbers in [ARCHITECTURE.md](ARCHITECTURE.md)

@@ -1,7 +1,7 @@
 {
 	"name": "voila",
 	"image": "mcr.microsoft.com/devcontainers/base:bookworm",
-	// Privileged gives /dev/fuse, user namespaces and NBD for the privileged tests.
+	// Privileged gives /dev/fuse and user namespaces for the privileged tests.
 	"runArgs": ["--privileged"],
 	"remoteUser": "root",
 	"postCreateCommand": ".devcontainer/post-create.sh",

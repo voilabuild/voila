@@ -1,13 +1,13 @@
 # AGENTS.md
 
 voila runs OCI images from a content-addressed chunk store (BLAKE3 ids, zstd blobs), mounted
-through FUSE or EROFS+NBD. Linux only. Rules: [CONTRIBUTING.md](CONTRIBUTING.md). Design: [PRD](doc/zig/PRD-code-org.md).
+through FUSE. Linux only. Rules: [CONTRIBUTING.md](CONTRIBUTING.md). Design: [PRD](doc/zig/PRD-code-org.md).
 
 ## Build & test
 
 ```
 zig build && zig build test        # root workspace, no root needed
-zig build test -Dprivileged        # needs root, /dev/fuse, nbd, erofs, runc
+zig build test -Dprivileged        # needs /dev/fuse and user namespaces
 zig fmt --check .
 ```
 

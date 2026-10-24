@@ -14,7 +14,7 @@ mise install          # zig 0.17.0
 zig build             # zig-out/bin/voila (Debug)
 zig build -Doptimize=ReleaseFast
 zig build test        # unit + integration tests, no root
-zig build test -Dprivileged   # needs root, /dev/fuse, nbd, erofs
+zig build test -Dprivileged   # needs /dev/fuse, user namespaces
 zig fmt --check .
 ```
 
