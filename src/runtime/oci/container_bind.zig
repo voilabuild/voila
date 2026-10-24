@@ -2,6 +2,7 @@
 const std = @import("std");
 const run_cli_parse = @import("../../cli/run_cli_parse.zig");
 const posix_util = @import("../../sys/posix_util.zig");
+const fs = @import("../../sys/fs.zig");
 
 const MS_BIND: usize = 4096;
 const MS_REC: usize = 16384;
@@ -59,12 +60,6 @@ pub fn enterUserNamespaceOnly() bool {
     return enterUserNamespace();
 }
 
-/// Private mount namespace (caller must already be in a user namespace).
-pub fn attachPrivateMountRoot(mount_dir: []const u8) bool {
-    if (unshare(@intCast(CLONE_NEWNS)) != 0) return false;
-    return bindPrivateRoot(mount_dir);
-}
-
 /// Call in the FUSE worker before mounting when `-v` bind mounts are used.
 pub fn setupMountNamespaceForWorker(mount_dir: []const u8) bool {
     if (!enterUserAndMountNs()) return false;
@@ -76,6 +71,7 @@ pub fn applyVolumeBinds(mount_dir: []const u8, volumes: []const run_cli_parse.Vo
         const target = std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ mount_dir, vol.container }) catch return false;
         defer std.heap.page_allocator.free(target);
         ensureParent(target) catch return false;
+        ensureTarget(vol.host, target);
         const host_z = allocZ(vol.host) catch return false;
         defer std.heap.page_allocator.free(host_z);
         const target_z = allocZ(target) catch return false;
@@ -92,6 +88,17 @@ pub fn applyVolumeBinds(mount_dir: []const u8, volumes: []const run_cli_parse.Vo
 pub fn prepareExecEnvironment(mount_dir: []const u8, volumes: []const run_cli_parse.Volume) bool {
     if (!setupMountNamespaceForWorker(mount_dir)) return false;
     return applyVolumeBinds(mount_dir, volumes);
+}
+
+/// Create a missing bind target of the host path's kind; on a read-only root it stays missing.
+fn ensureTarget(host: []const u8, target: []const u8) void {
+    if (posix_util.access(target)) return;
+    const st = fs.lstat(host) catch return;
+    if (st.kind == .dir) {
+        fs.makePath(target) catch {};
+    } else {
+        fs.writeFile(target, "", 0o644) catch {};
+    }
 }
 
 fn ensureParent(path: []const u8) !void {

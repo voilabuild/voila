@@ -1,11 +1,11 @@
 //! Rootless RUN: the step's image is FUSE-mounted read-only, overlayfs on top captures
-//! writes in `upper_dir`, and the command runs chrooted in a user + mount namespace.
+//! writes in `upper_dir`, and the command runs pivoted into it in a user + mount + PID namespace.
 const std = @import("std");
 const steps = @import("steps.zig");
 const fs = @import("../../sys/fs.zig");
 const container_fuse_sibling = @import("../oci/container_fuse_sibling.zig");
 const container_bind = @import("../oci/container_bind.zig");
-const container_chroot = @import("../oci/container_chroot.zig");
+const container_root = @import("../oci/container_root.zig");
 
 extern "c" fn unshare(flags: c_int) c_int;
 extern "c" fn mount(source: ?[*:0]const u8, target: [*:0]const u8, fstype: ?[*:0]const u8, flags: usize, data: ?*const anyopaque) c_int;
@@ -63,7 +63,6 @@ pub const NamespaceRunner = struct {
 
 /// Everything the child needs, prepared before fork so the child only makes syscalls.
 const Plan = struct {
-    merged: []const u8,
     merged_z: [:0]const u8,
     overlay_opts: [:0]const u8,
     workdir_z: ?[:0]const u8,
@@ -73,6 +72,7 @@ const Plan = struct {
     candidates: []const [:0]const u8,
     resolv_src: [:0]const u8 = "/etc/resolv.conf",
     resolv_dst: [:0]const u8,
+    root_ops: []const container_root.Op,
 
     fn init(a: std.mem.Allocator, req: steps.RunRequest, lower: []const u8, work: []const u8, merged: []const u8) !Plan {
         const argv = try a.allocSentinel(?[*:0]const u8, req.argv.len, null);
@@ -92,7 +92,6 @@ const Plan = struct {
             while (it.next()) |dir| try cands.append(a, try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ dir, exe }, 0));
         }
         return .{
-            .merged = merged,
             .merged_z = try a.dupeSentinel(u8, merged, 0),
             .overlay_opts = try std.fmt.allocPrintSentinel(a, "lowerdir={s},upperdir={s},workdir={s},userxattr", .{ lower, req.upper_dir, work }, 0),
             .workdir_z = if (req.workdir.len > 0) try a.dupeSentinel(u8, req.workdir, 0) else null,
@@ -100,6 +99,7 @@ const Plan = struct {
             .envp = envp,
             .candidates = try cands.toOwnedSlice(a),
             .resolv_dst = try std.fmt.allocPrintSentinel(a, "{s}/etc/resolv.conf", .{merged}, 0),
+            .root_ops = try container_root.plan(a, merged),
         };
     }
 
@@ -112,7 +112,10 @@ const Plan = struct {
         const fd = std.c.open(self.resolv_dst, .{ .ACCMODE = .WRONLY, .CREAT = true }, @as(std.c.mode_t, 0o644));
         if (fd >= 0) _ = std.c.close(fd);
         _ = mount(self.resolv_src, self.resolv_dst, null, MS_BIND, null);
-        container_chroot.enterRootfs(self.merged) catch return;
+        const code = container_root.enterPidNamespace() catch return;
+        if (code) |c| std.c._exit(c);
+        container_root.apply(self.root_ops);
+        container_root.pivotInto(self.merged_z) catch return;
         if (self.workdir_z) |wd| {
             makePathZ(wd);
             if (std.c.chdir(wd) != 0) return;

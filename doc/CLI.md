@@ -61,8 +61,17 @@ unchanged.
 
 ## Running containers
 
-`voila run` always runs the command chrooted into the image root, so absolute
-paths resolve inside the image, with or without `-w`, `-v`, `-it` or `-p`. It
+`voila run` always runs the command inside the image root, so absolute
+paths resolve inside the image, with or without `-w`, `-v`, `-it` or `-p`. The
+command runs as PID 1 in its own user, mount and PID namespaces, with a fresh
+`/proc`, a minimal `/dev` (`null`, `zero`, `full`, `random`, `urandom`, `tty`,
+`pts`, `shm`) and a read-only `/sys`; the host filesystem is not reachable.
+The image root is writable, but writes go to memory and are discarded when the
+command exits; a `-v` target missing from the image is created. Signals such as
+the `SIGTERM` from `voila stop` are forwarded; one the command does not handle
+ends it, as it would outside a PID namespace. Exit codes: the command's own, 128 + signal when it is killed, 125 when
+the sandbox cannot be set up, 126 when the command cannot be executed and 127
+when it is not found. It
 needs `/dev/fuse` and unprivileged user namespaces (on Ubuntu 24.04+, the
 AppArmor profile installed by `install.sh`). When they are unavailable, `run`
 exits with an error. It does not fall back to running on the host.

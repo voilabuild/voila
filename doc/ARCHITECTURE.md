@@ -91,12 +91,26 @@ everything afterwards is lazy.
 image without tarballs or OCI blobs. The base image is mounted read-only with
 the FUSE backend (image root shown as the build user), an unprivileged
 overlayfs on top captures each `RUN`'s writes in an upper dir, and the command
-runs chrooted in a user + mount namespace. The upper dir is walked straight
+runs in the rootless sandbox described below. The upper dir is walked straight
 into a layer tree with the same chunking as ingest (0/0 char devices become
 whiteouts, `user.overlay.opaque` marks opaque dirs) and merged over the
 current tree; `COPY` walks the context the same way and needs no sandbox.
 Steps are cached by `BLAKE3(parent root, instruction, env, inputs)`; a cache
 hit only swaps the root chunk, so fully cached builds never load a tree.
+
+**Rootless sandbox** (`voila run`, build `RUN`; `runtime/oci/container_root.zig`):
+a user, mount and PID namespace, with the command as PID 1 and its parent
+forwarding signals (killing it for a fatal signal it does not handle, which
+PID 1 would otherwise drop) and returning its exit status (128 + signal).
+`voila run` makes the read-only FUSE root writable with an overlayfs whose upper
+dir is a per-run tmpfs (writes are discarded at exit) and falls back to a
+read-only bind of the FUSE root when overlayfs is refused. The root gets a fresh
+`proc`, a tmpfs `/dev` with the host's `null`, `zero`, `full`, `random`,
+`urandom` and `tty` bound in, a new `devpts` instance and a tmpfs `/dev/shm`,
+and the host's `/sys` bound read-only (mounting `sysfs` needs a network
+namespace). The process then `pivot_root`s into it and detaches the old root,
+so the host filesystem is no longer mounted in the namespace; plain `chroot`
+is used only if `pivot_root` is refused.
 
 **runc bundle**: `root.readonly: true`, env/args/cwd from the image config,
 tmpfs on `/tmp`/`/var/tmp`/`/dev`/`/dev/shm`, default namespaces,
