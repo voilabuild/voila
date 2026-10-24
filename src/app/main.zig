@@ -1151,4 +1151,7 @@ test {
     _ = @import("../store/ingest/ingest_merge.zig");
     _ = @import("../core/dockerfile.zig");
     _ = @import("../core/build_cache_key.zig");
+    _ = @import("../sys/fs.zig");
+    _ = @import("../store/build_cache.zig");
+    _ = @import("../store/ingest/ingest_dir_walk_test.zig");
 }
