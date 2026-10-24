@@ -1,5 +1,5 @@
 const std = @import("std");
-const posix_util = @import("../../sys/posix_util.zig");
+const posix_util = @import("sys").posix_util;
 const fuse_vfs = @import("./fuse_vfs.zig");
 const fuse_libfuse = @import("./fuse_libfuse.zig");
 

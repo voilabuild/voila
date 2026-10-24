@@ -1,15 +1,15 @@
 //! Load a build's base image and persist the result as a regular local image.
 const std = @import("std");
-const tree_mod = @import("../../store/ingest/ingest_tree.zig");
-const manifest_mod = @import("../../store/ingest/ingest_manifest.zig");
-const ingest_build = @import("../../store/ingest/ingest_build.zig");
-const voila_resolve = @import("../../registry/voila_resolve.zig");
+const tree_mod = @import("store").ingest.ingest_tree;
+const manifest_mod = @import("store").ingest.ingest_manifest;
+const ingest_build = @import("store").ingest.ingest_build;
+const voila_resolve = @import("registry").voila_resolve;
 const run_config = @import("../oci/voila_image_run_config.zig");
-const registry_ref = @import("../../registry/voila_registry_ref.zig");
-const voila_image_pull = @import("../../registry/voila_image_pull.zig");
-const voila_image_import = @import("../../registry/voila_image_import.zig");
-const voila_manifest_cache = @import("../../registry/voila_manifest_cache.zig");
-const voila_manifest_json = @import("../../codec/voila_manifest_json.zig");
+const registry_ref = @import("registry").voila_registry_ref;
+const voila_image_pull = @import("registry").voila_image_pull;
+const voila_image_import = @import("registry").voila_image_import;
+const voila_manifest_cache = @import("registry").voila_manifest_cache;
+const voila_manifest_json = @import("codec").voila_manifest_json;
 
 pub const Base = struct {
     root: [32]u8,

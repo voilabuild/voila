@@ -1,6 +1,6 @@
 //! Build step cache: step key -> resulting image root, under `<root>/build-cache/`.
 const std = @import("std");
-const fs = @import("../sys/fs.zig");
+const fs = @import("sys").fs;
 
 pub const StepResult = struct {
     /// Merged root manifest chunk after the step.

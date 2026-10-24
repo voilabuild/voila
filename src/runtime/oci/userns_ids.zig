@@ -1,9 +1,9 @@
 //! Rootless id ranges: pick the user's /etc/subuid range and write it with newuidmap/newgidmap.
 const std = @import("std");
-const idmap = @import("../../core/idmap.zig");
-const passwd = @import("../../core/passwd.zig");
-const posix_util = @import("../../sys/posix_util.zig");
-const process = @import("../../sys/process.zig");
+const idmap = @import("core").idmap;
+const passwd = @import("core").passwd;
+const posix_util = @import("sys").posix_util;
+const process = @import("sys").process;
 
 pub const Paths = struct {
     subuid: []const u8 = "/etc/subuid",

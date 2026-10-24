@@ -1,10 +1,10 @@
 //! Ingest a host directory (COPY sources or an overlayfs upper dir) into a `LayerTree`.
 const std = @import("std");
-const fs = @import("../../sys/fs.zig");
+const fs = @import("sys").fs;
 const tree_mod = @import("ingest_tree.zig");
 const layer_walk = @import("ingest_layer_walk.zig");
 const chunk_store = @import("ingest_chunk_store.zig");
-const idmap = @import("../../core/idmap.zig");
+const idmap = @import("core").idmap;
 const voila_store = @import("../voila_store.zig");
 
 pub const Mode = enum { copy, overlay_upper };

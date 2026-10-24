@@ -1,7 +1,7 @@
 const std = @import("std");
 const voila_http = @import("./voila_http.zig");
-const voila_store = @import("../store/voila_store.zig");
-const voila_chunk_load = @import("../store/voila_chunk_load.zig");
+const voila_store = @import("store").voila_store;
+const voila_chunk_load = @import("store").voila_chunk_load;
 const voila_fetch_stats = @import("./voila_fetch_stats.zig");
 const hub = @import("./voila_registry_hub.zig");
 

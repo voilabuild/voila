@@ -72,6 +72,33 @@ fn linkStaticBlake3(mod: *std.Build.Module, blake3_lib: *std.Build.Step.Compile)
     mod.linkLibrary(blake3_lib);
 }
 
+const Layer = struct {
+    name: []const u8,
+    /// Lower layers this one may import.
+    deps: []const []const u8,
+    /// Third-party and C modules this one may import.
+    ext: []const []const u8,
+};
+
+const CLibs = struct {
+    fuse: *std.Build.Step.Compile,
+    sqlite: *std.Build.Step.Compile,
+    blake3: *std.Build.Step.Compile,
+};
+
+fn linkCLibs(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    mod: *std.Build.Module,
+    libs: CLibs,
+) void {
+    mod.linkLibrary(libs.fuse);
+    mod.linkLibrary(libs.sqlite);
+    linkStaticZstd(b, target, optimize, mod);
+    linkStaticBlake3(mod, libs.blake3);
+}
+
 const fuse_c_flags = [_][]const u8{
     "-std=gnu11",
     "-D_GNU_SOURCE",
@@ -188,7 +215,7 @@ pub fn build(b: *std.Build) void {
     });
     const optimize = b.standardOptimizeOption(.{});
 
-    const privileged = b.option(bool, "privileged", "Run tests needing root, /dev/fuse, nbd, erofs, runc") orelse false;
+    const privileged = b.option(bool, "privileged", "Run tests needing /dev/fuse and user namespaces") orelse false;
     const test_options = b.addOptions();
     test_options.addOption(bool, "privileged", privileged);
 
@@ -236,24 +263,52 @@ pub fn build(b: *std.Build) void {
     const fuse_lib = createStaticFuse(b, target, optimize);
     const fuse3_mod = addFuse3Module(b, target, optimize, fuse_lib);
 
-    const app_mod = b.createModule(.{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "zio", .module = zio.module("zio") },
-            .{ .name = "fuse3", .module = fuse3_mod },
-            .{ .name = "zstd", .module = zstd_mod },
-            .{ .name = "blake3_c", .module = blake3_mod },
-            .{ .name = "sqlite_c", .module = sqlite_mod },
-            .{ .name = "build_options", .module = test_options.createModule() },
-        },
-    });
-    app_mod.linkLibrary(fuse_lib);
-    app_mod.linkLibrary(sqlite_lib);
-    linkStaticZstd(b, target, optimize, app_mod);
-    linkStaticBlake3(app_mod, blake3_lib);
+    const ext: []const std.Build.Module.Import = &.{
+        .{ .name = "zio", .module = zio.module("zio") },
+        .{ .name = "fuse3", .module = fuse3_mod },
+        .{ .name = "zstd", .module = zstd_mod },
+        .{ .name = "blake3_c", .module = blake3_mod },
+        .{ .name = "sqlite_c", .module = sqlite_mod },
+        .{ .name = "build_options", .module = test_options.createModule() },
+    };
+
+    // One module per layer. Each may import only the layers listed before it
+    // (AGENTS.md § Layers), so an upward import fails to compile. C bindings
+    // are scoped the same way.
+    const layer_specs = [_]Layer{
+        .{ .name = "core", .deps = &.{}, .ext = &.{} },
+        .{ .name = "codec", .deps = &.{"core"}, .ext = &.{} },
+        .{ .name = "sys", .deps = &.{"core"}, .ext = &.{"build_options"} },
+        .{ .name = "store", .deps = &.{ "core", "codec", "sys" }, .ext = &.{ "blake3_c", "sqlite_c", "zstd" } },
+        .{ .name = "registry", .deps = &.{ "core", "codec", "sys", "store" }, .ext = &.{"sqlite_c"} },
+        .{ .name = "mount", .deps = &.{ "core", "codec", "sys", "store", "registry" }, .ext = &.{ "fuse3", "zio" } },
+        .{ .name = "runtime", .deps = &.{ "core", "codec", "sys", "store", "registry", "mount" }, .ext = &.{} },
+        .{ .name = "app", .deps = &.{ "core", "codec", "sys", "store", "registry", "mount", "runtime" }, .ext = &.{"zio"} },
+    };
+    var layers: [layer_specs.len]*std.Build.Module = undefined;
+    for (layer_specs, 0..) |spec, i| {
+        var imports: std.ArrayList(std.Build.Module.Import) = .empty;
+        for (spec.ext) |name| {
+            const e = for (ext) |imp| {
+                if (std.mem.eql(u8, imp.name, name)) break imp;
+            } else std.debug.panic("layer {s}: unknown external module {s}", .{ spec.name, name });
+            imports.append(b.allocator, e) catch @panic("OOM");
+        }
+        for (spec.deps) |dep| {
+            const j = for (layer_specs[0..i], 0..) |prev, k| {
+                if (std.mem.eql(u8, prev.name, dep)) break k;
+            } else std.debug.panic("layer {s}: {s} must come first", .{ spec.name, dep });
+            imports.append(b.allocator, .{ .name = dep, .module = layers[j] }) catch @panic("OOM");
+        }
+        layers[i] = b.createModule(.{
+            .root_source_file = b.path(b.fmt("src/{s}/root.zig", .{spec.name})),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = imports.items,
+        });
+    }
+    const app_mod = layers[layers.len - 1];
 
     const root_mod = b.createModule(.{
         .root_source_file = b.path("cmd/voila/main.zig"),
@@ -264,10 +319,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "app", .module = app_mod },
         },
     });
-    root_mod.linkLibrary(fuse_lib);
-    root_mod.linkLibrary(sqlite_lib);
-    linkStaticZstd(b, target, optimize, root_mod);
-    linkStaticBlake3(root_mod, blake3_lib);
 
     const exe = b.addExecutable(.{
         .name = "voila",
@@ -275,11 +326,9 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
-    const unit_tests = b.addTest(.{
-        .root_module = app_mod,
-    });
-    const run_unit_tests = b.addRunArtifact(unit_tests);
-
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_unit_tests.step);
+    for (layers) |layer| {
+        const unit_tests = b.addTest(.{ .root_module = layer });
+        test_step.dependOn(&b.addRunArtifact(unit_tests).step);
+    }
 }

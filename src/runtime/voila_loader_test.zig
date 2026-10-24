@@ -1,7 +1,7 @@
 const std = @import("std");
 const voila_loader = @import("./voila_loader.zig");
-const voila_ocireg = @import("../registry/voila_ocireg.zig");
-const posix_util = @import("../sys/posix_util.zig");
+const voila_ocireg = @import("registry").voila_ocireg;
+const posix_util = @import("sys").posix_util;
 
 test "ocireg canonical alpine short ref" {
     const gpa = std.testing.allocator;

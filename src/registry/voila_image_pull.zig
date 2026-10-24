@@ -1,17 +1,17 @@
 const std = @import("std");
 const sqlite = @import("sqlite_c");
 const voila_http = @import("./voila_http.zig");
-const voila_manifest_json = @import("../codec/voila_manifest_json.zig");
-const voila_refkey = @import("../core/voila_refkey.zig");
+const voila_manifest_json = @import("codec").voila_manifest_json;
+const voila_refkey = @import("core").voila_refkey;
 const registry_ref = @import("./voila_registry_ref.zig");
 const voila_registry_hub = @import("./voila_registry_hub.zig");
 const voila_registry = @import("./voila_registry.zig");
 const ocireg = @import("./voila_ocireg.zig");
-const posix_util = @import("../sys/posix_util.zig");
+const posix_util = @import("sys").posix_util;
 const voila_hub_import = @import("./voila_hub_import.zig");
 const voila_manifest_cache = @import("./voila_manifest_cache.zig");
 const voila_resolve = @import("./voila_resolve.zig");
-const proto_wire = @import("../codec/proto_wire.zig");
+const proto_wire = @import("codec").proto_wire;
 
 pub fn pullManifestOnce(
     io: std.Io,

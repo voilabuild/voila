@@ -2,7 +2,7 @@
 const std = @import("std");
 const Value = std.json.Value;
 const ObjectMap = std.json.ObjectMap;
-const dockerfile = @import("../core/dockerfile.zig");
+const dockerfile = @import("core").dockerfile;
 
 pub const ImageConfig = struct {
     arena: std.heap.ArenaAllocator,

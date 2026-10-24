@@ -1,14 +1,14 @@
 const std = @import("std");
 const fuse_abi = @import("./fuse_abi.zig");
-const voila_index = @import("../../core/voila_index.zig");
-const voila_tree = @import("../../store/voila_tree.zig");
-const voila_store = @import("../../store/voila_store.zig");
-const voila_chunk_load = @import("../../store/voila_chunk_load.zig");
-const hex_util = @import("../../core/hex_util.zig");
-const voila_chunk_index = @import("../../store/voila_chunk_index.zig");
-const voila_manifest_proto = @import("../../codec/voila_manifest_proto.zig");
-const idmap = @import("../../core/idmap.zig");
-const posix_util = @import("../../sys/posix_util.zig");
+const voila_index = @import("core").voila_index;
+const voila_tree = @import("store").voila_tree;
+const voila_store = @import("store").voila_store;
+const voila_chunk_load = @import("store").voila_chunk_load;
+const hex_util = @import("core").hex_util;
+const voila_chunk_index = @import("store").voila_chunk_index;
+const voila_manifest_proto = @import("codec").voila_manifest_proto;
+const idmap = @import("core").idmap;
+const posix_util = @import("sys").posix_util;
 
 pub const DirEnt = struct {
     name: []const u8,

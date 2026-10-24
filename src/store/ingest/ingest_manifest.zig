@@ -1,7 +1,7 @@
 const std = @import("std");
 const tree_mod = @import("ingest_tree.zig");
 const chunk_store = @import("ingest_chunk_store.zig");
-const proto = @import("../../codec/voila_manifest_proto.zig");
+const proto = @import("codec").voila_manifest_proto;
 
 pub const manifest_split_threshold = 64 * 1024;
 

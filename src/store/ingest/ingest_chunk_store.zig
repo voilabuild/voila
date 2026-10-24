@@ -1,6 +1,6 @@
 const std = @import("std");
 const voila_store = @import("../voila_store.zig");
-const posix_util = @import("../../sys/posix_util.zig");
+const posix_util = @import("sys").posix_util;
 const blake3_c = @import("blake3_c");
 
 pub const ChunkId = [32]u8;

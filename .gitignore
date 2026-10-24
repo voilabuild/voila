@@ -29,5 +29,7 @@ zig-pkg/
 .zig-cache/
 zig-out/
 
-# Gate scripts: detached worktree for backup-branch voila-registry builds
-.cache/gate-voila-registry-worktree/
+# e2e tests (uv)
+test/e2e/.venv/
+__pycache__/
+.pytest_cache/

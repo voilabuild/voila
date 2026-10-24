@@ -1,11 +1,11 @@
 const std = @import("std");
-const voila_resolve = @import("../registry/voila_resolve.zig");
-const voila_tree = @import("../store/voila_tree.zig");
-const voila_index = @import("../core/voila_index.zig");
-const voila_image_pull = @import("../registry/voila_image_pull.zig");
-const registry_ref = @import("../registry/voila_registry_ref.zig");
-const voila_registry_fetch = @import("../registry/voila_registry_fetch.zig");
-const voila_chunk_load = @import("../store/voila_chunk_load.zig");
+const voila_resolve = @import("registry").voila_resolve;
+const voila_tree = @import("store").voila_tree;
+const voila_index = @import("core").voila_index;
+const voila_image_pull = @import("registry").voila_image_pull;
+const registry_ref = @import("registry").voila_registry_ref;
+const voila_registry_fetch = @import("registry").voila_registry_fetch;
+const voila_chunk_load = @import("store").voila_chunk_load;
 
 pub fn loadIndex(io: ?std.Io, allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) !voila_index.Index {
     const ref_norm = try normalizeImageRef(allocator, image_ref);

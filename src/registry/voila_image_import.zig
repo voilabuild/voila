@@ -3,13 +3,13 @@ const ocireg = @import("./voila_ocireg.zig");
 const ocireg_client = @import("./ocireg_client.zig");
 const voila_registry_hub = @import("./voila_registry_hub.zig");
 const voila_manifest_cache = @import("./voila_manifest_cache.zig");
-const voila_manifest_json = @import("../codec/voila_manifest_json.zig");
+const voila_manifest_json = @import("codec").voila_manifest_json;
 const voila_image_push = @import("./voila_image_push.zig");
 const voila_image_pull = @import("./voila_image_pull.zig");
 const ingest_registry = @import("./ingest_registry.zig");
-const ingest_build = @import("../store/ingest/ingest_build.zig");
-const chunk_store = @import("../store/ingest/ingest_chunk_store.zig");
-const posix_util = @import("../sys/posix_util.zig");
+const ingest_build = @import("store").ingest.ingest_build;
+const chunk_store = @import("store").ingest.ingest_chunk_store;
+const posix_util = @import("sys").posix_util;
 
 pub const ImportOpts = struct {
     /// Upload chunks and manifest to the configured voila registry after local ingest.

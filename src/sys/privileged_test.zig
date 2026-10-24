@@ -1,22 +1,9 @@
 const std = @import("std");
 const linux = std.os.linux;
-const posix_util = @import("sys/posix_util.zig");
-
-fn requireRoot() !void {
-    if (linux.geteuid() != 0) return error.SkipZigTest;
-}
+const posix_util = @import("posix_util.zig");
 
 fn requirePath(path: []const u8) !void {
     if (!posix_util.access(path)) return error.SkipZigTest;
-}
-
-fn onPath(name: []const u8) bool {
-    var buf: [256]u8 = undefined;
-    for ([_][]const u8{ "/usr/sbin", "/usr/bin", "/sbin", "/bin", "/usr/local/bin" }) |dir| {
-        const p = std.fmt.bufPrint(&buf, "{s}/{s}", .{ dir, name }) catch return false;
-        if (posix_util.access(p)) return true;
-    }
-    return false;
 }
 
 test "privileged: /dev/fuse opens read-write" {
@@ -39,14 +26,4 @@ test "privileged: unshare user namespace in a child" {
     if (linux.W.IFEXITED(st) and linux.W.EXITSTATUS(st) == 3) return error.SkipZigTest;
     try std.testing.expect(linux.W.IFEXITED(st));
     try std.testing.expectEqual(@as(u8, 0), linux.W.EXITSTATUS(st));
-}
-
-test "privileged: erofs and runc tooling present" {
-    try requireRoot();
-    if (!onPath("mkfs.erofs") or !onPath("runc")) return error.SkipZigTest;
-}
-
-test "privileged: nbd device available" {
-    try requireRoot();
-    try requirePath("/dev/nbd0");
 }

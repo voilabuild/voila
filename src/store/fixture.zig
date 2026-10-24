@@ -1,6 +1,6 @@
 const std = @import("std");
-const constants = @import("../core/constants.zig");
-const posix_util = @import("../sys/posix_util.zig");
+const constants = @import("core").constants;
+const posix_util = @import("sys").posix_util;
 
 pub const ChunkSize = constants.chunk_size;
 

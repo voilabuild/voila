@@ -1,9 +1,9 @@
 //! `COPY --from`: graft nodes of another image's tree by chunk reference; no file data is read.
 const std = @import("std");
-const glob = @import("../../core/glob.zig");
-const tree_mod = @import("../../store/ingest/ingest_tree.zig");
-const layer_walk = @import("../../store/ingest/ingest_layer_walk.zig");
-const dir_walk = @import("../../store/ingest/ingest_dir_walk.zig");
+const glob = @import("core").glob;
+const tree_mod = @import("store").ingest.ingest_tree;
+const layer_walk = @import("store").ingest.ingest_layer_walk;
+const dir_walk = @import("store").ingest.ingest_dir_walk;
 const copy_sources = @import("copy_sources.zig");
 
 const Node = tree_mod.Node;

@@ -1,10 +1,10 @@
 const std = @import("std");
-const voila_manifest_proto = @import("../codec/voila_manifest_proto.zig");
-const voila_store = @import("../store/voila_store.zig");
-const voila_chunk_load = @import("../store/voila_chunk_load.zig");
+const voila_manifest_proto = @import("codec").voila_manifest_proto;
+const voila_store = @import("store").voila_store;
+const voila_chunk_load = @import("store").voila_chunk_load;
 const voila_registry_fetch = @import("./voila_registry_fetch.zig");
-const voila_chunk_index = @import("../store/voila_chunk_index.zig");
-const hex_util = @import("../core/hex_util.zig");
+const voila_chunk_index = @import("store").voila_chunk_index;
+const hex_util = @import("core").hex_util;
 
 fn hexToId(hex: []const u8, out: *[32]u8) !void {
     if (hex.len != 64) return error.BadHex;
@@ -83,16 +83,24 @@ pub fn reachableHexesIo(
     const obj = root.object;
 
     var reachable: std.StringHashMap(void) = .init(allocator);
+    defer reachable.deinit();
+    errdefer {
+        var kit = reachable.keyIterator();
+        while (kit.next()) |k| allocator.free(k.*);
+    }
     var manifest_queue: std.ArrayList([32]u8) = .empty;
+    defer manifest_queue.deinit(allocator);
 
-    const seed_fields = [_][]const u8{ "config_chunk", "merged_root_manifest_chunk" };
-    for (seed_fields) |field| {
-        const v = obj.get(field) orelse continue;
-        if (v != .string or v.string.len != 64) continue;
-        var id: [32]u8 = undefined;
-        try hexToId(v.string, &id);
-        try addHex(&reachable, allocator, v.string);
-        try manifest_queue.append(allocator, id);
+    // Manifests are only queued: walkManifestChunk records them and skips any already seen.
+    if (obj.get("config_chunk")) |v| {
+        if (v == .string) try addHex(&reachable, allocator, v.string);
+    }
+    if (obj.get("merged_root_manifest_chunk")) |v| {
+        if (v == .string and v.string.len == 64) {
+            var id: [32]u8 = undefined;
+            try hexToId(v.string, &id);
+            try manifest_queue.append(allocator, id);
+        }
     }
 
     if (obj.get("provenance_layers")) |layers| {
@@ -103,7 +111,6 @@ pub fn reachableHexesIo(
                 if (rv != .string or rv.string.len != 64) continue;
                 var id: [32]u8 = undefined;
                 try hexToId(rv.string, &id);
-                try addHex(&reachable, allocator, rv.string);
                 try manifest_queue.append(allocator, id);
             }
         }
@@ -113,13 +120,12 @@ pub fn reachableHexesIo(
         try walkManifestChunk(io, allocator, voila_root, id, &reachable, &manifest_queue);
     }
 
-    var out: std.ArrayList([]const u8) = .empty;
+    // The returned slice takes ownership of the keys.
+    const out = try allocator.alloc([]const u8, reachable.count());
     var it = reachable.keyIterator();
-    while (it.next()) |k| {
-        try out.append(allocator, try allocator.dupe(u8, k.*));
-    }
-    reachable.deinit();
-    return out.toOwnedSlice(allocator);
+    var n: usize = 0;
+    while (it.next()) |k| : (n += 1) out[n] = k.*;
+    return out;
 }
 
 pub const Error = error{
@@ -128,3 +134,38 @@ pub const Error = error{
     BadManifest,
     MissingChunk,
 };
+
+test "reachable walks the merged root manifest down to file chunks" {
+    const fs = @import("sys").fs;
+    const ingest = @import("store").ingest;
+    const gpa = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const tmp = try fs.makeTempDir(gpa, "voila-reachable-test");
+    defer gpa.free(tmp);
+    defer fs.removeTree(gpa, tmp) catch {};
+
+    const store = try std.fmt.allocPrint(a, "{s}/store", .{tmp});
+    try fs.makePath(store);
+    const src = try std.fmt.allocPrint(a, "{s}/src", .{tmp});
+    try fs.makePath(src);
+    try fs.writeFile(try std.fmt.allocPrint(a, "{s}/a.txt", .{src}), "alpha", 0o644);
+    try fs.writeFile(try std.fmt.allocPrint(a, "{s}/b.txt", .{src}), "bravo", 0o644);
+
+    var w = try ingest.ingest_dir_walk.Walker.init(a, store, .{ .mode = .copy });
+    defer w.deinit();
+    try w.add(src, "");
+    const tree = (try w.finish()).tree;
+    const root = try ingest.ingest_manifest.buildAndStoreManifest(a, store, tree, false);
+
+    const root_hex = std.fmt.bytesToHex(root, .lower);
+    const json = try std.fmt.allocPrint(a, "{{\"merged_root_manifest_chunk\":\"{s}\"}}", .{&root_hex});
+    const ids = try reachableHexes(gpa, store, json);
+    defer {
+        for (ids) |id| gpa.free(id);
+        gpa.free(ids);
+    }
+    // The root manifest plus one data chunk per file.
+    try std.testing.expectEqual(@as(usize, 3), ids.len);
+}
