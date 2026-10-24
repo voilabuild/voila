@@ -15,6 +15,7 @@ const FakeRunner = struct {
     calls: usize = 0,
     last_env: []const []const u8 = &.{},
     last_workdir: []const u8 = "",
+    last_argv0: []const u8 = "",
     arena: std.mem.Allocator,
 
     fn runner(self: *FakeRunner) driver.StepRunner {
@@ -28,6 +29,7 @@ const FakeRunner = struct {
         for (req.env) |e| env.append(self.arena, self.arena.dupe(u8, e) catch return error.OutOfMemory) catch return error.OutOfMemory;
         self.last_env = env.items;
         self.last_workdir = self.arena.dupe(u8, req.workdir) catch return error.OutOfMemory;
+        self.last_argv0 = self.arena.dupe(u8, req.argv[0]) catch return error.OutOfMemory;
         const cmd = req.argv[req.argv.len - 1];
         if (std.mem.eql(u8, cmd, "fail")) return 1;
         var it = std.mem.tokenizeScalar(u8, cmd, ' ');
@@ -211,4 +213,118 @@ test "FROM scratch with COPY of a single file to a file path" {
     try std.testing.expectEqual(@as(u32, 10), n.uid);
     try std.testing.expectEqual(@as(u32, 20), n.gid);
     try std.testing.expect(t.lookup("opt/tool") != null);
+}
+
+fn configJson(env: *Env) ![]const u8 {
+    return run_config.loadConfigJson(std.testing.io, env.arena.allocator(), env.root, "test/app:1");
+}
+
+fn contains(hay: []const u8, needle: []const u8) bool {
+    return std.mem.indexOf(u8, hay, needle) != null;
+}
+
+test "config-only instructions land in the image config" {
+    var env = try Env.init();
+    defer env.deinit();
+    var runner: FakeRunner = .{ .arena = env.arena.allocator() };
+    var diag: driver.Diagnostic = .{};
+    _ = try env.build(&runner,
+        \\FROM scratch
+        \\ENV DIR=/data
+        \\MAINTAINER Jane <jane@example.com>
+        \\STOPSIGNAL SIGQUIT
+        \\VOLUME ["$DIR", "/logs"]
+        \\VOLUME /extra
+        \\HEALTHCHECK --interval=30s --timeout=5s --start-period=1s --retries=4 CMD curl -f http://localhost/
+        \\SHELL ["/bin/bash", "-c"]
+    , &diag);
+    const cfg = try configJson(&env);
+    try std.testing.expect(contains(cfg, "\"author\":\"Jane <jane@example.com>\""));
+    try std.testing.expect(contains(cfg, "\"StopSignal\":\"SIGQUIT\""));
+    try std.testing.expect(contains(cfg, "\"/data\":{}"));
+    try std.testing.expect(contains(cfg, "\"/logs\":{}"));
+    try std.testing.expect(contains(cfg, "\"/extra\":{}"));
+    try std.testing.expect(contains(cfg, "\"Test\":[\"CMD-SHELL\",\"curl -f http://localhost/\"]"));
+    try std.testing.expect(contains(cfg, "\"Interval\":30000000000"));
+    try std.testing.expect(contains(cfg, "\"Timeout\":5000000000"));
+    try std.testing.expect(contains(cfg, "\"StartPeriod\":1000000000"));
+    try std.testing.expect(contains(cfg, "\"Retries\":4"));
+    try std.testing.expect(contains(cfg, "\"Shell\":[\"/bin/bash\",\"-c\"]"));
+
+    _ = try env.build(&runner, "FROM scratch\nHEALTHCHECK NONE\nCMD echo hi\n", &diag);
+    const none = try configJson(&env);
+    try std.testing.expect(contains(none, "\"Test\":[\"NONE\"]"));
+    try std.testing.expect(contains(none, "\"Cmd\":[\"/bin/sh\",\"-c\",\"echo hi\"]"));
+}
+
+test "SHELL changes shell-form RUN and CMD, and the step cache key" {
+    var env = try Env.init();
+    defer env.deinit();
+    try env.file("base/bin/sh", "#!fake\n");
+    try env.baseImage("test/base:1", "");
+    var runner: FakeRunner = .{ .arena = env.arena.allocator() };
+    var diag: driver.Diagnostic = .{};
+    _ = try env.build(&runner, "FROM test/base:1\nRUN write /x 1\n", &diag);
+    try std.testing.expectEqualStrings("/bin/sh", runner.last_argv0);
+
+    const bash = "FROM test/base:1\nSHELL [\"/bin/bash\", \"-c\"]\nRUN write /x 1\nCMD echo hi\n";
+    const r = try env.build(&runner, bash, &diag);
+    try std.testing.expectEqual(@as(usize, 2), runner.calls);
+    try std.testing.expectEqual(@as(usize, 0), r.cached);
+    try std.testing.expectEqualStrings("/bin/bash", runner.last_argv0);
+    try std.testing.expect(contains(try configJson(&env), "\"Cmd\":[\"/bin/bash\",\"-c\",\"echo hi\"]"));
+
+    const again = try env.build(&runner, bash, &diag);
+    try std.testing.expectEqual(@as(usize, 2), runner.calls);
+    try std.testing.expectEqual(@as(usize, 1), again.cached);
+}
+
+test "COPY --chmod applies to files and directories" {
+    var env = try Env.init();
+    defer env.deinit();
+    try env.file("d/sub/f.sh", "#!/bin/sh\n");
+    try env.file("g.txt", "g\n");
+    var runner: FakeRunner = .{ .arena = env.arena.allocator() };
+    var diag: driver.Diagnostic = .{};
+    const res = try env.build(&runner, "FROM scratch\nCOPY --chmod=0750 d /opt/d\nCOPY --chmod=600 g.txt /g\nCOPY g.txt /plain\n", &diag);
+    const t = try env.imageTree(res.root);
+    try std.testing.expectEqual(@as(u32, 0o750), t.lookup("opt/d").?.mode & 0o7777);
+    try std.testing.expectEqual(@as(u32, 0o750), t.lookup("opt/d/sub").?.mode & 0o7777);
+    try std.testing.expectEqual(@as(u32, 0o750), t.lookup("opt/d/sub/f.sh").?.mode & 0o7777);
+    try std.testing.expectEqual(@as(u32, 0o600), t.lookup("g").?.mode & 0o7777);
+    try std.testing.expectEqual(@as(u32, 0o644), t.lookup("plain").?.mode & 0o7777);
+
+    const other = try env.build(&runner, "FROM scratch\nCOPY --chmod=0700 g.txt /g\n", &diag);
+    const t2 = try env.imageTree(other.root);
+    try std.testing.expectEqual(@as(u32, 0o700), t2.lookup("g").?.mode & 0o7777);
+}
+
+test "COPY --chown resolves names from the image's passwd and group" {
+    var env = try Env.init();
+    defer env.deinit();
+    try env.file("base/etc/passwd", "root:x:0:0::/root:/bin/sh\napp:x:1000:2000::/home/app:/bin/sh\n");
+    try env.file("base/etc/group", "root:x:0:\nstaff:x:50:app\n");
+    try env.file("g.txt", "g\n");
+    try env.baseImage("test/base:1", "");
+    var runner: FakeRunner = .{ .arena = env.arena.allocator() };
+    var diag: driver.Diagnostic = .{};
+    const res = try env.build(&runner,
+        \\FROM test/base:1
+        \\COPY --chown=app g.txt /a
+        \\COPY --chown=app:staff g.txt /b
+        \\COPY --chown=7:staff g.txt /c
+        \\COPY --chown=33:44 g.txt /d
+    , &diag);
+    const t = try env.imageTree(res.root);
+    try std.testing.expectEqual(@as(u32, 1000), t.lookup("a").?.uid);
+    try std.testing.expectEqual(@as(u32, 2000), t.lookup("a").?.gid);
+    try std.testing.expectEqual(@as(u32, 50), t.lookup("b").?.gid);
+    try std.testing.expectEqual(@as(u32, 7), t.lookup("c").?.uid);
+    try std.testing.expectEqual(@as(u32, 50), t.lookup("c").?.gid);
+    try std.testing.expectEqual(@as(u32, 33), t.lookup("d").?.uid);
+
+    try std.testing.expectError(error.UnknownChownName, env.build(&runner, "FROM test/base:1\nCOPY g.txt /ok\nCOPY --chown=ghost g.txt /e\n", &diag));
+    try std.testing.expectEqual(@as(usize, 3), diag.line);
+    try std.testing.expectError(error.UnknownChownName, env.build(&runner, "FROM test/base:1\nCOPY --chown=app:nogroup g.txt /e\n", &diag));
+    try std.testing.expectError(error.UnknownChownName, env.build(&runner, "FROM scratch\nCOPY --chown=app g.txt /e\n", &diag));
 }

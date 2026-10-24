@@ -1185,6 +1185,7 @@ test {
     _ = @import("../store/ingest/ingest_dir_walk_test.zig");
     _ = @import("../codec/oci_image_config.zig");
     _ = @import("../core/glob.zig");
+    _ = @import("../core/passwd.zig");
     _ = @import("../runtime/build/steps.zig");
     _ = @import("../runtime/build/copy_sources.zig");
     _ = @import("../runtime/build/driver_test.zig");

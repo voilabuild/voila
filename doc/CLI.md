@@ -42,13 +42,18 @@ the result like any imported image, so `voila run` and `voila push` work on it
 unchanged.
 
 - Supported: `FROM` (any local or registry image, or `scratch`), `RUN` (shell
-  and exec form), `COPY`/`ADD` from the build context (`--chown=uid[:gid]`
-  numeric only, `*`/`?` wildcards in the last path segment), `ENV`, `ARG`
-  (with `--build-arg`), `WORKDIR`, `USER`, `CMD`, `ENTRYPOINT`, `EXPOSE`,
-  `LABEL`, line continuations, comments and `.dockerignore`.
+  and exec form), `COPY`/`ADD` from the build context (`--chown=user[:group]`,
+  by number or by name looked up in the image's `/etc/passwd` and
+  `/etc/group`; `--chmod=<octal>`; `*`/`?` wildcards in the last path
+  segment), `ENV`, `ARG` (with `--build-arg`), `WORKDIR`, `USER`, `CMD`,
+  `ENTRYPOINT`, `EXPOSE`, `LABEL`, `SHELL`, `HEALTHCHECK`
+  (`--interval`/`--timeout`/`--start-period`/`--retries`, `CMD` or `NONE`),
+  `STOPSIGNAL`, `VOLUME`, `MAINTAINER`, line continuations, comments and
+  `.dockerignore`. `HEALTHCHECK`, `STOPSIGNAL` and `VOLUME` are recorded in
+  the image config only; `voila run` does not act on them yet.
 - Not supported yet: multi-stage builds, `RUN --mount`, `COPY --from`, `ADD`
-  of URLs or tar auto-extraction, heredocs, `SHELL`, `HEALTHCHECK`, `ONBUILD`,
-  `VOLUME`.
+  of URLs or tar auto-extraction, heredocs, `ONBUILD`, symbolic
+  `--chmod` modes.
 - Every `RUN`, `COPY` and `ADD` step is cached under `<root>/build-cache/`,
   keyed by the parent image, the instruction, its environment and (for
   `COPY`) the content of its sources. A rebuild with no changes does no work;

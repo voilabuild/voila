@@ -38,11 +38,18 @@ pub const StepRunner = struct {
     }
 };
 
-/// Shell form runs through `/bin/sh -c`, as in Docker.
-pub fn formArgv(a: std.mem.Allocator, form: dockerfile.Form) ![]const []const u8 {
+pub const default_shell = [_][]const u8{ "/bin/sh", "-c" };
+
+/// Shell form runs through `shell` (default `/bin/sh -c`) with the command appended.
+pub fn formArgv(a: std.mem.Allocator, form: dockerfile.Form, shell: []const []const u8) ![]const []const u8 {
     return switch (form) {
         .exec => |argv| argv,
-        .shell => |cmd| try a.dupe([]const u8, &.{ "/bin/sh", "-c", cmd }),
+        .shell => |cmd| {
+            const argv = try a.alloc([]const u8, shell.len + 1);
+            @memcpy(argv[0..shell.len], shell);
+            argv[shell.len] = cmd;
+            return argv;
+        },
     };
 }
 
@@ -108,6 +115,20 @@ test "joinPath resolves relative to the working directory" {
     try testing.expectEqualStrings("/", try joinPath(a, "/a", ".."));
     try testing.expectEqualStrings("/", try joinPath(a, "/", "../.."));
     try testing.expectEqualStrings("/a/c", try joinPath(a, "/a/b", "./../c"));
+}
+
+test "formArgv appends the command to the shell" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const def = try formArgv(a, .{ .shell = "echo hi" }, &default_shell);
+    try testing.expectEqualStrings("/bin/sh", def[0]);
+    try testing.expectEqualStrings("echo hi", def[2]);
+    const custom = try formArgv(a, .{ .shell = "x" }, &.{ "/bin/bash", "-eo", "pipefail", "-c" });
+    try testing.expectEqual(@as(usize, 5), custom.len);
+    try testing.expectEqualStrings("x", custom[4]);
+    const exec = try formArgv(a, .{ .exec = &.{ "a", "b" } }, &default_shell);
+    try testing.expectEqual(@as(usize, 2), exec.len);
 }
 
 test "parseChown accepts numeric ids only" {
