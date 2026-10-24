@@ -1,4 +1,4 @@
-//! Docker-style flag parsing helpers (pure, testable).
+//! Docker-style `-e`/`-v`/`-p` values: the run option types and their parsers.
 const std = @import("std");
 
 pub const EnvPair = struct {

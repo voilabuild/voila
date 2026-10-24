@@ -1,16 +1,17 @@
 //! Default container argv from stored ImageManifest + OCI config chunk.
 const std = @import("std");
 const voila_refkey = @import("../../core/voila_refkey.zig");
-const voila_resolve = @import("../voila_resolve.zig");
+const voila_resolve = @import("../../registry/voila_resolve.zig");
 const voila_chunk_index = @import("../../store/voila_chunk_index.zig");
 const voila_store = @import("../../store/voila_store.zig");
 const voila_chunk_load = @import("../../store/voila_chunk_load.zig");
+const voila_registry_fetch = @import("../../registry/voila_registry_fetch.zig");
 const voila_manifest_cache = @import("../../registry/voila_manifest_cache.zig");
 const hex_util = @import("../../core/hex_util.zig");
 const posix_util = @import("../../sys/posix_util.zig");
 const registry_ref = @import("../../registry/voila_registry_ref.zig");
 const voila_image_pull = @import("../../registry/voila_image_pull.zig");
-const run_cli_parse = @import("../../cli/run_cli_parse.zig");
+const run_flags = @import("../run_flags.zig");
 
 const OciConfig = struct {
     entrypoint: []const []const u8,
@@ -176,12 +177,12 @@ pub fn imageWorkdir(io: std.Io, allocator: std.mem.Allocator, voila_root: []cons
 }
 
 /// `Env` of the image config as key/value pairs (empty when the image has none).
-pub fn imageEnv(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) ![]run_cli_parse.EnvPair {
-    const raw = loadConfigJson(io, allocator, voila_root, image_ref) catch return allocator.alloc(run_cli_parse.EnvPair, 0);
+pub fn imageEnv(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) ![]run_flags.EnvPair {
+    const raw = loadConfigJson(io, allocator, voila_root, image_ref) catch return allocator.alloc(run_flags.EnvPair, 0);
     defer allocator.free(raw);
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, raw, .{}) catch return allocator.alloc(run_cli_parse.EnvPair, 0);
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, raw, .{}) catch return allocator.alloc(run_flags.EnvPair, 0);
     defer parsed.deinit();
-    var out: std.ArrayList(run_cli_parse.EnvPair) = .empty;
+    var out: std.ArrayList(run_flags.EnvPair) = .empty;
     errdefer out.deinit(allocator);
     if (parsed.value != .object) return out.toOwnedSlice(allocator);
     const cfg = parsed.value.object.get("Config") orelse parsed.value.object.get("config") orelse return out.toOwnedSlice(allocator);
@@ -218,7 +219,7 @@ pub fn loadConfigJson(io: std.Io, allocator: std.mem.Allocator, voila_root: []co
     hex_util.encodeHexLower(hex_buf[0 .. chunk_id.len * 2], chunk_id);
     const chunk_hex = hex_buf[0 .. chunk_id.len * 2];
     const algo = voila_chunk_index.compAlgoForChunk(voila_root, chunk_id) catch voila_store.AlgoRaw;
-    return voila_chunk_load.loadChunkRaw(io, allocator, voila_root, chunk_hex, algo);
+    return voila_chunk_load.loadChunkRaw(voila_registry_fetch.fetcher(io), allocator, voila_root, chunk_hex, algo);
 }
 
 pub const Error = error{

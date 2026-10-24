@@ -5,7 +5,7 @@ const container_run = @import("./container_run.zig");
 const container_run_opts = @import("./container_run_opts.zig");
 const mount_exec = @import("../../mount/mount_exec.zig");
 const fuse_vfs_mod = @import("../../mount/fuse/fuse_vfs.zig");
-const voila_loader = @import("../../store/voila_loader.zig");
+const voila_loader = @import("../voila_loader.zig");
 const voila_vfs_mod = @import("../../mount/fuse/voila_vfs.zig");
 
 pub const ExecSpec = struct {

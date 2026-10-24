@@ -1,12 +1,12 @@
 const std = @import("std");
-const run_cli_parse = @import("../../cli/run_cli_parse.zig");
+const run_flags = @import("../run_flags.zig");
 const posix_util = @import("../../sys/posix_util.zig");
 
 pub const RunOpts = struct {
-    env: []run_cli_parse.EnvPair,
+    env: []run_flags.EnvPair,
     workdir: []const u8,
-    volumes: []run_cli_parse.Volume,
-    ports: []run_cli_parse.PortMap,
+    volumes: []run_flags.Volume,
+    ports: []run_flags.PortMap,
     tty: bool,
     interactive: bool,
 
@@ -89,7 +89,7 @@ pub fn readRunOpts(allocator: std.mem.Allocator, voila_root: []const u8, id: []c
     const workdir = try dupStrField(allocator, o, "workdir");
     const tty = boolField(o, "tty");
     const interactive = boolField(o, "interactive");
-    var env_list: std.ArrayList(run_cli_parse.EnvPair) = .empty;
+    var env_list: std.ArrayList(run_flags.EnvPair) = .empty;
     if (o.get("env")) |ev| {
         if (ev == .array) {
             for (ev.array.items) |pair| {
@@ -102,7 +102,7 @@ pub fn readRunOpts(allocator: std.mem.Allocator, voila_root: []const u8, id: []c
             }
         }
     }
-    var vol_list: std.ArrayList(run_cli_parse.Volume) = .empty;
+    var vol_list: std.ArrayList(run_flags.Volume) = .empty;
     if (o.get("volumes")) |vv| {
         if (vv == .array) {
             for (vv.array.items) |item| {
@@ -116,7 +116,7 @@ pub fn readRunOpts(allocator: std.mem.Allocator, voila_root: []const u8, id: []c
             }
         }
     }
-    var port_list: std.ArrayList(run_cli_parse.PortMap) = .empty;
+    var port_list: std.ArrayList(run_flags.PortMap) = .empty;
     if (o.get("ports")) |pv| {
         if (pv == .array) {
             for (pv.array.items) |item| {

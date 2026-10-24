@@ -1,6 +1,6 @@
 //! Rootless bind mounts into the FUSE rootfs via a private mount namespace.
 const std = @import("std");
-const run_cli_parse = @import("../../cli/run_cli_parse.zig");
+const run_flags = @import("../run_flags.zig");
 const posix_util = @import("../../sys/posix_util.zig");
 const fs = @import("../../sys/fs.zig");
 
@@ -66,7 +66,7 @@ pub fn setupMountNamespaceForWorker(mount_dir: []const u8) bool {
     return bindPrivateRoot(mount_dir);
 }
 
-pub fn applyVolumeBinds(mount_dir: []const u8, volumes: []const run_cli_parse.Volume) bool {
+pub fn applyVolumeBinds(mount_dir: []const u8, volumes: []const run_flags.Volume) bool {
     for (volumes) |vol| {
         const target = std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ mount_dir, vol.container }) catch return false;
         defer std.heap.page_allocator.free(target);
@@ -85,7 +85,7 @@ pub fn applyVolumeBinds(mount_dir: []const u8, volumes: []const run_cli_parse.Vo
 }
 
 /// User + mount namespace and optional bind mounts (legacy; prefer worker setup + applyVolumeBinds).
-pub fn prepareExecEnvironment(mount_dir: []const u8, volumes: []const run_cli_parse.Volume) bool {
+pub fn prepareExecEnvironment(mount_dir: []const u8, volumes: []const run_flags.Volume) bool {
     if (!setupMountNamespaceForWorker(mount_dir)) return false;
     return applyVolumeBinds(mount_dir, volumes);
 }

@@ -1,7 +1,8 @@
 const std = @import("std");
 const voila_http = @import("./voila_http.zig");
 const voila_store = @import("../store/voila_store.zig");
-const voila_fetch_stats = @import("../store/voila_fetch_stats.zig");
+const voila_chunk_load = @import("../store/voila_chunk_load.zig");
+const voila_fetch_stats = @import("./voila_fetch_stats.zig");
 const hub = @import("./voila_registry_hub.zig");
 
 var g_chunk_origin: ?[]const u8 = null;
@@ -71,6 +72,18 @@ pub fn fetchChunkRaw(
     voila_fetch_stats.recordChunk(chunk_hex, raw.len);
     if (owned_decompress) allocator.free(raw);
     return voila_store.loadChunkRaw(allocator, voila_root, chunk_hex, voila_store.AlgoRaw);
+}
+
+/// Store fallback that fetches missing chunks from the configured registry.
+pub fn fetcher(io: std.Io) voila_chunk_load.Fetcher {
+    return .{ .io = io, .fetchFn = fetchForStore };
+}
+
+fn fetchForStore(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, chunk_hex: []const u8) voila_chunk_load.FetchError![]u8 {
+    return fetchChunkRaw(io, allocator, voila_root, chunk_hex) catch |e| switch (e) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.FetchFailed,
+    };
 }
 
 pub const Error = error{

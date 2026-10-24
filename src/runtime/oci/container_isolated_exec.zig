@@ -4,7 +4,7 @@ const ns = @import("../../sys/ns.zig");
 const container_bind = @import("container_bind.zig");
 const container_root = @import("container_root.zig");
 const container_run_opts = @import("container_run_opts.zig");
-const run_cli_parse = @import("../../cli/run_cli_parse.zig");
+const run_flags = @import("../run_flags.zig");
 const container_pty = @import("container_pty.zig");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
@@ -221,8 +221,8 @@ pub fn parseCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
     var log_path: ?[]const u8 = null;
     var vfs_argv0: ?[]const u8 = null;
     var workdir: ?[]const u8 = null;
-    var env_list: std.ArrayList(run_cli_parse.EnvPair) = .empty;
-    var vol_list: std.ArrayList(run_cli_parse.Volume) = .empty;
+    var env_list: std.ArrayList(run_flags.EnvPair) = .empty;
+    var vol_list: std.ArrayList(run_flags.Volume) = .empty;
     var cmd_list: std.ArrayList([]const u8) = .empty;
     var console_fd: std.posix.fd_t = -1;
     var rw_dir: []const u8 = "";
@@ -254,7 +254,7 @@ pub fn parseCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
         }
         if (std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "--env")) {
             const e = args.next() orelse return error.BadArgs;
-            const pair = try run_cli_parse.parseEnvArg(e);
+            const pair = try run_flags.parseEnvArg(e);
             try env_list.append(allocator, .{
                 .key = try allocator.dupe(u8, pair.key),
                 .value = try allocator.dupe(u8, pair.value),
@@ -263,7 +263,7 @@ pub fn parseCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
         }
         if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--volume")) {
             const v = args.next() orelse return error.BadArgs;
-            const vol = try run_cli_parse.parseVolumeSpec(v);
+            const vol = try run_flags.parseVolumeSpec(v);
             try vol_list.append(allocator, .{
                 .host = try allocator.dupe(u8, vol.host),
                 .container = try allocator.dupe(u8, vol.container),

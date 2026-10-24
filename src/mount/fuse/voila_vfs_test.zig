@@ -2,7 +2,7 @@ const std = @import("std");
 const fs = @import("../../sys/fs.zig");
 const dir_walk = @import("../../store/ingest/ingest_dir_walk.zig");
 const manifest_mod = @import("../../store/ingest/ingest_manifest.zig");
-const voila_tree = @import("../../core/voila_tree.zig");
+const voila_tree = @import("../../store/voila_tree.zig");
 const VoilaVfs = @import("voila_vfs.zig").VoilaVfs;
 const mount_exec = @import("../mount_exec.zig");
 const fuse_vfs_mod = @import("./fuse_vfs.zig");
@@ -31,7 +31,7 @@ test "reads through the vfs keep the chunk cache bounded" {
     const tree = (try w.finish()).tree;
     const root = try manifest_mod.buildAndStoreManifest(a, store, tree, false);
 
-    var vfs = VoilaVfs.initFromTree(gpa, try voila_tree.openTree(gpa, store, &root));
+    var vfs = VoilaVfs.initFromTree(gpa, try voila_tree.openTree(gpa, store, &root, null));
     defer vfs.deinit();
     for (0..2) |_| for (0..n_files) |i| {
         const path = try std.fmt.allocPrint(a, "/f{d}", .{i});
@@ -63,7 +63,7 @@ test "inoFromPath follows a symlinked directory prefix (/bin -> usr/bin)" {
     const tree = (try w.finish()).tree;
     const root = try manifest_mod.buildAndStoreManifest(a, store, tree, false);
 
-    var vfs = VoilaVfs.initFromTree(gpa, try voila_tree.openTree(gpa, store, &root));
+    var vfs = VoilaVfs.initFromTree(gpa, try voila_tree.openTree(gpa, store, &root, null));
     try std.testing.expect(vfs.inoFromPath("/usr/bin/sh") != null);
     try std.testing.expect(vfs.inoFromPath("/bin/sh") != null);
 

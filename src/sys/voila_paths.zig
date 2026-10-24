@@ -1,5 +1,5 @@
 const std = @import("std");
-const posix_util = @import("../sys/posix_util.zig");
+const posix_util = @import("./posix_util.zig");
 
 pub const default_registry_url = "https://drift-registry-production.up.railway.app/registry";
 

@@ -1,11 +1,10 @@
 const std = @import("std");
 const fuse_abi = @import("./fuse_abi.zig");
 const voila_index = @import("../../core/voila_index.zig");
-const voila_tree = @import("../../core/voila_tree.zig");
+const voila_tree = @import("../../store/voila_tree.zig");
 const voila_store = @import("../../store/voila_store.zig");
 const voila_chunk_load = @import("../../store/voila_chunk_load.zig");
-const hub = @import("../../registry/voila_registry_hub.zig");
-const voila_resolve = @import("../../runtime/voila_resolve.zig");
+const hex_util = @import("../../core/hex_util.zig");
 const voila_chunk_index = @import("../../store/voila_chunk_index.zig");
 const voila_manifest_proto = @import("../../codec/voila_manifest_proto.zig");
 const idmap = @import("../../core/idmap.zig");
@@ -34,6 +33,8 @@ pub const VoilaVfs = struct {
     /// When set, image ids are reported as the host ids that a user namespace with this
     /// map sees as those image ids.
     owner_map: ?idmap.Mapping = null,
+    /// Where chunks missing from the local store come from; null serves local chunks only.
+    fetcher: ?voila_chunk_load.Fetcher = null,
 
     pub fn load(allocator: std.mem.Allocator, index_json_path: []const u8) !VoilaVfs {
         const json_bytes = try posix_util.readFileAlloc(allocator, index_json_path, 256 * 1024 * 1024);
@@ -82,6 +83,7 @@ pub const VoilaVfs = struct {
             .readdir_by_ino = .init(allocator),
             .chunk_cache = .init(allocator),
             .allocator = allocator,
+            .fetcher = tree.fetcher,
         };
     }
 
@@ -350,7 +352,7 @@ pub const VoilaVfs = struct {
                 cursor += zeros;
                 continue;
             }
-            const hex = try voila_resolve.chunkIdToHex(self.allocator, b.chunk_id);
+            const hex = try hex_util.chunkIdToHex(self.allocator, b.chunk_id);
             defer self.allocator.free(hex);
             const chunk = self.getChunk(hex, null, b.chunk_id) catch return error.ReadFailed;
             const chunk_off: usize = @intCast(cursor - b.offset);
@@ -373,7 +375,7 @@ pub const VoilaVfs = struct {
         if (self.chunk_cache.get(hex)) |c| return c;
         const root = self.voilaRoot();
         const comp = algo orelse voila_chunk_index.compAlgoForChunk(root, id) catch voila_store.AlgoRaw;
-        const owned = try voila_chunk_load.loadChunkRaw(hub.g_io, self.allocator, root, hex, comp);
+        const owned = try voila_chunk_load.loadChunkRaw(self.fetcher, self.allocator, root, hex, comp);
         errdefer self.allocator.free(owned);
         if (self.chunk_order.items.len >= chunk_cache_max) {
             const old = self.chunk_order.orderedRemove(0);

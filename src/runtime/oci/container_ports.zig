@@ -1,6 +1,6 @@
 //! Host port publishing via socat (rootless; shares host network namespace).
 const std = @import("std");
-const run_cli_parse = @import("../../cli/run_cli_parse.zig");
+const run_flags = @import("../run_flags.zig");
 const posix_util = @import("../../sys/posix_util.zig");
 
 pub const Forwarder = struct {
@@ -16,7 +16,7 @@ pub const Forwarder = struct {
     }
 };
 
-pub fn start(io: std.Io, ports: []const run_cli_parse.PortMap) ![]Forwarder {
+pub fn start(io: std.Io, ports: []const run_flags.PortMap) ![]Forwarder {
     if (ports.len == 0) return &.{};
     var out: std.ArrayList(Forwarder) = .empty;
     for (ports) |p| {

@@ -1,9 +1,11 @@
 const std = @import("std");
-const voila_resolve = @import("../runtime/voila_resolve.zig");
-const voila_tree = @import("../core/voila_tree.zig");
+const voila_resolve = @import("../registry/voila_resolve.zig");
+const voila_tree = @import("../store/voila_tree.zig");
 const voila_index = @import("../core/voila_index.zig");
 const voila_image_pull = @import("../registry/voila_image_pull.zig");
 const registry_ref = @import("../registry/voila_registry_ref.zig");
+const voila_registry_fetch = @import("../registry/voila_registry_fetch.zig");
+const voila_chunk_load = @import("../store/voila_chunk_load.zig");
 
 pub fn loadIndex(io: ?std.Io, allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) !voila_index.Index {
     const ref_norm = try normalizeImageRef(allocator, image_ref);
@@ -17,7 +19,7 @@ pub fn loadIndex(io: ?std.Io, allocator: std.mem.Allocator, voila_root: []const 
     }
     if (rec.merged_root_manifest.len != 32) return error.BadRootManifest;
 
-    var tree = try voila_tree.openTreeEager(allocator, voila_root, rec.merged_root_manifest);
+    var tree = try voila_tree.openTreeEager(allocator, voila_root, rec.merged_root_manifest, fetcherFor(io));
     defer tree.deinit();
     return tree.buildIndex();
 }
@@ -29,7 +31,7 @@ fn normalizeImageRef(allocator: std.mem.Allocator, image_ref: []const u8) ![]con
 
 /// `image_ref` may also be `@<64 hex>`: a merged root manifest chunk with no ref (build steps).
 pub fn loadTreeRoot(io: ?std.Io, allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) !voila_tree.Tree {
-    if (rootChunkRef(image_ref)) |root| return voila_tree.openTree(allocator, voila_root, &root);
+    if (rootChunkRef(image_ref)) |root| return voila_tree.openTree(allocator, voila_root, &root, fetcherFor(io));
     const ref_norm = try normalizeImageRef(allocator, image_ref);
     defer allocator.free(ref_norm);
     if (io) |i| _ = voila_image_pull.autoPull(i, allocator, voila_root, ref_norm) catch {};
@@ -40,7 +42,7 @@ pub fn loadTreeRoot(io: ?std.Io, allocator: std.mem.Allocator, voila_root: []con
         allocator.free(rec.merged_root_manifest);
     }
     if (rec.merged_root_manifest.len != 32) return error.BadRootManifest;
-    return voila_tree.openTree(allocator, voila_root, rec.merged_root_manifest);
+    return voila_tree.openTree(allocator, voila_root, rec.merged_root_manifest, fetcherFor(io));
 }
 
 /// Resolves `image_ref` once (auto-pulling the manifest) to `@<root hex>`, which later
@@ -59,6 +61,11 @@ pub fn resolveRootRef(io: ?std.Io, allocator: std.mem.Allocator, voila_root: []c
     if (rec.merged_root_manifest.len != 32) return error.BadRootManifest;
     const hex = std.fmt.bytesToHex(rec.merged_root_manifest[0..32].*, .lower);
     return std.fmt.allocPrint(allocator, "@{s}", .{&hex});
+}
+
+/// Chunks missing locally come from the registry when `io` is set.
+pub fn fetcherFor(io: ?std.Io) ?voila_chunk_load.Fetcher {
+    return if (io) |i| voila_registry_fetch.fetcher(i) else null;
 }
 
 pub fn rootChunkRef(image_ref: []const u8) ?[32]u8 {

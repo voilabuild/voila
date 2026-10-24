@@ -2,7 +2,7 @@ const std = @import("std");
 const fuse_linux = @import("../../mount/fuse/fuse_linux.zig");
 const fuse_vfs_mod = @import("../../mount/fuse/fuse_vfs.zig");
 const voila_vfs_mod = @import("../../mount/fuse/voila_vfs.zig");
-const voila_loader = @import("../../store/voila_loader.zig");
+const voila_loader = @import("../voila_loader.zig");
 const voila_registry = @import("../../registry/voila_registry.zig");
 const voila_registry_creds = @import("../../registry/voila_registry_creds.zig");
 const voila_login_creds = @import("../../registry/voila_login_creds.zig");
@@ -18,7 +18,7 @@ const container_isolated_exec = @import("./container_isolated_exec.zig");
 const container_fuse_sibling = @import("./container_fuse_sibling.zig");
 const container_ports = @import("./container_ports.zig");
 const userns_ids = @import("./userns_ids.zig");
-const run_cli_parse = @import("../../cli/run_cli_parse.zig");
+const run_flags = @import("../run_flags.zig");
 
 const ServeCtx = struct {
     session: fuse_linux.Session,
@@ -49,14 +49,14 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, spe
 }
 
 pub fn runOptsFromSpec(allocator: std.mem.Allocator, spec: types.RunSpec) !container_run_opts.RunOpts {
-    var env: std.ArrayList(run_cli_parse.EnvPair) = .empty;
+    var env: std.ArrayList(run_flags.EnvPair) = .empty;
     for (spec.env) |e| {
         try env.append(allocator, .{
             .key = try allocator.dupe(u8, e.key),
             .value = try allocator.dupe(u8, e.value),
         });
     }
-    var volumes: std.ArrayList(run_cli_parse.Volume) = .empty;
+    var volumes: std.ArrayList(run_flags.Volume) = .empty;
     for (spec.volumes) |v| {
         try volumes.append(allocator, .{
             .host = try allocator.dupe(u8, v.host),
@@ -64,7 +64,7 @@ pub fn runOptsFromSpec(allocator: std.mem.Allocator, spec: types.RunSpec) !conta
             .read_only = v.read_only,
         });
     }
-    const ports = try allocator.alloc(run_cli_parse.PortMap, spec.ports.len);
+    const ports = try allocator.alloc(run_flags.PortMap, spec.ports.len);
     @memcpy(ports, spec.ports);
     return .{
         .env = try env.toOwnedSlice(allocator),

@@ -6,10 +6,10 @@ const voila_vfs_mod = @import("../mount/fuse/voila_vfs.zig");
 const fuse_linux = @import("../mount/fuse/fuse_linux.zig");
 const posix_util = @import("../sys/posix_util.zig");
 const constants = @import("../core/constants.zig");
-const voila_loader = @import("../store/voila_loader.zig");
+const voila_loader = @import("../runtime/voila_loader.zig");
 const voila_registry = @import("../registry/voila_registry.zig");
 const voila_registry_creds = @import("../registry/voila_registry_creds.zig");
-const voila_fetch_stats = @import("../store/voila_fetch_stats.zig");
+const voila_fetch_stats = @import("../registry/voila_fetch_stats.zig");
 const voila_runtime = @import("../runtime/open.zig");
 const voila_refkey = @import("../core/voila_refkey.zig");
 const _voila_image_pull = @import("../registry/voila_image_pull.zig");
@@ -19,9 +19,9 @@ const voila_image_run_config = @import("../runtime/oci/voila_image_run_config.zi
 const container_bind = @import("../runtime/oci/container_bind.zig");
 const container_isolated_exec = @import("../runtime/oci/container_isolated_exec.zig");
 const container_fuse_sibling = @import("../runtime/oci/container_fuse_sibling.zig");
-const voila_paths = @import("../core/voila_paths.zig");
+const voila_paths = @import("../sys/voila_paths.zig");
 const voila_login_creds = @import("../registry/voila_login_creds.zig");
-const run_cli_parse = @import("../cli/run_cli_parse.zig");
+const run_flags = @import("../runtime/run_flags.zig");
 const voila_image_import = @import("../registry/voila_image_import.zig");
 const registry_ref_mod = @import("../registry/voila_registry_ref.zig");
 const build_cmd = @import("./build_cmd.zig");
@@ -136,7 +136,7 @@ pub fn main(init: std.process.Init) !void {
             }
             init.gpa.free(image_env);
         }
-        const env = try std.mem.concat(init.gpa, run_cli_parse.EnvPair, &.{ image_env, parsed.env });
+        const env = try std.mem.concat(init.gpa, run_flags.EnvPair, &.{ image_env, parsed.env });
         defer init.gpa.free(env);
         var workdir = parsed.workdir;
         var workdir_from_image: ?[]const u8 = null;
@@ -490,6 +490,7 @@ fn proveStore(io: std.Io, init: std.process.Init, voila_root: []const u8, image:
     const index = try voila_loader.loadIndex(io, init.gpa, voila_root_abs, image);
     var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = try voila_vfs_mod.VoilaVfs.initFromIndex(init.gpa, index) };
     defer fuse_vfs.deinit();
+    fuse_vfs.voila.fetcher = voila_loader.fetcherFor(io);
 
     const mount_dir = try std.fmt.allocPrint(init.gpa, "/tmp/zig-fuse-store-mnt-{d}", .{std.c.getpid()});
     defer init.gpa.free(mount_dir);
@@ -728,10 +729,10 @@ const RunParsed = struct {
     detach: bool,
     name: []const u8,
     rm_on_exit: bool,
-    env: []run_cli_parse.EnvPair,
+    env: []run_flags.EnvPair,
     workdir: []const u8,
-    volumes: []run_cli_parse.Volume,
-    ports: []run_cli_parse.PortMap,
+    volumes: []run_flags.Volume,
+    ports: []run_flags.PortMap,
     tty: bool,
     interactive: bool,
 
@@ -765,9 +766,9 @@ fn parseRunArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) 
     var detach = false;
     var name: ?[]const u8 = null;
     var rm_on_exit = false;
-    var env_list: std.ArrayList(run_cli_parse.EnvPair) = .empty;
-    var vol_list: std.ArrayList(run_cli_parse.Volume) = .empty;
-    var port_list: std.ArrayList(run_cli_parse.PortMap) = .empty;
+    var env_list: std.ArrayList(run_flags.EnvPair) = .empty;
+    var vol_list: std.ArrayList(run_flags.Volume) = .empty;
+    var port_list: std.ArrayList(run_flags.PortMap) = .empty;
     var workdir: ?[]const u8 = null;
     var tty = false;
     var interactive = false;
@@ -813,7 +814,7 @@ fn parseRunArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) 
         }
         if (std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "--env")) {
             const e = args.next() orelse return error.BadRunArgs;
-            const pair = try run_cli_parse.parseEnvArg(e);
+            const pair = try run_flags.parseEnvArg(e);
             try env_list.append(allocator, .{
                 .key = try allocator.dupe(u8, pair.key),
                 .value = try allocator.dupe(u8, pair.value),
@@ -827,7 +828,7 @@ fn parseRunArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) 
         }
         if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--volume")) {
             const v = args.next() orelse return error.BadRunArgs;
-            const vol = try run_cli_parse.parseVolumeSpec(v);
+            const vol = try run_flags.parseVolumeSpec(v);
             try vol_list.append(allocator, .{
                 .host = try allocator.dupe(u8, vol.host),
                 .container = try allocator.dupe(u8, vol.container),
@@ -837,7 +838,7 @@ fn parseRunArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) 
         }
         if (std.mem.eql(u8, arg, "-p") or std.mem.eql(u8, arg, "--publish")) {
             const p = args.next() orelse return error.BadRunArgs;
-            try port_list.append(allocator, try run_cli_parse.parsePortSpec(p));
+            try port_list.append(allocator, try run_flags.parsePortSpec(p));
             continue;
         }
         if (std.mem.eql(u8, arg, "-i")) {

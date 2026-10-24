@@ -1,7 +1,7 @@
 //! `voila build`: argument parsing, progress output and error reporting.
 const std = @import("std");
 const posix_util = @import("../sys/posix_util.zig");
-const voila_paths = @import("../core/voila_paths.zig");
+const voila_paths = @import("../sys/voila_paths.zig");
 const dockerfile = @import("../core/dockerfile.zig");
 const driver = @import("../runtime/build/driver.zig");
 const run_step = @import("../runtime/build/run_step.zig");

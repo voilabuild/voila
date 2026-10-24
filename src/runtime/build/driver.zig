@@ -17,6 +17,7 @@ const manifest_mod = @import("../../store/ingest/ingest_manifest.zig");
 const merge_mod = @import("../../store/ingest/ingest_merge.zig");
 const ingest_build = @import("../../store/ingest/ingest_build.zig");
 const voila_chunk_load = @import("../../store/voila_chunk_load.zig");
+const voila_registry_fetch = @import("../../registry/voila_registry_fetch.zig");
 const voila_chunk_index = @import("../../store/voila_chunk_index.zig");
 const voila_store = @import("../../store/voila_store.zig");
 const chunk_store = @import("../../store/ingest/ingest_chunk_store.zig");
@@ -420,7 +421,7 @@ const Builder = struct {
 
     fn currentTree(self: *Builder) !*tree_mod.LayerTree {
         if (self.tree) |t| return t;
-        const t = try from_manifest.loadTree(self.a, self.opts.voila_root, self.root);
+        const t = try from_manifest.loadTree(self.a, self.opts.voila_root, self.root, voila_registry_fetch.fetcher(self.io));
         self.tree = t;
         return t;
     }
@@ -436,7 +437,7 @@ const Builder = struct {
                     for (node.blocks.items) |blk| {
                         const hex = chunk_store.idToHex(blk.chunk_id);
                         const algo = voila_chunk_index.compAlgoForChunk(self.opts.voila_root, &blk.chunk_id) catch voila_store.AlgoRaw;
-                        const data = voila_chunk_load.loadChunkRaw(self.io, self.a, self.opts.voila_root, &hex, algo) catch return error.ImageFileUnreadable;
+                        const data = voila_chunk_load.loadChunkRaw(voila_registry_fetch.fetcher(self.io), self.a, self.opts.voila_root, &hex, algo) catch return error.ImageFileUnreadable;
                         try out.appendSlice(self.a, data);
                     }
                     return out.items;
@@ -479,7 +480,7 @@ const Builder = struct {
         const key = cache_key.compute(.{ .parent_root = self.root, .instruction = norm, .inputs_digest = h.final() });
         if (self.cacheHit(key)) return true;
 
-        const tree = src_tree orelse try from_manifest.loadTree(self.a, self.opts.voila_root, src_root);
+        const tree = src_tree orelse try from_manifest.loadTree(self.a, self.opts.voila_root, src_root, voila_registry_fetch.fetcher(self.io));
         const matches = try copy_from.resolve(self.a, tree, srcs.items);
         const into_dir = std.mem.endsWith(u8, dest_raw, "/") or matches.len > 1 or
             (matches.len == 1 and matches[0].node.node_type == .dir) or glob.hasWildcard(srcs.items[0]);
@@ -499,7 +500,7 @@ const Builder = struct {
     }
 
     fn commit(self: *Builder, key: cache_key.Key, diff: *tree_mod.LayerTree) !void {
-        const current = self.tree orelse try from_manifest.loadTree(self.a, self.opts.voila_root, self.root);
+        const current = self.tree orelse try from_manifest.loadTree(self.a, self.opts.voila_root, self.root, voila_registry_fetch.fetcher(self.io));
         var pair = [_]*tree_mod.LayerTree{ current, diff };
         const merged = try merge_mod.mergeTrees(self.a, &pair);
         const layer = try manifest_mod.buildAndStoreManifest(self.a, self.opts.voila_root, diff, true);

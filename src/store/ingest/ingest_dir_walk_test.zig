@@ -164,7 +164,7 @@ test "manifest -> tree -> manifest is the identity" {
 
     const tree = try fx.walk(store, "src", "", .copy);
     const root = try manifest_mod.buildAndStoreManifest(a, store, tree, false);
-    const loaded = try from_manifest.loadTree(a, store, root);
+    const loaded = try from_manifest.loadTree(a, store, root, null);
     const again = try manifest_mod.buildAndStoreManifest(a, store, loaded, false);
     try std.testing.expectEqualSlices(u8, &root, &again);
 }
@@ -189,7 +189,7 @@ test "upper-dir diff merges over a base: add, modify, whiteout, opaque" {
 
     const base_tree = try fx.walk(store, "base", "", .copy);
     const base_root = try manifest_mod.buildAndStoreManifest(a, store, base_tree, false);
-    const state = try from_manifest.loadTree(a, store, base_root);
+    const state = try from_manifest.loadTree(a, store, base_root, null);
 
     const diff = try fx.walk(store, "upper", "", .overlay_upper);
     // A real upper dir encodes these as a 0/0 char device and an opaque xattr.
@@ -199,7 +199,7 @@ test "upper-dir diff merges over a base: add, modify, whiteout, opaque" {
     var layers = [_]*tree_mod.LayerTree{ state, diff };
     const merged = try merge_mod.mergeTrees(a, &layers);
     const out_root = try manifest_mod.buildAndStoreManifest(a, store, merged, false);
-    const out = try from_manifest.loadTree(a, store, out_root);
+    const out = try from_manifest.loadTree(a, store, out_root, null);
 
     try std.testing.expect(out.lookup("etc/keep") != null);
     try std.testing.expect(out.lookup("etc/added") != null);
