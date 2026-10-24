@@ -16,7 +16,6 @@ const container_run_opts = @import("./container_run_opts.zig");
 const container_userns = @import("./container_userns.zig");
 const container_isolated_exec = @import("./container_isolated_exec.zig");
 const container_fuse_sibling = @import("./container_fuse_sibling.zig");
-const voila_image_pull = @import("../../registry/voila_image_pull.zig");
 const container_ports = @import("./container_ports.zig");
 const run_cli_parse = @import("../../cli/run_cli_parse.zig");
 
@@ -247,14 +246,14 @@ fn runMounted(
     try voila_login_creds.loadIntoHub(allocator);
     try voila_registry_creds.loadFromCredsFile(allocator, voila_root);
     try voila_registry.loadFromEnv(allocator);
-    _ = try voila_loader.loadTreeRoot(io, allocator, voila_root, image);
-    try voila_image_pull.warmRunChunks(io, allocator, voila_root, image);
-    const tree = try voila_loader.loadTreeRoot(io, allocator, voila_root, image);
+    const root_ref = try voila_loader.resolveRootRef(io, allocator, voila_root, image);
+    defer allocator.free(root_ref);
+    const tree = try voila_loader.loadTreeRoot(io, allocator, voila_root, root_ref);
     var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(allocator, tree) };
     defer fuse_vfs.deinit();
     const vfs_exec = try mount_exec.resolveArgv0VfsPath(allocator, &fuse_vfs, cmd_argv[0]);
     defer allocator.free(vfs_exec);
-    var fuse_server = try container_fuse_sibling.start(io, allocator, voila_root, image, mount_dir);
+    var fuse_server = try container_fuse_sibling.start(io, allocator, voila_root, root_ref, mount_dir);
     defer fuse_server.deinit();
     const forwarders = try container_ports.start(io, opts.ports);
     defer container_ports.stopAll(forwarders);

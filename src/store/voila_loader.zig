@@ -43,6 +43,24 @@ pub fn loadTreeRoot(io: ?std.Io, allocator: std.mem.Allocator, voila_root: []con
     return voila_tree.openTree(allocator, voila_root, rec.merged_root_manifest);
 }
 
+/// Resolves `image_ref` once (auto-pulling the manifest) to `@<root hex>`, which later
+/// loads, including the FUSE server's, take without touching the registry.
+pub fn resolveRootRef(io: ?std.Io, allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) ![]const u8 {
+    if (rootChunkRef(image_ref) != null) return allocator.dupe(u8, image_ref);
+    const ref_norm = try normalizeImageRef(allocator, image_ref);
+    defer allocator.free(ref_norm);
+    if (io) |i| _ = voila_image_pull.autoPull(i, allocator, voila_root, ref_norm) catch {};
+    const rec = try voila_resolve.resolveImage(allocator, voila_root, ref_norm);
+    defer {
+        allocator.free(rec.ref);
+        allocator.free(rec.image_digest);
+        allocator.free(rec.merged_root_manifest);
+    }
+    if (rec.merged_root_manifest.len != 32) return error.BadRootManifest;
+    const hex = std.fmt.bytesToHex(rec.merged_root_manifest[0..32].*, .lower);
+    return std.fmt.allocPrint(allocator, "@{s}", .{&hex});
+}
+
 pub fn rootChunkRef(image_ref: []const u8) ?[32]u8 {
     if (image_ref.len != 65 or image_ref[0] != '@') return null;
     var out: [32]u8 = undefined;
