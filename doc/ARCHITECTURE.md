@@ -87,22 +87,47 @@ or docker-save images; decompression sniffed (raw/gzip/zstd); hardlinks share
 an inode; whiteouts applied at the layer merge step. One-shot and eager;
 everything afterwards is lazy.
 
-**Build** (`voila build`): a single-stage Dockerfile becomes a regular voila
+**Build** (`voila build`): a Dockerfile becomes a regular voila
 image without tarballs or OCI blobs. The base image is mounted read-only with
-the FUSE backend (image ids shown as the host ids they map to), an
-unprivileged overlayfs on top captures each `RUN`'s writes in an upper dir, and
-the command runs chrooted in a user + mount namespace. The namespace maps 0 to
-the build user and 1..N to its `/etc/subuid` range (`newuidmap`/`newgidmap`,
-run by the parent while the child waits on a pipe), else just 0. After the
-command, the sandbox records the owner of every non-root upper entry in an
-owners file and chowns it back to the build user so the host can read it; the
-walk restores those owners and maps the remaining host ids back
-(`core/idmap.zig`). The upper dir is walked straight
+the FUSE backend (image ids shown as the host ids they map to when a subuid
+range is available), an unprivileged overlayfs on top captures each `RUN`'s
+writes in an upper dir, and the command runs in the rootless sandbox described
+below. The namespace maps 0 to the build user and 1..N to its `/etc/subuid`
+range (`newuidmap`/`newgidmap`, run by the parent while the child waits on a
+pipe), else just 0. After the command, the sandbox records the owner of every
+non-root upper entry in an owners file and chowns it back to the build user so
+the host can read it; the walk restores those owners and maps the remaining host
+ids back (`core/idmap.zig`). The upper dir is walked straight
 into a layer tree with the same chunking as ingest (0/0 char devices become
 whiteouts, `user.overlay.opaque` marks opaque dirs) and merged over the
 current tree; `COPY` walks the context the same way and needs no sandbox.
 Steps are cached by `BLAKE3(parent root, instruction, env, inputs)`; a cache
 hit only swaps the root chunk, so fully cached builds never load a tree.
+Multi-stage builds run only the stages the target needs, in file order; each
+stage ends as a root chunk. `COPY --from` loads the source tree's manifests
+and grafts its nodes into the layer, reusing their chunk ids, and is keyed by
+the source root chunk plus the paths. For `COPY --from=<image>` on a lazily
+pulled image, the grafted chunk ids may not be local; push relies on the
+registry already having them.
+
+**Rootless sandbox** (`voila run`, build `RUN`; `runtime/oci/container_root.zig`):
+a user, mount and PID namespace. PID 1 is a small voila init that runs the
+command as PID 2, forwards signals to it, reaps orphans and exits with the
+command's status (128 + signal when it is killed). `voila run` makes the
+read-only FUSE root writable with an overlayfs whose upper and work dirs live
+on disk in `<root>/containers/<id>/rw` (removed with the container); `voila
+exec` and kernels that refuse the overlay get a read-only bind of the FUSE
+root. The root gets a fresh `proc`, a tmpfs `/dev` with the host's `null`,
+`zero`, `full`, `random`, `urandom` and `tty` bound in, a new `devpts`
+instance (the `-it` terminal is allocated there and its master is passed back
+over a unix socket) and a tmpfs `/dev/shm`. The host's `/sys` is bound
+read-only, submounts included (`mount_setattr`, Linux 5.12+), so host sysfs
+is visible but not writable; mounting a fresh `sysfs` would need a network
+namespace. The process then `pivot_root`s into the root and detaches the old
+one, so the host filesystem is no longer mounted in the namespace; plain
+`chroot` is used only if `pivot_root` is refused. The log file is opened
+before the root changes, so a non-`-it` command's output lands in
+`container.log`.
 
 **runc bundle**: `root.readonly: true`, env/args/cwd from the image config,
 tmpfs on `/tmp`/`/var/tmp`/`/dev`/`/dev/shm`, default namespaces,

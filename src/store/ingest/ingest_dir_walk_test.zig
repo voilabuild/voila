@@ -43,7 +43,7 @@ const Fixture = struct {
         var w = try dir_walk.Walker.init(self.arena.allocator(), voila_root, .{ .mode = mode });
         defer w.deinit();
         try w.add(self.path(rel), dest);
-        return w.finish().tree;
+        return (try w.finish()).tree;
     }
 };
 
@@ -216,7 +216,7 @@ test "overlay mode maps the host build user to root" {
     });
     defer w.deinit();
     try w.add(fx.path("upper"), "");
-    const node = w.finish().tree.lookup("f").?;
+    const node = (try w.finish()).tree.lookup("f").?;
     try std.testing.expectEqual(@as(u32, 0), node.uid);
     try std.testing.expectEqual(@as(u32, 0), node.gid);
 }
@@ -251,7 +251,7 @@ test "overlay mode maps subordinate ids and honors recorded owners" {
     var w = try dir_walk.Walker.init(a, fx.path("store"), .{ .mode = .overlay_upper, .ids = ids, .owners = &owners });
     defer w.deinit();
     try w.add(fx.path("upper"), "");
-    const tree = w.finish().tree;
+    const tree = (try w.finish()).tree;
     try std.testing.expectEqual(@as(u32, 1234), tree.lookup("home/f").?.uid);
     try std.testing.expectEqual(@as(u32, 0), tree.lookup("home").?.uid);
     try std.testing.expectEqual(@as(u32, 0), tree.lookup("g").?.gid);

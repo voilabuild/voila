@@ -2,7 +2,9 @@
 const std = @import("std");
 const dockerfile = @import("../../core/dockerfile.zig");
 const cache_key = @import("../../core/build_cache_key.zig");
+const build_stages = @import("../../core/build_stages.zig");
 const glob = @import("../../core/glob.zig");
+const passwd = @import("../../core/passwd.zig");
 const fs = @import("../../sys/fs.zig");
 const clock = @import("../../sys/clock.zig");
 const posix_util = @import("../../sys/posix_util.zig");
@@ -14,16 +16,22 @@ const from_manifest = @import("../../store/ingest/ingest_from_manifest.zig");
 const manifest_mod = @import("../../store/ingest/ingest_manifest.zig");
 const merge_mod = @import("../../store/ingest/ingest_merge.zig");
 const ingest_build = @import("../../store/ingest/ingest_build.zig");
+const voila_chunk_load = @import("../../store/voila_chunk_load.zig");
+const voila_chunk_index = @import("../../store/voila_chunk_index.zig");
+const voila_store = @import("../../store/voila_store.zig");
 const chunk_store = @import("../../store/ingest/ingest_chunk_store.zig");
 const build_cache = @import("../../store/build_cache.zig");
 const image_store = @import("image_store.zig");
 const copy_sources = @import("copy_sources.zig");
+const copy_from = @import("copy_from.zig");
 pub const steps = @import("steps.zig");
 
 pub const RunRequest = steps.RunRequest;
 pub const StepRunner = steps.StepRunner;
 
 pub const StepEvent = struct {
+    /// Stage name, `stage-N` for unnamed stages of a multi-stage build, else empty.
+    stage: []const u8 = "",
     index: usize,
     total: usize,
     text: []const u8,
@@ -41,6 +49,8 @@ pub const Options = struct {
     context_dir: []const u8,
     dockerfile_text: []const u8,
     tag: []const u8,
+    /// Stage to build and tag; empty means the last one.
+    target: []const u8 = "",
     build_args: []const dockerfile.KeyValue = &.{},
     no_cache: bool = false,
     runner: StepRunner,
@@ -55,11 +65,23 @@ pub const Diagnostic = struct {
 pub const Result = struct {
     root: [32]u8,
     config: [32]u8,
+    /// Non-FROM steps of the stages that were built.
     steps: usize,
     cached: usize,
 };
 
-pub const Error = error{ RunFailed, UnsupportedChown, EmptyBuild };
+pub const Error = error{
+    RunFailed,
+    UnsupportedChown,
+    UnknownChownName,
+    ImageFileUnreadable,
+    EmptyBuild,
+    Unsupported,
+    StageNotBuilt,
+    DuplicateStage,
+    UnknownTarget,
+    StageNotFound,
+};
 
 pub fn build(io: std.Io, gpa: std.mem.Allocator, opts: Options, diag: *Diagnostic) !Result {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -73,51 +95,114 @@ pub fn build(io: std.Io, gpa: std.mem.Allocator, opts: Options, diag: *Diagnosti
     };
     defer df.deinit();
 
-    var b: Builder = .{ .io = io, .a = a, .opts = opts, .diag = diag };
-    b.config = try oci_config.ImageConfig.parse(a, "");
-    try b.loadIgnore();
-    for (df.global_args) |arg| try b.declareArg(arg);
-    b.globals = try b.args.toOwnedSlice(a);
+    var s: Session = .{ .io = io, .a = a, .opts = opts, .diag = diag, .df = &df };
+    try s.init();
+    const target = try build_stages.targetIndex(&df, opts.target);
+    const needed = try build_stages.needed(a, &df, target, &s.global_vars);
+    for (needed, 0..) |n, i| if (n) {
+        try s.stage(i);
+    };
+    const img = s.results[target].?;
+    var steps_n: usize = 0;
+    var cached: usize = 0;
+    for (s.results) |r| if (r) |done| {
+        steps_n += done.steps;
+        cached += done.cached;
+    };
 
-    const from = df.instructions[0];
-    diag.line = from.line;
-    const base_ref = try b.expand(from.op.from);
-    const base = try image_store.loadBase(io, a, opts.voila_root, base_ref);
-    b.root = base.root;
-    b.config = try oci_config.ImageConfig.parse(a, base.config_json);
-    b.vars.clearRetainingCapacity();
-    const env = try b.config.getStrings(a, "Env");
-    for (env) |kv| {
-        const eq = std.mem.indexOfScalar(u8, kv, '=') orelse continue;
-        try b.vars.put(a, kv[0..eq], kv[eq + 1 ..]);
-    }
-
-    const total = df.instructions.len;
-    b.emit(0, total, from.text, false, 0);
-    for (df.instructions[1..], 1..) |ins, i| {
-        diag.line = ins.line;
-        const t0 = clock.monotonicNs();
-        const cached = try b.step(ins);
-        b.emit(i, total, ins.text, cached, clock.monotonicNs() - t0);
-    }
-    diag.line = 0;
-
-    const config_json = try b.config.serialize(a);
-    const config_chunk = try chunk_store.putBytes(a, opts.voila_root, config_json);
+    const config_chunk = try chunk_store.putBytes(a, opts.voila_root, img.config_json);
     try image_store.persist(a, opts.voila_root, opts.tag, .{
-        .root = b.root,
+        .root = img.root,
         .config = config_chunk,
-        .layers = b.layers.items,
-        .tree = b.tree,
+        .layers = img.layers,
+        .tree = img.tree,
     });
-    return .{ .root = b.root, .config = config_chunk, .steps = total, .cached = b.cached };
+    return .{ .root = img.root, .config = config_chunk, .steps = steps_n, .cached = cached };
 }
+
+const StageResult = struct {
+    root: [32]u8,
+    config_json: []const u8,
+    layers: []ingest_build.LayerResult,
+    tree: ?*tree_mod.LayerTree,
+    steps: usize,
+    cached: usize,
+};
+
+/// State shared by the stages of one build; needed stages are built once, in file order.
+const Session = struct {
+    io: std.Io,
+    a: std.mem.Allocator,
+    opts: Options,
+    diag: *Diagnostic,
+    df: *const dockerfile.Dockerfile,
+    ignore: glob.Ignore = .{ .rules = &.{} },
+    globals: []const dockerfile.KeyValue = &.{},
+    global_vars: std.StringHashMapUnmanaged([]const u8) = .empty,
+    results: []?StageResult = &.{},
+
+    fn init(self: *Session) !void {
+        var g = self.builder(0);
+        g.config = try oci_config.ImageConfig.parse(self.a, "");
+        try g.loadIgnore();
+        self.ignore = g.ignore;
+        for (self.df.global_args) |arg| try g.declareArg(arg);
+        self.globals = try g.args.toOwnedSlice(self.a);
+        self.global_vars = g.vars;
+        self.results = try self.a.alloc(?StageResult, self.df.stages.len);
+        @memset(self.results, null);
+    }
+
+    fn builder(self: *Session, index: usize) Builder {
+        return .{ .io = self.io, .a = self.a, .opts = self.opts, .diag = self.diag, .session = self, .index = index, .ignore = self.ignore, .globals = self.globals };
+    }
+
+    fn label(self: *Session, index: usize) ![]const u8 {
+        const name = self.df.stages[index].name;
+        if (name.len > 0 or self.df.stages.len == 1) return name;
+        return std.fmt.allocPrint(self.a, "stage-{d}", .{index});
+    }
+
+    /// Stages are built in file order, so a dependency is always done first;
+    /// it is missing only when a `--from` ref needs a stage-local ARG.
+    fn built(self: *Session, index: usize) Error!*const StageResult {
+        if (self.results[index]) |*r| return r;
+        return error.StageNotBuilt;
+    }
+
+    fn stage(self: *Session, index: usize) !void {
+        var b = self.builder(index);
+        b.label = try self.label(index);
+        b.vars = try self.global_vars.clone(self.a);
+        try b.from(self.df.stages[index].instructions[0]);
+        const ins = self.df.stages[index].instructions;
+        b.emit(0, ins.len, ins[0].text, false, 0);
+        for (ins[1..], 1..) |in, i| {
+            self.diag.line = in.line;
+            const t0 = clock.monotonicNs();
+            const cached = try b.step(in);
+            b.emit(i, ins.len, in.text, cached, clock.monotonicNs() - t0);
+        }
+        self.diag.line = 0;
+        self.results[index] = .{
+            .root = b.root,
+            .config_json = try b.config.serialize(self.a),
+            .layers = b.layers.items,
+            .tree = b.tree,
+            .steps = ins.len - 1,
+            .cached = b.cached,
+        };
+    }
+};
 
 const Builder = struct {
     io: std.Io,
     a: std.mem.Allocator,
     opts: Options,
     diag: *Diagnostic,
+    session: *Session,
+    index: usize,
+    label: []const u8 = "",
     vars: std.StringHashMapUnmanaged([]const u8) = .empty,
     /// ARG values visible to RUN, in declaration order.
     args: std.ArrayList(dockerfile.KeyValue) = .empty,
@@ -131,10 +216,39 @@ const Builder = struct {
     ignore: glob.Ignore = .{ .rules = &.{} },
     cached: usize = 0,
     cmd_from_build: bool = false,
+    shell: []const []const u8 = &steps.default_shell,
 
     fn emit(self: *Builder, index: usize, total: usize, text: []const u8, cached: bool, ns: u64) void {
         const p = self.opts.progress orelse return;
-        p.func(p.ptr, .{ .index = index, .total = total, .text = text, .cached = cached, .elapsed_ns = ns });
+        p.func(p.ptr, .{ .stage = self.label, .index = index, .total = total, .text = text, .cached = cached, .elapsed_ns = ns });
+    }
+
+    /// Starts the stage from an image or an earlier stage's result.
+    fn from(self: *Builder, ins: dockerfile.Instruction) !void {
+        self.diag.line = ins.line;
+        const ref = try self.expand(ins.op.from.image);
+        var config_json: []const u8 = "";
+        switch (try build_stages.resolve(self.session.df, self.index, ref, false)) {
+            .stage => |i| {
+                const base = try self.session.built(i);
+                self.root = base.root;
+                self.tree = base.tree;
+                try self.layers.appendSlice(self.a, base.layers);
+                config_json = base.config_json;
+            },
+            .image => {
+                const base = try image_store.loadBase(self.io, self.a, self.opts.voila_root, ref);
+                self.root = base.root;
+                config_json = base.config_json;
+            },
+        }
+        self.config = try oci_config.ImageConfig.parse(self.a, config_json);
+        self.vars.clearRetainingCapacity();
+        const env = try self.config.getStrings(self.a, "Env");
+        for (env) |kv| {
+            const eq = std.mem.indexOfScalar(u8, kv, '=') orelse continue;
+            try self.vars.put(self.a, kv[0..eq], kv[eq + 1 ..]);
+        }
     }
 
     fn loadIgnore(self: *Builder) !void {
@@ -188,16 +302,25 @@ const Builder = struct {
             .expose => |ports| for (ports) |p| try self.config.addExposedPort(try self.expand(p)),
             .user => |u| try self.config.setString("User", try self.expand(u)),
             .workdir => |w| try self.config.setString("WorkingDir", try steps.joinPath(self.a, try self.config.getString("WorkingDir"), try self.expand(w))),
+            .shell => |sh| {
+                self.shell = sh;
+                try self.config.setStrings("Shell", sh);
+            },
+            .healthcheck => |hc| try self.config.setHealthcheck(hc),
+            .stopsignal => |s| try self.config.setString("StopSignal", try self.expand(s)),
+            .volume => |vols| for (vols) |v| try self.config.addVolume(try self.expand(v)),
+            .maintainer => |m| try self.config.setAuthor(m),
             .cmd => |f| {
-                try self.config.setStrings("Cmd", try steps.formArgv(self.a, f));
+                try self.config.setStrings("Cmd", try steps.formArgv(self.a, f, self.shell));
                 self.cmd_from_build = true;
             },
             .entrypoint => |f| {
-                try self.config.setStrings("Entrypoint", try steps.formArgv(self.a, f));
+                try self.config.setStrings("Entrypoint", try steps.formArgv(self.a, f, self.shell));
                 if (!self.cmd_from_build) try self.config.setStrings("Cmd", null);
             },
             .run => |f| return self.run(ins.text, f),
-            .copy, .add => |c| return self.copy(c),
+            .copy => |c| return if (c.from.len > 0) self.copyFrom(c) else self.copy(c),
+            .add => |c| return if (c.from.len > 0) error.Unsupported else self.copy(c),
         }
         return false;
     }
@@ -218,7 +341,12 @@ const Builder = struct {
         const env = try self.runEnv();
         const workdir = try self.config.getString("WorkingDir");
         const user = try self.config.getString("User");
-        const key = cache_key.compute(.{ .parent_root = self.root, .instruction = text, .env = env, .workdir = workdir, .user = user });
+        const shell_key = try std.mem.join(self.a, "\x00", self.shell);
+        const instruction = if (form == .shell and !std.mem.eql(u8, shell_key, "/bin/sh\x00-c"))
+            try std.fmt.allocPrint(self.a, "{s}\x00SHELL {s}", .{ text, shell_key })
+        else
+            text;
+        const key = cache_key.compute(.{ .parent_root = self.root, .instruction = instruction, .env = env, .workdir = workdir, .user = user });
         if (self.cacheHit(key)) return true;
 
         const scratch = try fs.makeTempDir(self.a, "voila-build");
@@ -231,7 +359,7 @@ const Builder = struct {
             .root = self.root,
             .scratch_dir = scratch,
             .upper_dir = upper,
-            .argv = try steps.formArgv(self.a, form),
+            .argv = try steps.formArgv(self.a, form, self.shell),
             .env = env,
             .workdir = workdir,
             .user = user,
@@ -254,7 +382,7 @@ const Builder = struct {
         });
         defer w.deinit();
         try w.add(upper, "");
-        try self.commit(key, w.finish().tree);
+        try self.commit(key, (try w.finish()).tree);
         return false;
     }
 
@@ -262,13 +390,14 @@ const Builder = struct {
         var srcs: std.ArrayList([]const u8) = .empty;
         for (c.srcs) |s| try srcs.append(self.a, try self.expand(s));
         const dest_raw = try self.expand(c.dest);
-        const owner = try steps.parseChown(try self.expand(c.chown));
+        const owner = try self.resolveOwner(try self.expand(c.chown));
         const sources = try copy_sources.resolve(self.a, self.opts.context_dir, srcs.items, self.ignore);
         const dest = try steps.joinPath(self.a, try self.config.getString("WorkingDir"), dest_raw);
         const into_dir = std.mem.endsWith(u8, dest_raw, "/") or sources.len > 1 or
             (sources.len == 1 and sources[0].is_dir) or glob.hasWildcard(srcs.items[0]);
 
-        const norm = try std.fmt.allocPrint(self.a, "COPY {d}:{d} {s} {s}", .{ owner.uid, owner.gid, dest, if (into_dir) "dir" else "file" });
+        const chmod_key = if (c.chmod) |m| try std.fmt.allocPrint(self.a, "{o}", .{m}) else "-";
+        const norm = try std.fmt.allocPrint(self.a, "COPY {d}:{d} {s} {s} {s}", .{ owner.uid, owner.gid, chmod_key, dest, if (into_dir) "dir" else "file" });
         const key = cache_key.compute(.{
             .parent_root = self.root,
             .instruction = norm,
@@ -276,7 +405,7 @@ const Builder = struct {
         });
         if (self.cacheHit(key)) return true;
 
-        var w = try dir_walk.Walker.init(self.a, self.opts.voila_root, .{ .mode = .copy, .owner = owner });
+        var w = try dir_walk.Walker.init(self.a, self.opts.voila_root, .{ .mode = .copy, .owner = owner, .chmod = c.chmod });
         defer w.deinit();
         const dest_rel = std.mem.trimStart(u8, dest, "/");
         for (sources) |s| {
@@ -285,7 +414,77 @@ const Builder = struct {
             const target = if (s.is_dir or !into_dir) dest_rel else try steps.joinRel(self.a, dest_rel, std.fs.path.basename(s.rel));
             try w.add(s.abs, target);
         }
-        try self.commit(key, w.finish().tree);
+        try self.commit(key, (try w.finish()).tree);
+        return false;
+    }
+
+    fn currentTree(self: *Builder) !*tree_mod.LayerTree {
+        if (self.tree) |t| return t;
+        const t = try from_manifest.loadTree(self.a, self.opts.voila_root, self.root);
+        self.tree = t;
+        return t;
+    }
+
+    fn readImageFile(self: *Builder, path: []const u8) ![]const u8 {
+        const tree = try self.currentTree();
+        var cur = path;
+        for (0..8) |_| {
+            const node = tree.lookup(cur) orelse return "";
+            switch (node.node_type) {
+                .regular => {
+                    var out: std.ArrayList(u8) = .empty;
+                    for (node.blocks.items) |blk| {
+                        const hex = chunk_store.idToHex(blk.chunk_id);
+                        const algo = voila_chunk_index.compAlgoForChunk(self.opts.voila_root, &blk.chunk_id) catch voila_store.AlgoRaw;
+                        const data = voila_chunk_load.loadChunkRaw(self.io, self.a, self.opts.voila_root, &hex, algo) catch return error.ImageFileUnreadable;
+                        try out.appendSlice(self.a, data);
+                    }
+                    return out.items;
+                },
+                .symlink => {
+                    const dir = try std.fmt.allocPrint(self.a, "/{s}", .{std.fs.path.dirname(cur) orelse ""});
+                    cur = (try steps.joinPath(self.a, dir, node.target))[1..];
+                },
+                else => return "",
+            }
+        }
+        return "";
+    }
+
+    fn resolveOwner(self: *Builder, spec: []const u8) !dir_walk.Owner {
+        if (steps.parseChown(spec)) |o| return o else |_| {}
+        const ids = passwd.resolveChown(spec, try self.readImageFile("etc/passwd"), try self.readImageFile("etc/group")) catch return error.UnknownChownName;
+        return .{ .uid = ids.uid, .gid = ids.gid };
+    }
+
+    fn copyFrom(self: *Builder, c: dockerfile.Copy) !bool {
+        var srcs: std.ArrayList([]const u8) = .empty;
+        for (c.srcs) |s| try srcs.append(self.a, try self.expand(s));
+        const dest_raw = try self.expand(c.dest);
+        const chown = try self.expand(c.chown);
+        const owner = if (chown.len > 0) try self.resolveOwner(chown) else dir_walk.Owner{ .uid = 0, .gid = 0 };
+        const dest = try steps.joinPath(self.a, try self.config.getString("WorkingDir"), dest_raw);
+        const src_root, const src_tree = switch (try build_stages.resolve(self.session.df, self.index, try self.expand(c.from), true)) {
+            .stage => |i| blk: {
+                const r = try self.session.built(i);
+                break :blk .{ r.root, r.tree };
+            },
+            .image => |ref| .{ (try image_store.loadBase(self.io, self.a, self.opts.voila_root, ref)).root, null },
+        };
+
+        var h: cache_key.InputsHasher = .{};
+        h.entry("from", 0, &src_root);
+        for (srcs.items) |s| h.entry(s, 0, "");
+        const norm = try std.fmt.allocPrint(self.a, "COPY --from {s} {s} {s}", .{ chown, dest, dest_raw });
+        const key = cache_key.compute(.{ .parent_root = self.root, .instruction = norm, .inputs_digest = h.final() });
+        if (self.cacheHit(key)) return true;
+
+        const tree = src_tree orelse try from_manifest.loadTree(self.a, self.opts.voila_root, src_root);
+        const matches = try copy_from.resolve(self.a, tree, srcs.items);
+        const into_dir = std.mem.endsWith(u8, dest_raw, "/") or matches.len > 1 or
+            (matches.len == 1 and matches[0].node.node_type == .dir) or glob.hasWildcard(srcs.items[0]);
+        const diff = try copy_from.graft(self.a, matches, std.mem.trimStart(u8, dest, "/"), into_dir, if (chown.len > 0) owner else null);
+        try self.commit(key, diff);
         return false;
     }
 

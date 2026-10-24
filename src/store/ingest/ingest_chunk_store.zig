@@ -26,10 +26,16 @@ pub fn chunkExists(allocator: std.mem.Allocator, voila_root: []const u8, id: Chu
 }
 
 pub fn putBytes(allocator: std.mem.Allocator, voila_root: []const u8, raw: []const u8) !ChunkId {
+    var w = voila_store.ChunkWriter.init(voila_root);
+    defer w.deinit();
+    return putBytesWith(&w, allocator, raw);
+}
+
+pub fn putBytesWith(w: *voila_store.ChunkWriter, allocator: std.mem.Allocator, raw: []const u8) !ChunkId {
     const id = hashRaw(raw);
-    const hex = idToHex(id);
-    if (!chunkExists(allocator, voila_root, id)) {
-        try voila_store.putChunkRaw(allocator, voila_root, &hex, raw);
+    if (!chunkExists(allocator, w.voila_root, id)) {
+        const hex = idToHex(id);
+        try w.putTrusted(allocator, &hex, raw);
     }
     return id;
 }

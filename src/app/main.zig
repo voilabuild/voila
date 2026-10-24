@@ -91,9 +91,10 @@ pub fn main(init: std.process.Init) !void {
         const code = container_isolated_exec.run(spec) catch |e| {
             switch (e) {
                 error.UserNamespacesRequired => std.debug.print("voila: cannot enter a user namespace for the image root (re-run install.sh for the AppArmor voila profile)\n", .{}),
+                error.SetupFailed => std.debug.print("voila: cannot set up the image root for {s}\n", .{spec.vfs_argv0}),
                 else => std.debug.print("voila: cannot exec {s} in the image: {s}\n", .{ spec.vfs_argv0, @errorName(e) }),
             }
-            std.process.exit(127);
+            std.process.exit(container_isolated_exec.errorExitCode(e));
         };
         std.process.exit(code);
     }
@@ -1185,6 +1186,7 @@ test {
     _ = @import("../store/ingest/ingest_dir_walk_test.zig");
     _ = @import("../codec/oci_image_config.zig");
     _ = @import("../core/glob.zig");
+    _ = @import("../core/passwd.zig");
     _ = @import("../runtime/build/steps.zig");
     _ = @import("../runtime/build/copy_sources.zig");
     _ = @import("../runtime/build/driver_test.zig");

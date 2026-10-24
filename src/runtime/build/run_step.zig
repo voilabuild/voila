@@ -1,5 +1,5 @@
 //! Rootless RUN: the step's image is FUSE-mounted read-only, overlayfs on top captures
-//! writes in `upper_dir`, and the command runs chrooted in a user + mount namespace.
+//! writes in `upper_dir`, and the command runs pivoted into it in user + mount + PID namespaces.
 //! With a subuid range the namespace maps 0 -> invoking uid and 1..N -> the range.
 const std = @import("std");
 const steps = @import("steps.zig");
@@ -10,7 +10,7 @@ const passwd = @import("../../core/passwd.zig");
 const dir_walk = @import("../../store/ingest/ingest_dir_walk.zig");
 const container_fuse_sibling = @import("../oci/container_fuse_sibling.zig");
 const container_bind = @import("../oci/container_bind.zig");
-const container_chroot = @import("../oci/container_chroot.zig");
+const container_root = @import("../oci/container_root.zig");
 const userns_ids = @import("../oci/userns_ids.zig");
 
 extern "c" fn unshare(flags: c_int) c_int;
@@ -154,7 +154,7 @@ fn resolveUser(a: std.mem.Allocator, lower: []const u8, spec: []const u8) steps.
     if (spec.len == 0) return null;
     const pw = try readImageFile(a, lower, "etc/passwd");
     const gr = try readImageFile(a, lower, "etc/group");
-    return passwd.resolve(a, spec, pw, gr) catch |e| switch (e) {
+    return passwd.resolveCred(a, spec, pw, gr) catch |e| switch (e) {
         error.UnknownUser => error.UnknownUser,
         error.UnknownGroup => error.UnknownGroup,
         error.OutOfMemory => error.OutOfMemory,
@@ -184,7 +184,6 @@ const Plan = struct {
     cred: ?passwd.Cred,
     upper: []const u8,
     owners_path: []const u8,
-    merged: []const u8,
     merged_z: [:0]const u8,
     overlay_opts: [:0]const u8,
     workdir_z: ?[:0]const u8,
@@ -194,6 +193,7 @@ const Plan = struct {
     candidates: []const [:0]const u8,
     resolv_src: [:0]const u8 = "/etc/resolv.conf",
     resolv_dst: [:0]const u8,
+    root_ops: []const container_root.Op,
 
     fn init(a: std.mem.Allocator, req: steps.RunRequest, ids: idmap.Mapping, cred: ?passwd.Cred, lower: []const u8, work: []const u8, merged: []const u8) !Plan {
         const argv = try a.allocSentinel(?[*:0]const u8, req.argv.len, null);
@@ -220,7 +220,6 @@ const Plan = struct {
             .cred = cred,
             .upper = req.upper_dir,
             .owners_path = req.owners_path,
-            .merged = merged,
             .merged_z = try a.dupeSentinel(u8, merged, 0),
             .overlay_opts = try std.fmt.allocPrintSentinel(a, "lowerdir={s},upperdir={s},workdir={s},userxattr", .{ lower, req.upper_dir, work }, 0),
             .workdir_z = if (req.workdir.len > 0) try a.dupeSentinel(u8, req.workdir, 0) else null,
@@ -228,6 +227,7 @@ const Plan = struct {
             .envp = try env.toOwnedSliceSentinel(a, null),
             .candidates = try cands.toOwnedSlice(a),
             .resolv_dst = try std.fmt.allocPrintSentinel(a, "{s}/etc/resolv.conf", .{merged}, 0),
+            .root_ops = try container_root.plan(a, merged),
         };
     }
 
@@ -261,7 +261,9 @@ const Plan = struct {
     }
 
     fn command(self: Plan, status_fd: std.posix.fd_t, ids: idmap.Mapping) noreturn {
-        container_chroot.enterRootfs(self.merged) catch fail(status_fd, .setup);
+        if (container_root.enterPidNamespace(&.{}) catch fail(status_fd, .setup)) |c| std.c._exit(c);
+        container_root.apply(self.root_ops);
+        container_root.pivotInto(self.merged_z) catch fail(status_fd, .setup);
         if (self.workdir_z) |wd| {
             makePathZ(wd);
             if (std.c.chdir(wd) != 0) fail(status_fd, .setup);
