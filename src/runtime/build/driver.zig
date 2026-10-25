@@ -66,7 +66,7 @@ pub const Diagnostic = struct {
 pub const Result = struct {
     root: [32]u8,
     config: [32]u8,
-    /// Non-FROM steps of the stages that were built.
+    /// RUN/COPY/ADD steps of the stages that were built (metadata instructions are excluded).
     steps: usize,
     cached: usize,
 };
@@ -190,7 +190,7 @@ const Session = struct {
             .config_json = try b.config.serialize(self.a),
             .layers = b.layers.items,
             .tree = b.tree,
-            .steps = ins.len - 1,
+            .steps = b.steps,
             .cached = b.cached,
         };
     }
@@ -216,6 +216,8 @@ const Builder = struct {
     layers: std.ArrayList(ingest_build.LayerResult) = .empty,
     ignore: glob.Ignore = .{ .rules = &.{} },
     cached: usize = 0,
+    /// RUN/COPY/ADD instructions executed in this stage.
+    steps: usize = 0,
     cmd_from_build: bool = false,
     shell: []const []const u8 = &steps.default_shell,
 
@@ -319,9 +321,18 @@ const Builder = struct {
                 try self.config.setStrings("Entrypoint", try steps.formArgv(self.a, f, self.shell));
                 if (!self.cmd_from_build) try self.config.setStrings("Cmd", null);
             },
-            .run => |f| return self.run(ins.text, f),
-            .copy => |c| return if (c.from.len > 0) self.copyFrom(c) else self.copy(c),
-            .add => |c| return if (c.from.len > 0) error.Unsupported else self.copy(c),
+            .run => |f| {
+                self.steps += 1;
+                return self.run(ins.text, f);
+            },
+            .copy => |c| {
+                self.steps += 1;
+                return if (c.from.len > 0) self.copyFrom(c) else self.copy(c);
+            },
+            .add => |c| {
+                self.steps += 1;
+                return if (c.from.len > 0) error.Unsupported else self.copy(c);
+            },
         }
         return false;
     }
