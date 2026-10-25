@@ -1,5 +1,6 @@
 //! `voila build`: argument parsing, progress output and error reporting.
 const std = @import("std");
+const command = @import("command.zig");
 const posix_util = @import("sys").posix_util;
 const voila_paths = @import("sys").voila_paths;
 const dockerfile = @import("core").dockerfile;
@@ -64,6 +65,10 @@ fn parseArgs(a: std.mem.Allocator, it: *std.process.Args.Iterator) !Args {
         .no_cache = no_cache,
         .push = push,
     };
+}
+
+pub fn execute(ctx: command.Ctx) !void {
+    std.process.exit(try run(ctx.io, ctx.gpa(), ctx.args));
 }
 
 pub fn run(io: std.Io, gpa: std.mem.Allocator, it: *std.process.Args.Iterator) !u8 {

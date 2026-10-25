@@ -1,4 +1,5 @@
 const std = @import("std");
+const command = @import("command.zig");
 const flags = @import("flags.zig");
 const vfs_mod = @import("mount").fuse.vfs;
 const fuse_vfs_mod = @import("mount").fuse.fuse_vfs;
@@ -8,6 +9,11 @@ const posix_util = @import("sys").posix_util;
 const fs = @import("sys").fs;
 const constants = @import("core").constants;
 const voila_loader = @import("runtime").voila_loader;
+
+pub fn execute(ctx: command.Ctx) !void {
+    const fixture_dir = ctx.args.next() orelse "fixture-out";
+    try run(ctx.io, ctx.init, fixture_dir);
+}
 
 pub fn run(io: std.Io, init: std.process.Init, fixture_dir: []const u8) !void {
     try ensureFixture(init, fixture_dir);

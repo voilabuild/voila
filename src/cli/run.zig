@@ -1,8 +1,11 @@
 const std = @import("std");
+const command = @import("command.zig");
 const flags = @import("flags.zig");
 const voila_refkey = @import("core").voila_refkey;
 const voila_runtime = @import("runtime").open;
 const run_flags = @import("runtime").run_flags;
+const voila_image_run_config = @import("runtime").oci.voila_image_run_config;
+const registry_session = @import("registry").registry_session;
 
 pub const Parsed = struct {
     runtime_cfg: voila_runtime.Config,
@@ -165,6 +168,60 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator)
         .interactive = interactive,
     };
 }
+
+pub fn execute(ctx: command.Ctx) !void {
+    const gpa = ctx.gpa();
+    const parsed = try parseArgs(gpa, ctx.args);
+    defer parsed.deinit(gpa);
+    try registry_session.prepare(ctx.io, gpa, parsed.runtime_cfg.store_root);
+    var worker = try command.openRuntime(gpa, parsed.runtime_cfg);
+    defer worker.deinit(gpa);
+    var argv = parsed.cmd;
+    var default_argv: ?[]const []const u8 = null;
+    if (argv.len == 0) {
+        default_argv = try voila_image_run_config.defaultArgv(ctx.io, gpa, parsed.runtime_cfg.store_root, parsed.image, &.{});
+        argv = default_argv.?;
+    }
+    defer if (default_argv) |a| {
+        for (a) |s| gpa.free(s);
+        gpa.free(a);
+    };
+    const image_env = try voila_image_run_config.imageEnv(ctx.io, gpa, parsed.runtime_cfg.store_root, parsed.image);
+    defer {
+        for (image_env) |e| {
+            gpa.free(e.key);
+            gpa.free(e.value);
+        }
+        gpa.free(image_env);
+    }
+    const env = try std.mem.concat(gpa, run_flags.EnvPair, &.{ image_env, parsed.env });
+    defer gpa.free(env);
+    var workdir = parsed.workdir;
+    var workdir_from_image: ?[]const u8 = null;
+    if (workdir.len == 0) {
+        workdir_from_image = try voila_image_run_config.imageWorkdir(ctx.io, gpa, parsed.runtime_cfg.store_root, parsed.image);
+        workdir = workdir_from_image.?;
+    }
+    defer if (workdir_from_image) |w| gpa.free(w);
+    const code = worker.run(ctx.io, gpa, .{
+        .image = parsed.image,
+        .argv = argv,
+        .detach = parsed.detach,
+        .name = parsed.name,
+        .rm_on_exit = parsed.rm_on_exit,
+        .env = env,
+        .workdir = workdir,
+        .volumes = parsed.volumes,
+        .ports = parsed.ports,
+        .tty = parsed.tty,
+        .interactive = parsed.interactive,
+    }) catch |e| {
+        if (e == error.UserNamespacesRequired) std.process.exit(1);
+        return e;
+    };
+    std.process.exit(code);
+}
+
 test "run drops -- right after image ref" {
     const alloc = std.testing.allocator;
     const argv: []const [*:0]const u8 = &.{ "-root", "/voila-test-root", "alpine:3", "--", "echo", "--", "hi" };

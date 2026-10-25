@@ -1,6 +1,11 @@
 const std = @import("std");
+const command = @import("command.zig");
 const voila_paths = @import("sys").voila_paths;
 const voila_login_creds = @import("registry").voila_login_creds;
+
+pub fn execute(ctx: command.Ctx) !void {
+    try run(ctx.io, ctx.init);
+}
 
 pub fn run(io: std.Io, init: std.process.Init) !void {
     var args = std.process.Args.Iterator.init(init.minimal.args);

@@ -1,4 +1,5 @@
 const std = @import("std");
+const command = @import("command.zig");
 const flags = @import("flags.zig");
 const voila_runtime = @import("runtime").open;
 
@@ -27,4 +28,13 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator)
         .runtime_cfg = try flags.finishRuntimeConfig(allocator, root, kind),
         .image = img,
     };
+}
+
+pub fn execute(ctx: command.Ctx) !void {
+    const gpa = ctx.gpa();
+    const parsed = try parseArgs(gpa, ctx.args);
+    defer parsed.deinit(gpa);
+    var worker = try command.openRuntime(gpa, parsed.runtime_cfg);
+    defer worker.deinit(gpa);
+    try worker.rmi(ctx.io, gpa, .{ .image = parsed.image });
 }
