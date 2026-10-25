@@ -157,7 +157,7 @@ fn waitProcessGroup(leader_pid: i32) void {
         const rc = std.c.waitpid(leader_pid, &status, std.c.W.NOHANG);
         if (rc == leader_pid) break;
         if (!isPidAlive(leader_pid)) break;
-        sleepMs(50);
+        posix_util.sleepMs(50);
     }
     reapZombies();
 }
@@ -171,20 +171,12 @@ fn ensureUnmounted(mount_dir: []const u8) bool {
     for (0..80) |_| {
         if (!mountStillListed(mount_dir)) return true;
         _ = fusermount.unmount(mount_dir, .normal);
-        sleepMs(50);
+        posix_util.sleepMs(50);
         if (!mountStillListed(mount_dir)) return true;
         _ = fusermount.unmount(mount_dir, .lazy);
-        sleepMs(50);
+        posix_util.sleepMs(50);
     }
     return !mountStillListed(mount_dir);
-}
-
-fn sleepMs(ms: u64) void {
-    var ts: std.c.timespec = .{
-        .sec = @intCast(ms / 1000),
-        .nsec = @intCast((ms % 1000) * std.time.ns_per_ms),
-    };
-    while (std.c.nanosleep(&ts, &ts) == -1 and std.c.errno(-1) == .INTR) {}
 }
 
 pub fn isRunning(st: container_store.State) bool {

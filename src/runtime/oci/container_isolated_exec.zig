@@ -1,6 +1,7 @@
 //! Enter user/mount/PID namespaces and pivot into the image root without holding FUSE fds (re-exec entrypoint).
 const std = @import("std");
 const ns = @import("sys").ns;
+const posix_util = @import("sys").posix_util;
 const container_bind = @import("container_bind.zig");
 const container_root = @import("container_root.zig");
 const container_run_opts = @import("container_run_opts.zig");
@@ -118,7 +119,7 @@ pub fn errorExitCode(err: Error) u8 {
 pub fn spawnAndWait(_: std.Io, allocator: std.mem.Allocator, spec: Spec, timeout_ms: u64) !u8 {
     const console: ?[2]std.posix.fd_t = if (spec.use_tty) ns.socketPair() catch null else null;
     defer if (console) |c| ns.close(c[0]);
-    const exe = selfExePath(allocator) catch return error.ExecFailed;
+    const exe = posix_util.selfExePath(allocator) catch return error.ExecFailed;
     defer allocator.free(exe);
     const mount_z = try allocator.dupe(u8, spec.mount_dir);
     defer allocator.free(mount_z);
@@ -214,7 +215,7 @@ pub fn spawnAndWait(_: std.Io, allocator: std.mem.Allocator, spec: Spec, timeout
                 return error.ExecTimeout;
             }
         }
-        sleepMs(10);
+        posix_util.sleepMs(10);
     }
     if (out_thread) |t| t.join();
     return ns.exitCode(@bitCast(status));
@@ -315,21 +316,6 @@ fn monotonicMs() i64 {
     var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
     _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
     return @as(i64, @intCast(ts.sec)) * 1000 + @divFloor(@as(i64, @intCast(ts.nsec)), 1_000_000);
-}
-
-fn sleepMs(ms: u64) void {
-    var ts: std.c.timespec = .{
-        .sec = @intCast(ms / 1000),
-        .nsec = @intCast((ms % 1000) * std.time.ns_per_ms),
-    };
-    while (std.c.nanosleep(&ts, &ts) == -1 and std.c.errno(-1) == .INTR) {}
-}
-
-fn selfExePath(allocator: std.mem.Allocator) ![]const u8 {
-    var buf: [4096]u8 = undefined;
-    const n = std.c.readlink("/proc/self/exe", &buf, buf.len);
-    if (n <= 0) return error.ExecFailed;
-    return allocator.dupe(u8, buf[0..@intCast(n)]);
 }
 
 fn closeInheritedFds(keep: std.posix.fd_t) void {

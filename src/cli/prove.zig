@@ -5,6 +5,7 @@ const fuse_vfs_mod = @import("mount").fuse.fuse_vfs;
 const voila_vfs_mod = @import("mount").fuse.voila_vfs;
 const fuse_linux = @import("mount").fuse.fuse_linux;
 const posix_util = @import("sys").posix_util;
+const fs = @import("sys").fs;
 const constants = @import("core").constants;
 const voila_loader = @import("runtime").voila_loader;
 
@@ -179,46 +180,27 @@ fn verifyMountBytes(
 }
 
 fn checkReaddirStore(allocator: std.mem.Allocator, mount_dir: []const u8) !void {
-    const cmd = try std.fmt.allocPrint(allocator, "ls -1 {s} | head -5", .{mount_dir});
-    defer allocator.free(cmd);
-    const cmd_z = try allocator.allocSentinel(u8, cmd.len, 0);
-    defer allocator.free(cmd_z);
-    @memcpy(cmd_z, cmd);
-    if (posix_util.shell(cmd_z) != 0) return error.ReaddirMissing;
+    const names = fs.listDir(allocator, mount_dir) catch return error.ReaddirMissing;
+    defer fs.freeNames(allocator, names);
+    if (names.len == 0) return error.ReaddirMissing;
 }
 
 fn checkReaddir(allocator: std.mem.Allocator, mount_dir: []const u8) !void {
-    const cmd = try std.fmt.allocPrint(allocator, "ls -1 {s}", .{mount_dir});
-    defer allocator.free(cmd);
-    const cmd_z = try allocator.allocSentinel(u8, cmd.len, 0);
-    defer allocator.free(cmd_z);
-    @memcpy(cmd_z, cmd);
-    const out_path = "/tmp/zig-fuse-readdir.txt";
-    const full = try std.fmt.allocPrint(allocator, "{s} > {s}", .{ cmd, out_path });
-    defer allocator.free(full);
-    const full_z = try allocator.allocSentinel(u8, full.len, 0);
-    defer allocator.free(full_z);
-    @memcpy(full_z, full);
-    if (posix_util.shell(full_z) != 0) return error.ReaddirMissing;
-    const listing = try posix_util.readFileAlloc(allocator, out_path, 4096);
-    defer allocator.free(listing);
+    const names = fs.listDir(allocator, mount_dir) catch return error.ReaddirMissing;
+    defer fs.freeNames(allocator, names);
     var has_big = false;
     var has_link = false;
-    var lines = std.mem.splitScalar(u8, listing, '\n');
-    while (lines.next()) |line| {
-        if (std.mem.eql(u8, line, "big.bin")) has_big = true;
-        if (std.mem.eql(u8, line, "link")) has_link = true;
+    for (names) |name| {
+        if (std.mem.eql(u8, name, "big.bin")) has_big = true;
+        if (std.mem.eql(u8, name, "link")) has_link = true;
     }
     if (!has_big or !has_link) return error.ReaddirMissing;
 }
 
 fn mountDirReady(mount_dir: []const u8) bool {
-    const cmd = std.fmt.allocPrint(std.heap.page_allocator, "ls -1 {s} 2>/dev/null | head -1", .{mount_dir}) catch return false;
-    defer std.heap.page_allocator.free(cmd);
-    const cmd_z = std.heap.page_allocator.allocSentinel(u8, cmd.len, 0) catch return false;
-    defer std.heap.page_allocator.free(cmd_z);
-    @memcpy(cmd_z, cmd);
-    return posix_util.shell(cmd_z) == 0;
+    const names = fs.listDir(std.heap.page_allocator, mount_dir) catch return false;
+    defer fs.freeNames(std.heap.page_allocator, names);
+    return names.len > 0;
 }
 
 fn dirHasEntries(mount_dir: []const u8) bool {

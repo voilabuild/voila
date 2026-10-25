@@ -36,7 +36,7 @@ pub const Handle = struct {
                     exited = true;
                     break;
                 }
-                sleepMs(10);
+                posix_util.sleepMs(10);
             }
             if (!exited) {
                 _ = std.c.kill(self.pid, std.c.SIG.KILL);
@@ -93,7 +93,7 @@ pub fn startWith(
         _ = std.c.close(ready[1]);
         return error.PipeFailed;
     }
-    const exe = selfExePath(allocator) catch return error.ForkFailed;
+    const exe = posix_util.selfExePath(allocator) catch return error.ForkFailed;
     defer allocator.free(exe);
     const pid = std.c.fork();
     if (pid < 0) {
@@ -202,7 +202,7 @@ fn serveChild(
     };
     for (0..10_000) |_| {
         if (mount_exec.mountListed(mount_dir)) break;
-        sleepMs(1);
+        posix_util.sleepMs(1);
     }
     _ = std.c.write(ready_w, &[_]u8{1}, 1);
     _ = std.c.close(ready_w);
@@ -226,21 +226,6 @@ fn watchStop(stop_r: std.posix.fd_t, mount_dir: []const u8, session: *fuse_linux
 
 fn clearCloexec(fd: std.posix.fd_t) void {
     _ = std.c.fcntl(fd, std.c.F.SETFD, @as(c_int, 0));
-}
-
-fn sleepMs(ms: u64) void {
-    var ts: std.c.timespec = .{
-        .sec = @intCast(ms / 1000),
-        .nsec = @intCast((ms % 1000) * std.time.ns_per_ms),
-    };
-    while (std.c.nanosleep(&ts, &ts) == -1 and std.c.errno(-1) == .INTR) {}
-}
-
-fn selfExePath(allocator: std.mem.Allocator) ![]const u8 {
-    var buf: [4096]u8 = undefined;
-    const n = std.c.readlink("/proc/self/exe", &buf, buf.len);
-    if (n <= 0) return error.ForkFailed;
-    return allocator.dupe(u8, buf[0..@intCast(n)]);
 }
 
 fn closeInheritedFds(keep_a: std.posix.fd_t, keep_b: std.posix.fd_t, keep_c: std.posix.fd_t) void {
