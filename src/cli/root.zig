@@ -1,7 +1,10 @@
-//! The `cli` layer: argv parsing, subcommand names, and command entry points.
+//! Voila CLI library: argv parsing, shared flags, and one module per subcommand.
 
+pub const build = @import("build.zig");
+pub const command = @import("command.zig");
 pub const commands = @import("commands.zig");
 pub const context = @import("context.zig");
+pub const dispatch = @import("dispatch.zig");
 pub const exec = @import("exec.zig");
 pub const flags = @import("flags.zig");
 pub const login = @import("login.zig");

@@ -1,5 +1,7 @@
 const std = @import("std");
+const command = @import("command.zig");
 const flags = @import("flags.zig");
+const container_run = @import("runtime").oci.container_run;
 
 pub const Parsed = struct {
     store_root: []const u8,
@@ -27,4 +29,13 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator)
         .container_id = try allocator.dupe(u8, id),
         .remove_on_exit = remove_on_exit,
     };
+}
+
+pub fn execute(ctx: command.Ctx) !void {
+    const gpa = ctx.gpa();
+    const parsed = try parseArgs(gpa, ctx.args);
+    defer gpa.free(parsed.store_root);
+    defer gpa.free(parsed.container_id);
+    const code = try container_run.runWorker(ctx.io, gpa, parsed.store_root, parsed.container_id, parsed.remove_on_exit);
+    std.process.exit(code);
 }
