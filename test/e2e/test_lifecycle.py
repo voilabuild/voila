@@ -91,10 +91,11 @@ def test_killed_worker_leaves_no_mount_or_process(voila: Voila) -> None:
 
 
 def test_rm_handles_a_root_with_spaces(voila: Voila, tmp_path: Path) -> None:
-    sentinel = tmp_path / "a" / "keep"
+    # Before the fix, `sh -c "rm -rf <tmp>/s p/..."` also deleted <tmp>/s.
+    sentinel = tmp_path / "s" / "keep"
     sentinel.parent.mkdir()
     sentinel.write_text("x")
-    root = tmp_path / "a b" / "root"
+    root = tmp_path / "s p" / "root"
     spaced = Voila(root, {**voila.env, "VOILA_ROOT": str(root)})
     spaced.run("import", BASE)
     assert spaced.run("run", "--rm", BASE, "--", "echo", "ok").out == "ok\n"
