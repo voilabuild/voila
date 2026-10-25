@@ -55,7 +55,7 @@ jobs:
 
       - name: pytest
         working-directory: test/e2e
-        run: uv run pytest -v
+        run: uv run pytest -v -rP
 
   lint-openapi:
     runs-on: blacksmith-2vcpu-ubuntu-2404

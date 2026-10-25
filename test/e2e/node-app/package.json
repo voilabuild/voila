@@ -1,0 +1,1 @@
+{"name":"e2ebench","version":"1.0.0","private":true,"dependencies":{"next":"15.1.6","react":"19.0.0","react-dom":"19.0.0","@mui/material":"6.4.1","@emotion/react":"11.14.0","@emotion/styled":"11.14.0","aws-sdk":"2.1692.0","lodash":"4.17.21","express":"4.21.2","typescript":"5.7.3"}}
