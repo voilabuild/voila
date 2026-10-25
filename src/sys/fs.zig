@@ -188,16 +188,18 @@ pub fn mkdir(path: []const u8, perm: u32) Error!void {
     _ = try check(linux.mkdirat(linux.AT.FDCWD, try toZ(&zb, path), perm));
 }
 
-/// `mkdir -p`.
+/// `mkdir -p`. Tries the deepest directory first, so an existing parent costs one call.
 pub fn makePath(path: []const u8) Error!void {
-    var i: usize = 1;
-    while (i <= path.len) : (i += 1) {
-        if (i != path.len and path[i] != '/') continue;
-        mkdir(path[0..i], 0o755) catch |e| switch (e) {
-            error.Exists => {},
-            else => return e,
-        };
-    }
+    const p = std.mem.trimEnd(u8, path, "/");
+    if (p.len == 0) return;
+    mkdir(p, 0o755) catch |e| switch (e) {
+        error.Exists => return,
+        error.FileNotFound => {
+            try makePath(std.fs.path.dirname(p) orelse return e);
+            mkdir(p, 0o755) catch |e2| if (e2 != error.Exists) return e2;
+        },
+        else => return e,
+    };
 }
 
 pub fn randomBytes(buf: []u8) Error!void {
@@ -287,6 +289,18 @@ pub fn makeTempDir(allocator: std.mem.Allocator, prefix: []const u8) Error![]u8 
         return path;
     }
     return error.Exists;
+}
+
+test "makePath creates missing parents and accepts existing ones" {
+    const a = std.testing.allocator;
+    const dir = try makeTempDir(a, "voila-fs-test");
+    defer a.free(dir);
+    defer removeTree(a, dir) catch {};
+    const deep = try std.fmt.allocPrint(a, "{s}/a/b/c/", .{dir});
+    defer a.free(deep);
+    try makePath(deep);
+    try makePath(deep);
+    try std.testing.expect((try lstat(deep[0 .. deep.len - 1])).kind == .dir);
 }
 
 test "fs round trip: write, stat, list, readlink, remove" {
