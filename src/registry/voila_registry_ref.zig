@@ -21,12 +21,13 @@ pub fn registryPullCandidates(
     defer allocator.free(normalized);
 
     var list: std.ArrayList([]const u8) = .empty;
-    try pushUnique(allocator, &list, normalized);
-
+    // Prefer the drift mirror (`org/docker.io/library/name:tag`) before the short
+    // `org/name:tag` ref so a stale short-tag manifest cannot shadow a good import.
     if (try driftOrgLibraryAlias(allocator, normalized)) |alias| {
         defer allocator.free(alias);
         try pushUnique(allocator, &list, alias);
     }
+    try pushUnique(allocator, &list, normalized);
 
     if (try ocireg.canonical(allocator, normalized)) |canon| {
         defer allocator.free(canon);
