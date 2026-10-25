@@ -1,15 +1,9 @@
 //! Detect whether unprivileged user namespaces work for this voila binary (AppArmor-aware).
 const std = @import("std");
-
-fn selfExePath(allocator: std.mem.Allocator) ![]const u8 {
-    var buf: [4096]u8 = undefined;
-    const n = std.c.readlink("/proc/self/exe", &buf, buf.len);
-    if (n <= 0) return error.ExePathFailed;
-    return allocator.dupe(u8, buf[0..@intCast(n)]);
-}
+const posix_util = @import("sys").posix_util;
 
 fn probeOnce() bool {
-    const exe = selfExePath(std.heap.page_allocator) catch return false;
+    const exe = posix_util.selfExePath(std.heap.page_allocator) catch return false;
     defer std.heap.page_allocator.free(exe);
     const exe_z = std.heap.page_allocator.allocSentinel(u8, exe.len, 0) catch return false;
     defer std.heap.page_allocator.free(exe_z);
