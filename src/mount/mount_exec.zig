@@ -51,7 +51,7 @@ fn decodeProcMountPath(encoded: []const u8, buf: []u8) []const u8 {
     var out: usize = 0;
     var i: usize = 0;
     while (i < encoded.len and out < buf.len) {
-        if (encoded[i] == '\\' and i + 3 <= encoded.len) {
+        if (encoded[i] == '\\' and i + 4 <= encoded.len) {
             const c = std.fmt.parseInt(u8, encoded[i + 1 .. i + 4], 8) catch null;
             if (c) |byte| {
                 buf[out] = byte;
@@ -185,6 +185,7 @@ test "decodeProcMountPath expands octal escapes from /proc/mounts" {
     var buf: [64]u8 = undefined;
     const path = decodeProcMountPath("/tmp/s\\040p/root", &buf);
     try std.testing.expectEqualStrings("/tmp/s p/root", path);
+    try std.testing.expectEqualStrings("/tmp/a\\04", decodeProcMountPath("/tmp/a\\04", &buf));
 }
 
 pub const Error = error{
