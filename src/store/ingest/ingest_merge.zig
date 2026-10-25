@@ -82,7 +82,13 @@ fn overlayChild(
     copies: *std.AutoHashMap(*tree_mod.Node, *tree_mod.Node),
 ) void {
     if (copies.get(src)) |existing| {
+        // A hardlink: the second path shares the node and needs its own by_path entry.
         attachChild(allocator, merged_parent, name, existing) catch {};
+        const path = if (merged_parent.path.len == 0)
+            allocator.dupe(u8, name) catch return
+        else
+            std.fmt.allocPrint(allocator, "{s}/{s}", .{ merged_parent.path, name }) catch return;
+        merged.by_path.put(path, existing) catch allocator.free(path);
         return;
     }
     const existing = merged_parent.children.get(name);

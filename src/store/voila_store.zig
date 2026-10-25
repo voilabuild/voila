@@ -145,6 +145,9 @@ pub const ChunkWriter = struct {
         const db_ptr = db orelse return error.SqliteOpen;
         errdefer _ = sqlite.sqlite3_close(db_ptr);
         _ = sqlite.sqlite3_busy_timeout(db_ptr, 5000);
+        // Blobs are renamed into place before their row is inserted, and a missing row
+        // reads as AlgoRaw, so losing the last commits on power loss is harmless.
+        _ = sqlite.sqlite3_exec(db_ptr, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL", null, null, null);
         _ = sqlite.sqlite3_exec(db_ptr, chunks_schema, null, null, null);
         const sql =
             \\INSERT INTO chunks (id, logical_len, stored_len, comp_algo, created_ns, last_access_ns)
