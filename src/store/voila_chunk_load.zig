@@ -6,10 +6,12 @@ pub const FetchError = error{ OutOfMemory, FetchFailed };
 /// Fetches a chunk that is not in the local store; the registry provides one.
 pub const Fetcher = struct {
     io: std.Io,
-    fetchFn: *const fn (io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, chunk_hex: []const u8) FetchError![]u8,
+    /// Opaque `registry.Hub` when set; otherwise the registry module uses its default hub.
+    hub: ?*anyopaque = null,
+    fetchFn: *const fn (fetcher: Fetcher, allocator: std.mem.Allocator, voila_root: []const u8, chunk_hex: []const u8) FetchError![]u8,
 
     pub fn fetch(self: Fetcher, allocator: std.mem.Allocator, voila_root: []const u8, chunk_hex: []const u8) FetchError![]u8 {
-        return self.fetchFn(self.io, allocator, voila_root, chunk_hex);
+        return self.fetchFn(self, allocator, voila_root, chunk_hex);
     }
 };
 
@@ -28,7 +30,7 @@ pub fn loadChunkRaw(
     };
 }
 
-fn failingFetch(_: std.Io, _: std.mem.Allocator, _: []const u8, _: []const u8) FetchError![]u8 {
+fn failingFetch(_: Fetcher, _: std.mem.Allocator, _: []const u8, _: []const u8) FetchError![]u8 {
     return error.FetchFailed;
 }
 
