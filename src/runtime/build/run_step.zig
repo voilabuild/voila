@@ -108,7 +108,8 @@ pub const NamespaceRunner = struct {
         if (std.c.read(status[0], @ptrCast(&byte), 1) == 1) {
             return switch (@as(Failure, @fromBackingInt(@intCast(byte)))) {
                 .user => error.UserSwitchFailed,
-                .setup, .release => error.OverlayFailed,
+                .release => error.ReleaseFailed,
+                .setup => error.OverlayFailed,
                 _ => error.OverlayFailed,
             };
         }
@@ -261,6 +262,9 @@ const Plan = struct {
     }
 
     fn command(self: Plan, status_fd: std.posix.fd_t, ids: idmap.Mapping) noreturn {
+        // pivot_root moves every process rooted at the old root in this mount namespace,
+        // so pivoting here would also re-root the parent before it walks the upper dir.
+        if (unshare(CLONE_NEWNS) != 0) fail(status_fd, .setup);
         if (container_root.enterPidNamespace(&.{}) catch fail(status_fd, .setup)) |c| std.c._exit(c);
         container_root.apply(self.root_ops);
         container_root.pivotInto(self.merged_z) catch fail(status_fd, .setup);
@@ -294,8 +298,14 @@ fn release(upper: []const u8, owners_path: []const u8) !void {
     defer arena.deinit();
     const a = arena.allocator();
     var out: std.ArrayList(u8) = .empty;
-    try releaseDir(a, upper, "", &out);
-    if (out.items.len > 0) try fs.writeFile(owners_path, out.items, 0o600);
+    releaseDir(a, upper, "", &out) catch |e| {
+        std.debug.print("RUN: walk {s}: {s}\n", .{ upper, @errorName(e) });
+        return e;
+    };
+    if (out.items.len > 0) fs.writeFile(owners_path, out.items, 0o600) catch |e| {
+        std.debug.print("RUN: write {s}: {s}\n", .{ owners_path, @errorName(e) });
+        return e;
+    };
 }
 
 fn releaseDir(a: std.mem.Allocator, abs: []const u8, rel: []const u8, out: *std.ArrayList(u8)) !void {
