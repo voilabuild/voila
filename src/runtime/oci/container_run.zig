@@ -76,8 +76,14 @@ pub fn runOptsFromSpec(allocator: std.mem.Allocator, spec: types.RunSpec) !conta
     };
 }
 
-pub fn runWorker(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, container_id: []const u8) !u8 {
+/// `remove_on_exit`: a detached `--rm` run; a foreground run removes the container itself.
+pub fn runWorker(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, container_id: []const u8, remove_on_exit: bool) !u8 {
     _ = std.c.setpgid(0, 0);
+    // `voila stop` and a foreground `voila run` signal this whole group; the namespace parent
+    // forwards the signal to the container, and the worker stays to unmount and clean up.
+    ignoreStopSignals();
+    const empty = ns.sigset(&.{});
+    try ns.setSignalMask(&empty);
     var st = try container_store.readState(allocator, voila_root, container_id);
     const argv = try readCmdArgv(allocator, voila_root, container_id);
     defer freeArgv(allocator, argv);
@@ -103,13 +109,28 @@ pub fn runWorker(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u
     defer container_store.freeState(allocator, st_exit);
     markExited(allocator, &st_exit);
     try container_store.writeState(allocator, voila_root, st_exit);
+    if (remove_on_exit) container_store.removeContainer(allocator, voila_root, container_id) catch {};
     return code;
+}
+
+const stop_signals = [_]ns.SIG{ .HUP, .INT, .QUIT, .TERM };
+
+fn noop(_: std.c.SIG) callconv(.c) void {}
+
+/// A handler (not SIG_IGN, which exec would inherit) so children still get default actions.
+fn ignoreStopSignals() void {
+    var act: std.c.Sigaction = .{
+        .handler = .{ .handler = noop },
+        .mask = std.mem.zeroes(std.c.sigset_t),
+        .flags = std.c.SA.RESTART,
+    };
+    for (stop_signals) |sig| _ = std.c.sigaction(@fromBackingInt(@backingInt(sig)), &act, null);
 }
 
 fn runForeground(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, spec: types.RunSpec) !u8 {
     const id = try container_store.newId(allocator);
     defer allocator.free(id);
-    const mount_dir = try std.fmt.allocPrint(allocator, "/tmp/zig-fuse-run-mnt-{s}", .{id});
+    const mount_dir = try container_store.mountPath(allocator, voila_root, id);
     defer allocator.free(mount_dir);
     const log_path = try container_store.logPath(allocator, voila_root, id);
     defer allocator.free(log_path);
@@ -125,7 +146,8 @@ fn runForeground(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u
     defer container_store.freeState(allocator, st_exit);
     markExited(allocator, &st_exit);
     try container_store.writeState(allocator, voila_root, st_exit);
-    if (spec.rm_on_exit) container_store.removeContainer(allocator, voila_root, id);
+    if (spec.rm_on_exit) container_store.removeContainer(allocator, voila_root, id) catch |e|
+        std.debug.print("voila: could not remove container {s}: {s}\n", .{ id, @errorName(e) });
     return code;
 }
 
@@ -138,13 +160,17 @@ fn spawnContainerWorkerAndWait(
     use_tty: bool,
     st: *container_store.State,
 ) !u8 {
-    const exe = try selfExePath(allocator);
+    const exe = try posix_util.selfExePath(allocator);
     defer allocator.free(exe);
     const root_z = try allocator.dupe(u8, voila_root);
     defer allocator.free(root_z);
     const id_z = try allocator.dupe(u8, id);
     defer allocator.free(id_z);
-    var worker = try std.process.spawn(io, .{
+    // Blocked before spawn so none is lost; the worker unblocks them as its first step.
+    const wait_set = ns.sigset(&(stop_signals ++ [_]ns.SIG{.CHLD}));
+    const old_mask = try ns.blockSignals(&wait_set);
+    defer ns.setSignalMask(&old_mask) catch {};
+    const worker = try std.process.spawn(io, .{
         .argv = &[_][]const u8{
             exe,
             "container-worker",
@@ -166,24 +192,91 @@ fn spawnContainerWorkerAndWait(
         setStatus(allocator, st, "running");
         try container_store.writeState(allocator, voila_root, st.*);
     }
-    const term = try worker.wait(io);
+    const wp: std.c.pid_t = @intCast(worker.id orelse return error.SpawnFailed);
+    var log_follow: ?LogFollow = if (!use_tty) LogFollow.init(log_path) else null;
+    if (log_follow) |*lf| lf.start();
+    const code = try waitForwarding(wp, &wait_set);
+    if (log_follow) |*lf| lf.finish();
     if (took_terminal) _ = ns.setForeground(std.c.STDIN_FILENO, ns.processGroup());
-    try printLogFile(log_path);
-    return switch (term) {
-        .exited => |c| c,
-        else => 1,
-    };
+    return code;
 }
 
-fn printLogFile(path: []const u8) !void {
-    const data = posix_util.readFileAlloc(std.heap.page_allocator, path, 16 * 1024 * 1024) catch return;
-    defer std.heap.page_allocator.free(data);
-    writeAllFd(std.c.STDOUT_FILENO, data);
+/// Waits for the worker, sending each stop signal to its process group as `docker run`
+/// does, so a killed `voila run` still stops the container and cleans up.
+fn waitForwarding(worker: std.c.pid_t, set: *const ns.sigset_t) !u8 {
+    while (true) {
+        const sig = try ns.waitSignal(set);
+        if (sig != .CHLD) {
+            ns.kill(-worker, sig);
+            continue;
+        }
+        while (try ns.reapAny()) |e| {
+            if (e.pid == worker) return ns.exitCode(e.status);
+        }
+    }
+}
+
+/// Docker-like live stdout for non-TTY foreground runs: the worker writes a log file and
+/// this thread copies new bytes to our stdout while we wait for the worker.
+const LogFollow = struct {
+    path: []const u8,
+    offset: std.atomic.Value(i64) = .init(0),
+    stop: std.atomic.Value(bool) = .init(false),
+    thread: ?std.Thread = null,
+
+    fn init(path: []const u8) LogFollow {
+        return .{ .path = path };
+    }
+
+    fn start(self: *LogFollow) void {
+        self.thread = std.Thread.spawn(.{}, LogFollow.run, .{self}) catch null;
+    }
+
+    fn finish(self: *LogFollow) void {
+        self.stop.store(true, .release);
+        if (self.thread) |t| t.join();
+        _ = pumpLogToStdout(self.path, self.offset.load(.monotonic), &self.offset);
+    }
+
+    fn run(self: *LogFollow) void {
+        while (!self.stop.load(.acquire)) {
+            _ = pumpLogToStdout(self.path, self.offset.load(.monotonic), &self.offset);
+            sleepMs(10);
+        }
+    }
+};
+
+fn pumpLogToStdout(path: []const u8, offset: i64, next_offset: *std.atomic.Value(i64)) i64 {
+    const path_z = std.heap.page_allocator.allocSentinel(u8, path.len, 0) catch return 0;
+    defer std.heap.page_allocator.free(path_z);
+    @memcpy(path_z, path);
+    const fd = std.c.open(path_z, .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
+    if (fd < 0) return 0;
+    defer _ = std.c.close(fd);
+    _ = std.c.lseek(fd, offset, std.c.SEEK.SET);
+    var buf: [4096]u8 = undefined;
+    var written: i64 = 0;
+    while (true) {
+        const n = std.c.read(fd, &buf, buf.len);
+        if (n <= 0) break;
+        writeAllFd(std.c.STDOUT_FILENO, buf[0..@intCast(n)]);
+        written += n;
+    }
+    if (written > 0) next_offset.store(offset + written, .monotonic);
+    return written;
+}
+
+fn sleepMs(ms: u64) void {
+    var ts: std.c.timespec = .{
+        .sec = @intCast(ms / 1000),
+        .nsec = @intCast((ms % 1000) * std.time.ns_per_ms),
+    };
+    while (std.c.nanosleep(&ts, &ts) == -1 and std.c.errno(-1) == .INTR) {}
 }
 
 fn runDetached(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, spec: types.RunSpec) !u8 {
     const id = try container_store.newId(allocator);
-    const mount_dir = try std.fmt.allocPrint(allocator, "/tmp/zig-fuse-run-mnt-{s}", .{id});
+    const mount_dir = try container_store.mountPath(allocator, voila_root, id);
     const log_path = try container_store.logPath(allocator, voila_root, id);
     var st = try ownedState(allocator, id, spec.name, spec.image, "created", 0, mount_dir, log_path, spec.rm_on_exit);
     defer container_store.freeState(allocator, st);
@@ -192,7 +285,7 @@ fn runDetached(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8,
     const opts = try runOptsFromSpec(allocator, spec);
     defer opts.deinit(allocator);
     try container_run_opts.writeRunOpts(allocator, voila_root, id, opts);
-    const exe = try selfExePath(allocator);
+    const exe = try posix_util.selfExePath(allocator);
     defer allocator.free(exe);
     const root_z = try allocator.dupe(u8, voila_root);
     defer allocator.free(root_z);
@@ -211,6 +304,7 @@ fn runDetached(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8,
             root_z,
             "-id",
             id_z,
+            if (spec.rm_on_exit) "--rm" else "--keep",
         },
         .stdin = .ignore,
         .stdout = .{ .file = log_out },
@@ -348,15 +442,6 @@ fn ownedState(
     };
 }
 
-fn fusermountU(allocator: std.mem.Allocator, mount_dir: []const u8) void {
-    const cmd = std.fmt.allocPrint(allocator, "fusermount3 -u {s} 2>/dev/null || umount {s} 2>/dev/null", .{ mount_dir, mount_dir }) catch return;
-    defer allocator.free(cmd);
-    const cmd_z = allocator.allocSentinel(u8, cmd.len, 0) catch return;
-    defer allocator.free(cmd_z);
-    @memcpy(cmd_z, cmd);
-    _ = posix_util.shell(cmd_z);
-}
-
 fn cmdPath(allocator: std.mem.Allocator, voila_root: []const u8, id: []const u8) ![]const u8 {
     return std.fmt.allocPrint(allocator, "{s}/containers/{s}/cmd.json", .{ voila_root, id });
 }
@@ -390,13 +475,6 @@ fn readCmdArgv(allocator: std.mem.Allocator, voila_root: []const u8, id: []const
 fn freeArgv(allocator: std.mem.Allocator, argv: []const []const u8) void {
     for (argv) |a| allocator.free(a);
     allocator.free(argv);
-}
-
-fn selfExePath(allocator: std.mem.Allocator) ![]const u8 {
-    var buf: [4096]u8 = undefined;
-    const n = std.c.readlink("/proc/self/exe", &buf, buf.len);
-    if (n <= 0) return error.ExePathFailed;
-    return allocator.dupe(u8, buf[0..@intCast(n)]);
 }
 
 fn appendJsonString(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8) !void {

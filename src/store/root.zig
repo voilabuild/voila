@@ -1,5 +1,6 @@
 //! The `store` layer. Local chunk store, manifests and ingest.
 
+pub const Store = @import("Store.zig");
 pub const build_cache = @import("build_cache.zig");
 pub const fixture = @import("fixture.zig");
 pub const voila_chunk_index = @import("voila_chunk_index.zig");
@@ -20,6 +21,7 @@ pub const ingest = struct {
 };
 
 test {
+    _ = @import("Store.zig");
     _ = @import("build_cache.zig");
     _ = @import("fixture.zig");
     _ = @import("ingest/ingest_build.zig");

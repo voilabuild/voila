@@ -1,5 +1,8 @@
 //! The `registry` layer. Registry client: pull, push, import, image records.
 
+pub const Hub = @import("Hub.zig").Hub;
+pub const Registry = @import("Registry.zig");
+pub const testing = @import("testing.zig");
 pub const ingest_registry = @import("ingest_registry.zig");
 pub const ocireg_client = @import("ocireg_client.zig");
 pub const registry_session = @import("registry_session.zig");
@@ -21,6 +24,10 @@ pub const voila_registry_ref = @import("voila_registry_ref.zig");
 pub const voila_resolve = @import("voila_resolve.zig");
 
 test {
+    _ = @import("Hub.zig");
+    _ = @import("Hub_test.zig");
+    _ = @import("Registry.zig");
+    _ = @import("testing.zig");
     _ = @import("ingest_registry.zig");
     _ = @import("ocireg_client.zig");
     _ = @import("registry_session.zig");

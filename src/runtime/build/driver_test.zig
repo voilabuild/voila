@@ -162,6 +162,7 @@ test "build applies COPY/RUN/metadata, caches, and invalidates on context change
 
     const again = try env.build(&runner, dockerfile_text, &diag);
     try std.testing.expectEqual(@as(usize, 1), runner.calls);
+    try std.testing.expectEqual(@as(usize, 3), again.steps);
     try std.testing.expectEqual(@as(usize, 3), again.cached);
     try std.testing.expectEqualSlices(u8, &first.root, &again.root);
     try std.testing.expectEqualSlices(u8, &first.config, &again.config);
@@ -271,7 +272,7 @@ test "multi-stage build copies by chunk reference, prunes, targets and caches" {
     const first = try env.buildWith(&runner, multi_stage, "", labels.progress(), &diag);
     try std.testing.expectEqual(@as(usize, 2), runner.calls);
     try std.testing.expectEqualStrings("builder;stage-3;", labels.seen.items);
-    try std.testing.expectEqual(@as(usize, 8), first.steps);
+    try std.testing.expectEqual(@as(usize, 7), first.steps);
     const t = try env.imageTree(first.root);
     try std.testing.expectEqual(@as(u64, 12), t.lookup("bin/app").?.size);
     try std.testing.expectEqual(@as(u32, 6), t.lookup("lib/x.so").?.gid);
@@ -283,11 +284,12 @@ test "multi-stage build copies by chunk reference, prunes, targets and caches" {
 
     const again = try env.buildWith(&runner, multi_stage, "", null, &diag);
     try std.testing.expectEqual(@as(usize, 2), runner.calls);
+    try std.testing.expectEqual(@as(usize, 7), again.steps);
     try std.testing.expectEqual(@as(usize, 7), again.cached);
     try std.testing.expectEqualSlices(u8, &first.root, &again.root);
 
     const b = try env.buildWith(&runner, multi_stage, "builder", null, &diag);
-    try std.testing.expectEqual(@as(usize, 4), b.steps);
+    try std.testing.expectEqual(@as(usize, 3), b.steps);
     try std.testing.expectEqual(@as(usize, 3), b.cached);
     const bt = try env.imageTree(b.root);
     try std.testing.expect(bt.lookup("etc/os-release") != null);
@@ -388,6 +390,7 @@ test "SHELL changes shell-form RUN and CMD, and the step cache key" {
 
     const again = try env.build(&runner, bash, &diag);
     try std.testing.expectEqual(@as(usize, 2), runner.calls);
+    try std.testing.expectEqual(@as(usize, 1), again.steps);
     try std.testing.expectEqual(@as(usize, 1), again.cached);
 }
 

@@ -15,11 +15,9 @@ test "pull candidates include drift org library alias" {
         for (list) |c| gpa.free(c);
         gpa.free(list);
     }
-    var saw_alias = false;
-    for (list) |c| {
-        if (std.mem.eql(u8, c, "saucisse/docker.io/library/alpine:3.20")) saw_alias = true;
-    }
-    try std.testing.expect(saw_alias);
+    try std.testing.expect(list.len >= 2);
+    try std.testing.expectEqualStrings("saucisse/docker.io/library/alpine:3.20", list[0]);
+    try std.testing.expectEqualStrings("saucisse/alpine:3.20", list[1]);
 }
 
 test "pull candidates include org and test catalog" {

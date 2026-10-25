@@ -1,8 +1,10 @@
 const std = @import("std");
 const container_store = @import("./container_store.zig");
 const posix_util = @import("sys").posix_util;
+const fusermount = @import("sys").fusermount;
 
 pub fn ps(allocator: std.mem.Allocator, voila_root: []const u8) !void {
+    try sweepDead(allocator, voila_root);
     const states = try container_store.listStates(allocator, voila_root);
     defer {
         for (states) |st| container_store.freeState(allocator, st);
@@ -52,7 +54,7 @@ pub fn stop(allocator: std.mem.Allocator, voila_root: []const u8, context_id: []
     defer allocator.free(id);
     const st0 = try container_store.readState(allocator, voila_root, id);
     defer container_store.freeState(allocator, st0);
-    terminateWorker(allocator, st0.pid, st0.mount_dir, std.c.SIG.TERM);
+    terminateWorker(st0.pid, st0.mount_dir, std.c.SIG.TERM);
     var st = try container_store.readState(allocator, voila_root, id);
     defer container_store.freeState(allocator, st);
     allocator.free(st.status);
@@ -68,7 +70,7 @@ pub fn kill(allocator: std.mem.Allocator, voila_root: []const u8, context_id: []
     defer container_store.freeState(allocator, st);
     if (st.pid <= 0) return;
     const sig: std.c.SIG = if (signal != 0) @fromBackingInt(@intCast(signal)) else std.c.SIG.KILL;
-    terminateWorker(allocator, st.pid, st.mount_dir, sig);
+    terminateWorker(st.pid, st.mount_dir, sig);
 }
 
 pub fn rm(allocator: std.mem.Allocator, voila_root: []const u8, context_id: []const u8) !void {
@@ -76,9 +78,30 @@ pub fn rm(allocator: std.mem.Allocator, voila_root: []const u8, context_id: []co
     defer allocator.free(id);
     const st = try container_store.readState(allocator, voila_root, id);
     defer container_store.freeState(allocator, st);
-    terminateWorker(allocator, st.pid, st.mount_dir, std.c.SIG.KILL);
+    terminateWorker(st.pid, st.mount_dir, std.c.SIG.KILL);
     if (mountStillListed(st.mount_dir)) return error.MountStillActive;
-    container_store.removeContainer(allocator, voila_root, id);
+    try container_store.removeContainer(allocator, voila_root, id);
+}
+
+/// Containers whose worker died without cleaning up (SIGKILL, crash): unmount their image
+/// and mark them exited.
+fn sweepDead(allocator: std.mem.Allocator, voila_root: []const u8) !void {
+    const states = try container_store.listStates(allocator, voila_root);
+    defer {
+        for (states) |st| container_store.freeState(allocator, st);
+        allocator.free(states);
+    }
+    for (states) |st| {
+        if (std.mem.eql(u8, st.status, "exited") or std.mem.eql(u8, st.status, "created")) continue;
+        if (isPidAlive(st.pid)) continue;
+        _ = ensureUnmounted(st.mount_dir);
+        var dead = try container_store.readState(allocator, voila_root, st.id);
+        defer container_store.freeState(allocator, dead);
+        allocator.free(dead.status);
+        dead.status = try allocator.dupe(u8, "exited");
+        dead.pid = 0;
+        try container_store.writeState(allocator, voila_root, dead);
+    }
 }
 
 pub fn ensureNameFree(allocator: std.mem.Allocator, voila_root: []const u8, name: []const u8) !void {
@@ -95,14 +118,14 @@ pub fn ensureNameFree(allocator: std.mem.Allocator, voila_root: []const u8, name
     }
 }
 
-fn terminateWorker(allocator: std.mem.Allocator, worker_pid: i32, mount_dir: []const u8, sig: std.c.SIG) void {
+fn terminateWorker(worker_pid: i32, mount_dir: []const u8, sig: std.c.SIG) void {
     if (worker_pid > 0) {
         signalProcessGroup(worker_pid, sig);
         waitProcessGroup(worker_pid);
         if (isPidAlive(worker_pid)) signalProcessGroup(worker_pid, std.c.SIG.KILL);
         waitProcessGroup(worker_pid);
     }
-    _ = ensureUnmounted(allocator, mount_dir);
+    _ = ensureUnmounted(mount_dir);
 }
 
 fn signalProcessGroup(leader_pid: i32, sig: std.c.SIG) void {
@@ -134,7 +157,7 @@ fn waitProcessGroup(leader_pid: i32) void {
         const rc = std.c.waitpid(leader_pid, &status, std.c.W.NOHANG);
         if (rc == leader_pid) break;
         if (!isPidAlive(leader_pid)) break;
-        sleepMs(50);
+        posix_util.sleepMs(50);
     }
     reapZombies();
 }
@@ -143,28 +166,17 @@ fn reapZombies() void {
     while (std.c.waitpid(-1, null, std.c.W.NOHANG) > 0) {}
 }
 
-fn ensureUnmounted(allocator: std.mem.Allocator, mount_dir: []const u8) bool {
+fn ensureUnmounted(mount_dir: []const u8) bool {
     if (mount_dir.len == 0) return true;
     for (0..80) |_| {
         if (!mountStillListed(mount_dir)) return true;
-        fusermountU(allocator, mount_dir);
-        sleepMs(50);
+        _ = fusermount.unmount(mount_dir, .normal);
+        posix_util.sleepMs(50);
         if (!mountStillListed(mount_dir)) return true;
-        fusermountLazyDetach(allocator, mount_dir);
-        sleepMs(50);
-        if (!mountStillListed(mount_dir)) return true;
-        umountPath(allocator, mount_dir);
-        sleepMs(50);
+        _ = fusermount.unmount(mount_dir, .lazy);
+        posix_util.sleepMs(50);
     }
     return !mountStillListed(mount_dir);
-}
-
-fn sleepMs(ms: u64) void {
-    var ts: std.c.timespec = .{
-        .sec = @intCast(ms / 1000),
-        .nsec = @intCast((ms % 1000) * std.time.ns_per_ms),
-    };
-    while (std.c.nanosleep(&ts, &ts) == -1 and std.c.errno(-1) == .INTR) {}
 }
 
 pub fn isRunning(st: container_store.State) bool {
@@ -179,18 +191,9 @@ fn isPidAlive(pid: i32) bool {
     return std.c.kill(pid, @fromBackingInt(@intCast(0))) == 0;
 }
 
-/// True while the path still appears in findmnt or /proc/self/mountinfo (including stale table rows).
+/// True while the path still appears in /proc/self/mountinfo or /proc/mounts (including stale rows).
 pub fn mountStillListed(mount_dir: []const u8) bool {
-    return findmntLists(mount_dir) or mountinfoLists(mount_dir) or procMountsLists(mount_dir);
-}
-
-fn findmntLists(mount_dir: []const u8) bool {
-    const cmd = std.fmt.allocPrint(std.heap.page_allocator, "findmnt -n -M {s}", .{mount_dir}) catch return false;
-    defer std.heap.page_allocator.free(cmd);
-    const cmd_z = std.heap.page_allocator.allocSentinel(u8, cmd.len, 0) catch return false;
-    defer std.heap.page_allocator.free(cmd_z);
-    @memcpy(cmd_z, cmd);
-    return posix_util.shell(cmd_z) == 0;
+    return mountinfoLists(mount_dir) or procMountsLists(mount_dir);
 }
 
 fn procMountsLists(mount_dir: []const u8) bool {
@@ -311,33 +314,6 @@ fn fileLen(path: []const u8) !i64 {
     const off = std.c.lseek(fd, 0, std.c.SEEK.END);
     if (off < 0) return 0;
     return off;
-}
-
-fn fusermountU(allocator: std.mem.Allocator, mount_dir: []const u8) void {
-    const cmd = std.fmt.allocPrint(allocator, "fusermount3 -u {s} 2>/dev/null", .{mount_dir}) catch return;
-    defer allocator.free(cmd);
-    const cmd_z = allocator.allocSentinel(u8, cmd.len, 0) catch return;
-    defer allocator.free(cmd_z);
-    @memcpy(cmd_z, cmd);
-    _ = posix_util.shell(cmd_z);
-}
-
-fn fusermountLazyDetach(allocator: std.mem.Allocator, mount_dir: []const u8) void {
-    const cmd = std.fmt.allocPrint(allocator, "fusermount3 -u -z {s} 2>/dev/null", .{mount_dir}) catch return;
-    defer allocator.free(cmd);
-    const cmd_z = allocator.allocSentinel(u8, cmd.len, 0) catch return;
-    defer allocator.free(cmd_z);
-    @memcpy(cmd_z, cmd);
-    _ = posix_util.shell(cmd_z);
-}
-
-fn umountPath(allocator: std.mem.Allocator, mount_dir: []const u8) void {
-    const cmd = std.fmt.allocPrint(allocator, "umount {s} 2>/dev/null", .{mount_dir}) catch return;
-    defer allocator.free(cmd);
-    const cmd_z = allocator.allocSentinel(u8, cmd.len, 0) catch return;
-    defer allocator.free(cmd_z);
-    @memcpy(cmd_z, cmd);
-    _ = posix_util.shell(cmd_z);
 }
 
 fn trimId(id: []const u8) []const u8 {

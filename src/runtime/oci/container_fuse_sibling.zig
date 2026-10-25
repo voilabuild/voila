@@ -9,6 +9,7 @@ const voila_registry_creds = @import("registry").voila_registry_creds;
 const voila_login_creds = @import("registry").voila_login_creds;
 const mount_exec = @import("mount").mount_exec;
 const posix_util = @import("sys").posix_util;
+const fusermount = @import("sys").fusermount;
 const idmap = @import("core").idmap;
 
 const ServeCtx = struct {
@@ -22,16 +23,29 @@ pub const Handle = struct {
     mount_dir: []const u8,
     allocator: std.mem.Allocator,
 
+    /// Closing the stop pipe makes the server unmount and exit; it is killed only if it
+    /// has not exited after a few seconds.
     pub fn deinit(self: *Handle) void {
         if (self.stop_w >= 0) _ = std.c.close(self.stop_w);
         self.stop_w = -1;
         if (self.pid > 0) {
-            _ = std.c.kill(self.pid, std.c.SIG.TERM);
             var status: i32 = 0;
-            _ = std.c.waitpid(self.pid, &status, 0);
+            var exited = false;
+            for (0..300) |_| {
+                if (std.c.waitpid(self.pid, &status, std.c.W.NOHANG) == self.pid) {
+                    exited = true;
+                    break;
+                }
+                posix_util.sleepMs(10);
+            }
+            if (!exited) {
+                _ = std.c.kill(self.pid, std.c.SIG.KILL);
+                _ = std.c.waitpid(self.pid, &status, 0);
+            }
             self.pid = 0;
         }
-        fusermountU(self.allocator, self.mount_dir);
+        unmountQuietly(self.mount_dir);
+        self.allocator.free(self.mount_dir);
     }
 
     pub fn alive(self: *const Handle) bool {
@@ -71,13 +85,15 @@ pub fn startWith(
 ) !Handle {
     var ready: [2]std.posix.fd_t = undefined;
     var stop: [2]std.posix.fd_t = undefined;
-    if (std.c.pipe(&ready) != 0) return error.PipeFailed;
-    if (std.c.pipe(&stop) != 0) {
+    // CLOEXEC: the server gets its ends through exec arguments after fork clears the flag,
+    // and later children (the container itself) must not hold the stop pipe open.
+    if (std.c.pipe2(&ready, .{ .CLOEXEC = true }) != 0) return error.PipeFailed;
+    if (std.c.pipe2(&stop, .{ .CLOEXEC = true }) != 0) {
         _ = std.c.close(ready[0]);
         _ = std.c.close(ready[1]);
         return error.PipeFailed;
     }
-    const exe = selfExePath(allocator) catch return error.ForkFailed;
+    const exe = posix_util.selfExePath(allocator) catch return error.ForkFailed;
     defer allocator.free(exe);
     const pid = std.c.fork();
     if (pid < 0) {
@@ -90,6 +106,11 @@ pub fn startWith(
     if (pid == 0) {
         _ = std.c.close(ready[0]);
         _ = std.c.close(stop[1]);
+        clearCloexec(ready[1]);
+        clearCloexec(stop[0]);
+        // Own process group: `voila stop` signals the worker's group, and the image must stay
+        // readable until the container has exited.
+        _ = std.c.setpgid(0, 0);
         closeInheritedFds(ready[1], stop[0], -1);
         execFuseServe(exe, voila_root, image, mount_dir, ready[1], stop[0], opts);
         std.c._exit(127);
@@ -181,34 +202,30 @@ fn serveChild(
     };
     for (0..10_000) |_| {
         if (mount_exec.mountListed(mount_dir)) break;
-        sleepMs(1);
+        posix_util.sleepMs(1);
     }
     _ = std.c.write(ready_w, &[_]u8{1}, 1);
     _ = std.c.close(ready_w);
+    // EOF on the stop pipe (parent closed it or died) unmounts, which ends the serve loop.
+    const watcher = std.Thread.spawn(.{}, watchStop, .{ stop_r, mount_dir, &ctx.session }) catch null;
     fuse_linux.serveSession(&ctx.session) catch |e| {
         ctx.err = e;
     };
+    unmountQuietly(mount_dir);
+    if (watcher) |t| t.join();
+    ctx.session.deinit();
+}
+
+fn watchStop(stop_r: std.posix.fd_t, mount_dir: []const u8, session: *fuse_linux.Session) void {
     var buf: [1]u8 = .{0};
     while (std.c.read(stop_r, &buf, 1) > 0) {}
-    ctx.session.stop();
-    fusermountU(allocator, mount_dir);
-    ctx.session.deinit();
     _ = std.c.close(stop_r);
+    session.stop();
+    unmountQuietly(mount_dir);
 }
 
-fn sleepMs(ms: u64) void {
-    var ts: std.c.timespec = .{
-        .sec = @intCast(ms / 1000),
-        .nsec = @intCast((ms % 1000) * std.time.ns_per_ms),
-    };
-    while (std.c.nanosleep(&ts, &ts) == -1 and std.c.errno(-1) == .INTR) {}
-}
-
-fn selfExePath(allocator: std.mem.Allocator) ![]const u8 {
-    var buf: [4096]u8 = undefined;
-    const n = std.c.readlink("/proc/self/exe", &buf, buf.len);
-    if (n <= 0) return error.ForkFailed;
-    return allocator.dupe(u8, buf[0..@intCast(n)]);
+fn clearCloexec(fd: std.posix.fd_t) void {
+    _ = std.c.fcntl(fd, std.c.F.SETFD, @as(c_int, 0));
 }
 
 fn closeInheritedFds(keep_a: std.posix.fd_t, keep_b: std.posix.fd_t, keep_c: std.posix.fd_t) void {
@@ -219,13 +236,8 @@ fn closeInheritedFds(keep_a: std.posix.fd_t, keep_b: std.posix.fd_t, keep_c: std
     }
 }
 
-fn fusermountU(allocator: std.mem.Allocator, mount_dir: []const u8) void {
-    const cmd = std.fmt.allocPrint(allocator, "fusermount3 -uz {s} 2>/dev/null || fusermount3 -u {s} 2>/dev/null || umount -l {s} 2>/dev/null", .{ mount_dir, mount_dir, mount_dir }) catch return;
-    defer allocator.free(cmd);
-    const cmd_z = allocator.allocSentinel(u8, cmd.len, 0) catch return;
-    defer allocator.free(cmd_z);
-    @memcpy(cmd_z, cmd);
-    _ = posix_util.shell(cmd_z);
+fn unmountQuietly(mount_dir: []const u8) void {
+    if (!fusermount.unmount(mount_dir, .lazy)) _ = fusermount.unmount(mount_dir, .normal);
 }
 
 pub const ServeCli = struct {

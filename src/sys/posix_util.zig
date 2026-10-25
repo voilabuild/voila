@@ -1,7 +1,5 @@
 const std = @import("std");
 
-extern "c" fn system(command: [*:0]const u8) c_int;
-
 /// Map a raw Linux syscall usize return to `std.posix.E` (uses thread errno when rc is -1).
 pub fn syscallErr(rc: usize) std.posix.E {
     const signed: isize = @bitCast(rc);
@@ -15,10 +13,6 @@ pub fn syscallErr(rc: usize) std.posix.E {
 
 pub fn syscallFailed(rc: usize) bool {
     return @as(isize, @bitCast(rc)) < 0;
-}
-
-pub fn shell(command: [:0]const u8) c_int {
-    return system(command.ptr);
 }
 
 fn toZ(allocator: std.mem.Allocator, path: []const u8) ![:0]const u8 {
@@ -106,6 +100,25 @@ pub fn runArgvWithEnv(
         },
         else => return error.CommandFailed,
     }
+}
+
+/// Sleep for `ms` milliseconds; restarts on `EINTR`.
+pub fn sleepMs(ms: u64) void {
+    var ts: std.c.timespec = .{
+        .sec = @intCast(ms / 1000),
+        .nsec = @intCast((ms % 1000) * std.time.ns_per_ms),
+    };
+    while (std.c.nanosleep(&ts, &ts) == -1 and std.c.errno(-1) == .INTR) {}
+}
+
+pub const ExePathError = error{ ExePathFailed, OutOfMemory };
+
+/// Path of the running binary (`/proc/self/exe`).
+pub fn selfExePath(allocator: std.mem.Allocator) ExePathError![]const u8 {
+    var buf: [4096]u8 = undefined;
+    const n = std.c.readlink("/proc/self/exe", &buf, buf.len);
+    if (n <= 0) return error.ExePathFailed;
+    return try allocator.dupe(u8, buf[0..@intCast(n)]);
 }
 
 pub fn makePath(path: []const u8) !void {

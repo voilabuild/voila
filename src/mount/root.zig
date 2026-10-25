@@ -1,5 +1,6 @@
 //! The `mount` layer. Mount backends that expose an image as a filesystem.
 
+pub const Backend = @import("Backend.zig");
 pub const mount_exec = @import("mount_exec.zig");
 pub const fuse = struct {
     pub const fuse_abi = @import("fuse/fuse_abi.zig");
@@ -12,6 +13,7 @@ pub const fuse = struct {
 };
 
 test {
+    _ = @import("Backend.zig");
     _ = @import("fuse/fuse_abi.zig");
     _ = @import("fuse/fuse_abi_test.zig");
     _ = @import("fuse/fuse_conf_test.zig");

@@ -124,6 +124,26 @@ pub fn httpGet(
     url: []const u8,
     bearer_token: []const u8,
 ) ![]u8 {
+    const resp = try httpGetResponse(io, allocator, url, bearer_token);
+    if (resp.status < 200 or resp.status >= 300 or resp.body.len == 0) {
+        allocator.free(resp.body);
+        return error.HttpStatus;
+    }
+    return resp.body;
+}
+
+pub const Response = struct {
+    status: u16,
+    body: []u8,
+};
+
+/// GET that returns any status with its body (owned); errors only when no response came back.
+pub fn httpGetResponse(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    bearer_token: []const u8,
+) !Response {
     var auth_buf: [8192]u8 = undefined;
     const authorization: std.http.Client.Request.Headers.Value = if (bearer_token.len == 0)
         .omit
@@ -150,15 +170,7 @@ pub fn httpGet(
         .response_writer = &response.writer,
     }) catch return error.HttpStatus;
 
-    const code: u16 = @backingInt(result.status);
-    if (code < 200 or code >= 300) return error.HttpStatus;
-
-    const owned = try response.toOwnedSlice();
-    if (owned.len == 0) {
-        allocator.free(owned);
-        return error.HttpStatus;
-    }
-    return owned;
+    return .{ .status = @backingInt(result.status), .body = try response.toOwnedSlice() };
 }
 
 /// Go url.QueryEscape for registry image paths.
