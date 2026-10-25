@@ -156,7 +156,9 @@ pub const VoilaVfs = struct {
             if (component.len == 0 or std.mem.eql(u8, component, ".")) continue;
             if (std.mem.eql(u8, component, "..")) return null;
             ino = self.lookup(ino, component) orelse return null;
-            const tail = if (i < path.len) path[i..] else "";
+            // Like lstat: only symlinks before the last component are followed.
+            if (i >= path.len) return ino;
+            const tail = path[i..];
             if (self.readlink(ino)) |target| {
                 var link_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
                 var join_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;

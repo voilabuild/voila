@@ -66,6 +66,8 @@ test "inoFromPath follows a symlinked directory prefix (/bin -> usr/bin)" {
     var vfs = VoilaVfs.initFromTree(gpa, try voila_tree.openTree(gpa, store, &root, null));
     try std.testing.expect(vfs.inoFromPath("/usr/bin/sh") != null);
     try std.testing.expect(vfs.inoFromPath("/bin/sh") != null);
+    const bin = vfs.inoFromPath("/bin").?;
+    try std.testing.expectEqualStrings("usr/bin", vfs.readlink(bin).?);
 
     var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = vfs };
     defer fuse_vfs.deinit();
