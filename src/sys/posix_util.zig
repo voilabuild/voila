@@ -111,14 +111,14 @@ pub fn sleepMs(ms: u64) void {
     while (std.c.nanosleep(&ts, &ts) == -1 and std.c.errno(-1) == .INTR) {}
 }
 
-pub const ExePathError = error{ExePathFailed};
+pub const ExePathError = error{ExePathFailed, OutOfMemory};
 
 /// Path of the running binary (`/proc/self/exe`).
 pub fn selfExePath(allocator: std.mem.Allocator) ExePathError![]const u8 {
     var buf: [4096]u8 = undefined;
     const n = std.c.readlink("/proc/self/exe", &buf, buf.len);
     if (n <= 0) return error.ExePathFailed;
-    return allocator.dupe(u8, buf[0..@intCast(n)]);
+    return try allocator.dupe(u8, buf[0..@intCast(n)]);
 }
 
 pub fn makePath(path: []const u8) !void {
