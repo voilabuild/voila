@@ -160,7 +160,7 @@ fn spawnContainerWorkerAndWait(
     use_tty: bool,
     st: *container_store.State,
 ) !u8 {
-    const exe = try selfExePath(allocator);
+    const exe = try posix_util.selfExePath(allocator);
     defer allocator.free(exe);
     const root_z = try allocator.dupe(u8, voila_root);
     defer allocator.free(root_z);
@@ -285,7 +285,7 @@ fn runDetached(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8,
     const opts = try runOptsFromSpec(allocator, spec);
     defer opts.deinit(allocator);
     try container_run_opts.writeRunOpts(allocator, voila_root, id, opts);
-    const exe = try selfExePath(allocator);
+    const exe = try posix_util.selfExePath(allocator);
     defer allocator.free(exe);
     const root_z = try allocator.dupe(u8, voila_root);
     defer allocator.free(root_z);
@@ -475,13 +475,6 @@ fn readCmdArgv(allocator: std.mem.Allocator, voila_root: []const u8, id: []const
 fn freeArgv(allocator: std.mem.Allocator, argv: []const []const u8) void {
     for (argv) |a| allocator.free(a);
     allocator.free(argv);
-}
-
-fn selfExePath(allocator: std.mem.Allocator) ![]const u8 {
-    var buf: [4096]u8 = undefined;
-    const n = std.c.readlink("/proc/self/exe", &buf, buf.len);
-    if (n <= 0) return error.ExePathFailed;
-    return allocator.dupe(u8, buf[0..@intCast(n)]);
 }
 
 fn appendJsonString(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8) !void {
