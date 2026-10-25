@@ -1,7 +1,5 @@
 const std = @import("std");
 
-extern "c" fn system(command: [*:0]const u8) c_int;
-
 /// Map a raw Linux syscall usize return to `std.posix.E` (uses thread errno when rc is -1).
 pub fn syscallErr(rc: usize) std.posix.E {
     const signed: isize = @bitCast(rc);
@@ -15,10 +13,6 @@ pub fn syscallErr(rc: usize) std.posix.E {
 
 pub fn syscallFailed(rc: usize) bool {
     return @as(isize, @bitCast(rc)) < 0;
-}
-
-pub fn shell(command: [:0]const u8) c_int {
-    return system(command.ptr);
 }
 
 fn toZ(allocator: std.mem.Allocator, path: []const u8) ![:0]const u8 {
