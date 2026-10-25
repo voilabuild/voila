@@ -5,6 +5,8 @@ const voila_chunk_load = @import("store").voila_chunk_load;
 const voila_fetch_stats = @import("./voila_fetch_stats.zig");
 const hub = @import("./voila_registry_hub.zig");
 
+const log = std.log.scoped(.registry);
+
 var g_chunk_origin: ?[]const u8 = null;
 var g_origin_loaded: bool = false;
 
@@ -38,7 +40,10 @@ pub fn fetchChunkRaw(
     voila_root: []const u8,
     chunk_hex: []const u8,
 ) ![]u8 {
-    const cfg = hub.getConfigCopy(allocator) orelse return error.RegistryUnset;
+    const cfg = hub.getConfigCopy(allocator) orelse {
+        log.err("chunk {s} is not in the local store and no registry is configured", .{chunk_hex});
+        return error.RegistryUnset;
+    };
     defer {
         allocator.free(cfg.base_url);
         allocator.free(cfg.token);
@@ -53,8 +58,16 @@ pub fn fetchChunkRaw(
         try std.fmt.allocPrint(allocator, "{s}/v1/chunks/{s}", .{ cfg.base_url, chunk_hex });
     defer allocator.free(url);
 
-    const stored = voila_http.httpGet(io, allocator, url, "") catch return error.RegistryFetch;
+    const resp = voila_http.httpGetResponse(io, allocator, url, "") catch |e| {
+        log.err("could not reach the registry for chunk {s} ({s}): {s}", .{ chunk_hex, url, @errorName(e) });
+        return error.RegistryFetch;
+    };
+    const stored = resp.body;
     defer allocator.free(stored);
+    if (resp.status != 200) {
+        log.err("registry returned {d} for chunk {s} ({s})", .{ resp.status, chunk_hex, url });
+        return if (resp.status == 404) error.ChunkNotInRegistry else error.RegistryFetch;
+    }
 
     var raw: []u8 = stored;
     var owned_decompress = false;
@@ -89,5 +102,6 @@ fn fetchForStore(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u
 pub const Error = error{
     RegistryUnset,
     RegistryFetch,
+    ChunkNotInRegistry,
     ChunkIntegrity,
 };
