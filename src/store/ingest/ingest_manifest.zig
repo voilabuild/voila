@@ -158,3 +158,40 @@ fn assignInodes(allocator: std.mem.Allocator, tree: *tree_mod.LayerTree) struct 
 }
 
 pub const Error = error{UnresolvedHardlink};
+
+test "a hardlink keeps one inode and nlink 2 through the layer merge" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const layer_walk = @import("ingest_layer_walk.zig");
+    const merge = @import("ingest_merge.zig");
+    const layer = try tree_mod.newTree(a);
+    const bin = layer_walk.ensureDir(a, layer, "usr/bin");
+    const perl = try a.create(tree_mod.Node);
+    perl.* = .{
+        .path = "usr/bin/perl",
+        .name = "perl",
+        .node_type = .regular,
+        .mode = 0o755,
+        .blocks = .empty,
+        .xattrs = .init(a),
+        .children = .init(a),
+        .allocator = a,
+    };
+    try layer_walk.attachChild(a, bin, "perl", perl);
+    try layer.put(perl);
+    try layer_walk.attachChild(a, bin, "perl5.36.0", perl);
+    try layer.by_path.put("usr/bin/perl5.36.0", perl);
+
+    var layers = [_]*tree_mod.LayerTree{layer};
+    const merged = try merge.mergeTrees(a, &layers);
+    const msg = try proto.decodeManifest(a, try buildManifestBytes(a, merged, false));
+    var bin_dir: ?proto.DirMsg = null;
+    for (msg.dirs) |d| if (d.entries.contains("perl")) {
+        bin_dir = d;
+    };
+    const entries = bin_dir.?.entries;
+    const ino = entries.get("perl").?;
+    try std.testing.expectEqual(ino, entries.get("perl5.36.0").?);
+    try std.testing.expectEqual(@as(u32, 2), msg.files.get(ino).?.nlink);
+}

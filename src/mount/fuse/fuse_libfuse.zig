@@ -115,8 +115,16 @@ fn opendirCb(path: [*c]const u8, fi: ?*c.struct_fuse_file_info) callconv(.c) c_i
     return 0;
 }
 
+/// use_ino: report the manifest inode, so hardlinked paths share st_ino.
+fn initCb(conn: ?*c.struct_fuse_conn_info, cfg: ?*c.struct_fuse_config) callconv(.c) ?*anyopaque {
+    _ = conn;
+    if (cfg) |config| config.use_ino = 1;
+    return c.fuse_get_context()[0].private_data;
+}
+
 fn ops() c.struct_fuse_operations {
     return .{
+        .init = initCb,
         .getattr = getattrCb,
         .readlink = readlinkCb,
         .open = openCb,

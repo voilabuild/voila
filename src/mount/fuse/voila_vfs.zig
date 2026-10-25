@@ -390,14 +390,17 @@ pub const VoilaVfs = struct {
     }
 };
 
+/// What ext4 and overlayfs report for a one-block directory; `du` sums it.
+const dir_size: u64 = 4096;
+
 fn attrFromIndex(idx: *voila_index.Index, ino: u64, mtime_sec: u64, mtime_nsec: u32) ?fuse_abi.Attr {
     if (idx.dirs.get(ino)) |d| {
         const sec = d.mtime_ns / 1_000_000_000;
         const nsec: u32 = @intCast(d.mtime_ns % 1_000_000_000);
         return fuse_abi.Attr{
             .ino = ino,
-            .size = 0,
-            .blocks = 0,
+            .size = dir_size,
+            .blocks = dir_size / 512,
             .atime = sec,
             .mtime = sec,
             .ctime = sec,
@@ -486,8 +489,8 @@ fn attrFromTree(tree: *voila_tree.Tree, ino: u64, mtime_sec: u64, mtime_nsec: u3
         const nsec: u32 = @intCast(d.mtime_ns % 1_000_000_000);
         return fuse_abi.Attr{
             .ino = ino,
-            .size = 0,
-            .blocks = 0,
+            .size = dir_size,
+            .blocks = dir_size / 512,
             .atime = sec,
             .mtime = sec,
             .ctime = sec,
