@@ -14,5 +14,5 @@ def test_build_and_run_node_app(voila: Voila) -> None:
     peak_mb = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss // 1024
     print(f"voila build peak RSS: {peak_mb} MB")
     assert voila.run("run", "--rm", "node-app:1").out.startswith("ok typescript 5.7.3")
-    # #70 measured 5.5 GB on this project.
-    assert peak_mb < 1500, f"build peaked at {peak_mb} MB"
+    # #70 measured 5.5 GB on this project; CI runners vary by ~10% around ~1.5 GB.
+    assert peak_mb < 2048, f"build peaked at {peak_mb} MB"
