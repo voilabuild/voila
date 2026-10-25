@@ -111,7 +111,7 @@ pub fn sleepMs(ms: u64) void {
     while (std.c.nanosleep(&ts, &ts) == -1 and std.c.errno(-1) == .INTR) {}
 }
 
-pub const ExePathError = error{ExePathFailed, OutOfMemory};
+pub const ExePathError = error{ ExePathFailed, OutOfMemory };
 
 /// Path of the running binary (`/proc/self/exe`).
 pub fn selfExePath(allocator: std.mem.Allocator) ExePathError![]const u8 {
