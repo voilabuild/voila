@@ -37,6 +37,7 @@ pub const RunnerError = error{
     MountFailed,
     UserNamespacesRequired,
     OverlayFailed,
+    ReleaseFailed,
     SpawnFailed,
     UnknownUser,
     UnknownGroup,

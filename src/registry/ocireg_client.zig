@@ -54,17 +54,13 @@ pub const Client = struct {
             const desc = try selectDescriptor(self.allocator, fetched.body, platform);
             defer self.allocator.free(desc.digest);
             var dref = ref;
-            dref.digest = try self.allocator.dupe(u8, desc.digest);
+            dref.digest = desc.digest;
             dref.is_digest = true;
             dref.tag = "";
-            self.allocator.free(fetched.body);
-            self.allocator.free(fetched.media_type);
+            fetched.deinit(self.allocator);
             fetched = try self.fetchManifest(dref, false);
         }
-        defer {
-            self.allocator.free(fetched.body);
-            self.allocator.free(fetched.media_type);
-        }
+        defer fetched.deinit(self.allocator);
 
         const digest = if (fetched.header_digest.len != 0)
             try self.allocator.dupe(u8, fetched.header_digest)
@@ -85,6 +81,12 @@ pub const Client = struct {
         body: []const u8,
         media_type: []const u8,
         header_digest: []const u8,
+
+        fn deinit(self: FetchedManifest, allocator: std.mem.Allocator) void {
+            allocator.free(self.body);
+            allocator.free(self.media_type);
+            if (self.header_digest.len != 0) allocator.free(self.header_digest);
+        }
     };
 
     fn fetchManifest(self: *Client, ref: ocireg.Ref, reauth: bool) !FetchedManifest {
@@ -193,28 +195,51 @@ pub const Client = struct {
         var client: std.http.Client = .{ .allocator = self.allocator, .io = self.io };
         defer client.deinit();
 
-        var response: std.Io.Writer.Allocating = .init(self.allocator);
-        const result = client.fetch(.{
-            .location = .{ .url = url },
-            .method = .GET,
+        const uri = std.Uri.parse(url) catch return error.HttpStatus;
+        var req = client.request(.GET, uri, .{
             .keep_alive = false,
             .headers = .{
                 .user_agent = .{ .override = "voila-ocireg/1.0" },
                 .authorization = authorization,
             },
             .extra_headers = extra_headers,
-            .response_writer = &response.writer,
         }) catch return error.HttpStatus;
+        defer req.deinit();
+        req.sendBodiless() catch return error.HttpStatus;
+        var redirect_buf: [8 * 1024]u8 = undefined;
+        var resp = req.receiveHead(&redirect_buf) catch return error.HttpStatus;
 
-        const code: u16 = @backingInt(result.status);
-        const body = try response.toOwnedSlice();
-        return .{
-            .status = code,
-            .body = body,
-            .content_type = "",
-            .docker_digest = "",
-            .www_authenticate = "",
-        };
+        // Head strings die once the body is read, so copy the ones callers need first.
+        var out: RawResponse = .{ .status = @backingInt(resp.head.status), .body = "", .content_type = "", .docker_digest = "", .www_authenticate = "" };
+        errdefer out.deinit(self.allocator);
+        var it = resp.head.iterateHeaders();
+        while (it.next()) |h| {
+            const field = if (std.ascii.eqlIgnoreCase(h.name, "content-type"))
+                &out.content_type
+            else if (std.ascii.eqlIgnoreCase(h.name, "docker-content-digest"))
+                &out.docker_digest
+            else if (std.ascii.eqlIgnoreCase(h.name, "www-authenticate"))
+                &out.www_authenticate
+            else
+                continue;
+            if (field.len == 0) field.* = try self.allocator.dupe(u8, h.value);
+        }
+
+        var body: std.Io.Writer.Allocating = .init(self.allocator);
+        defer body.deinit();
+        var transfer_buf: [64]u8 = undefined;
+        var decompress: std.http.Decompress = undefined;
+        const decompress_buf = try self.allocator.alloc(u8, switch (resp.head.content_encoding) {
+            .identity => 0,
+            .zstd => std.compress.zstd.default_window_len,
+            .deflate, .gzip => std.compress.flate.max_window_len,
+            .compress => return error.HttpStatus,
+        });
+        defer self.allocator.free(decompress_buf);
+        const reader = resp.readerDecompressing(&transfer_buf, &decompress, decompress_buf);
+        _ = reader.streamRemaining(&body.writer) catch return error.HttpStatus;
+        out.body = try body.toOwnedSlice();
+        return out;
     }
 
     fn ensureAuth(self: *Client, ref: ocireg.Ref, force: bool) void {
@@ -328,7 +353,8 @@ fn stripMediaType(ct: []const u8) []const u8 {
     return std.mem.trim(u8, ct, " \t");
 }
 
-fn isIndexMediaType(mt: []const u8) bool {
+fn isIndexMediaType(content_type: []const u8) bool {
+    const mt = std.mem.trim(u8, content_type[0 .. std.mem.indexOfScalar(u8, content_type, ';') orelse content_type.len], " ");
     return std.mem.eql(u8, mt, "application/vnd.oci.image.index.v1+json") or
         std.mem.eql(u8, mt, "application/vnd.docker.distribution.manifest.list.v2+json");
 }
@@ -472,4 +498,10 @@ test "parse image manifest" {
     gpa.free(man.layers);
     try std.testing.expectEqualStrings("sha256:abc", man.config.digest);
     try std.testing.expect(man.layers.len == 1);
+}
+
+test "index media type ignores content-type parameters" {
+    try std.testing.expect(isIndexMediaType("application/vnd.oci.image.index.v1+json"));
+    try std.testing.expect(isIndexMediaType("application/vnd.docker.distribution.manifest.list.v2+json; charset=utf-8"));
+    try std.testing.expect(!isIndexMediaType("application/vnd.oci.image.manifest.v1+json"));
 }

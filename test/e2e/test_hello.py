@@ -1,7 +1,6 @@
-from collections.abc import Callable
 from pathlib import Path
 
-from conftest import Registry, Voila
+from conftest import Machine, Registry, Voila
 
 BASE = "alpine:3.20"
 
@@ -36,7 +35,7 @@ def test_build_hello(voila: Voila, tmp_path: Path) -> None:
 
 
 def test_push_pull_hello(
-    machine: Callable[[str], Voila], registry_server: Registry, tmp_path: Path
+    machine: Machine, registry_server: Registry, tmp_path: Path
 ) -> None:
     a, b = machine("a"), machine("b")
     a.run("import", BASE)
