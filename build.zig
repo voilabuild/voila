@@ -283,7 +283,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "registry", .deps = &.{ "core", "codec", "sys", "store" }, .ext = &.{"sqlite_c"} },
         .{ .name = "mount", .deps = &.{ "core", "codec", "sys", "store", "registry" }, .ext = &.{ "fuse3", "zio" } },
         .{ .name = "runtime", .deps = &.{ "core", "codec", "sys", "store", "registry", "mount" }, .ext = &.{} },
-        .{ .name = "app", .deps = &.{ "core", "codec", "sys", "store", "registry", "mount", "runtime" }, .ext = &.{"zio"} },
+        .{ .name = "cli", .deps = &.{ "core", "sys", "registry", "mount", "runtime" }, .ext = &.{} },
+        .{ .name = "app", .deps = &.{ "core", "codec", "sys", "store", "registry", "mount", "runtime", "cli" }, .ext = &.{"zio"} },
     };
     var layers: [layer_specs.len]*std.Build.Module = undefined;
     for (layer_specs, 0..) |spec, i| {
