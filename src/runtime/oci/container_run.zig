@@ -193,9 +193,11 @@ fn spawnContainerWorkerAndWait(
         try container_store.writeState(allocator, voila_root, st.*);
     }
     const wp: std.c.pid_t = @intCast(worker.id orelse return error.SpawnFailed);
+    var log_follow: ?LogFollow = if (!use_tty) LogFollow.init(log_path) else null;
+    if (log_follow) |*lf| lf.start();
     const code = try waitForwarding(wp, &wait_set);
+    if (log_follow) |*lf| lf.finish();
     if (took_terminal) _ = ns.setForeground(std.c.STDIN_FILENO, ns.processGroup());
-    try printLogFile(log_path);
     return code;
 }
 
@@ -214,10 +216,62 @@ fn waitForwarding(worker: std.c.pid_t, set: *const ns.sigset_t) !u8 {
     }
 }
 
-fn printLogFile(path: []const u8) !void {
-    const data = posix_util.readFileAlloc(std.heap.page_allocator, path, 16 * 1024 * 1024) catch return;
-    defer std.heap.page_allocator.free(data);
-    writeAllFd(std.c.STDOUT_FILENO, data);
+/// Docker-like live stdout for non-TTY foreground runs: the worker writes a log file and
+/// this thread copies new bytes to our stdout while we wait for the worker.
+const LogFollow = struct {
+    path: []const u8,
+    offset: std.atomic.Value(i64) = .init(0),
+    stop: std.atomic.Value(bool) = .init(false),
+    thread: ?std.Thread = null,
+
+    fn init(path: []const u8) LogFollow {
+        return .{ .path = path };
+    }
+
+    fn start(self: *LogFollow) void {
+        self.thread = std.Thread.spawn(.{}, LogFollow.run, .{self}) catch null;
+    }
+
+    fn finish(self: *LogFollow) void {
+        self.stop.store(true, .release);
+        if (self.thread) |t| t.join();
+        _ = pumpLogToStdout(self.path, self.offset.load(.monotonic), &self.offset);
+    }
+
+    fn run(self: *LogFollow) void {
+        while (!self.stop.load(.acquire)) {
+            _ = pumpLogToStdout(self.path, self.offset.load(.monotonic), &self.offset);
+            sleepMs(10);
+        }
+    }
+};
+
+fn pumpLogToStdout(path: []const u8, offset: i64, next_offset: *std.atomic.Value(i64)) i64 {
+    const path_z = std.heap.page_allocator.allocSentinel(u8, path.len, 0) catch return 0;
+    defer std.heap.page_allocator.free(path_z);
+    @memcpy(path_z, path);
+    const fd = std.c.open(path_z, .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
+    if (fd < 0) return 0;
+    defer _ = std.c.close(fd);
+    _ = std.c.lseek(fd, offset, std.c.SEEK.SET);
+    var buf: [4096]u8 = undefined;
+    var written: i64 = 0;
+    while (true) {
+        const n = std.c.read(fd, &buf, buf.len);
+        if (n <= 0) break;
+        writeAllFd(std.c.STDOUT_FILENO, buf[0..@intCast(n)]);
+        written += n;
+    }
+    if (written > 0) next_offset.store(offset + written, .monotonic);
+    return written;
+}
+
+fn sleepMs(ms: u64) void {
+    var ts: std.c.timespec = .{
+        .sec = @intCast(ms / 1000),
+        .nsec = @intCast((ms % 1000) * std.time.ns_per_ms),
+    };
+    while (std.c.nanosleep(&ts, &ts) == -1 and std.c.errno(-1) == .INTR) {}
 }
 
 fn runDetached(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, spec: types.RunSpec) !u8 {

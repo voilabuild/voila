@@ -467,5 +467,20 @@ pub fn encodeManifest(allocator: std.mem.Allocator, m: ManifestMsg) ![]u8 {
     }
     dkeys.deinit(allocator);
 
+    var ext = m.external_subtrees.iterator();
+    var ext_keys: std.ArrayList(u64) = .empty;
+    while (ext.next()) |e| try ext_keys.append(allocator, e.key_ptr.*);
+    std.mem.sort(u64, ext_keys.items, {}, std.sort.asc(u64));
+    for (ext_keys.items) |ino| {
+        const cid = m.external_subtrees.get(ino) orelse continue;
+        var entry: std.ArrayList(u8) = .empty;
+        try wire.writeU64(&entry, allocator, 1, ino);
+        try wire.writeBytes(&entry, allocator, 2, cid);
+        const sub = try entry.toOwnedSlice(allocator);
+        defer allocator.free(sub);
+        try wire.writeSubmessage(&out, allocator, 5, sub);
+    }
+    ext_keys.deinit(allocator);
+
     return out.toOwnedSlice(allocator);
 }

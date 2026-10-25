@@ -50,6 +50,23 @@ def running(v: Voila) -> bool:
     return any(c["status"] == "running" for c in containers(v))
 
 
+def test_foreground_run_streams_stdout_before_exit(voila: Voila) -> None:
+    voila.run("import", BASE)
+    p = subprocess.Popen(
+        [VOILA_BIN, "run", "--rm", BASE, "--", "sh", "-c", "echo early; sleep 1; echo late"],
+        env=voila.env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert p.stdout is not None
+    assert p.stdout.readline() == "early\n"
+    assert p.poll() is None, "output should stream before the container exits"
+    rest = p.stdout.read()
+    assert p.wait(timeout=30) == 0
+    assert rest == "late\n"
+
+
 def test_sigterm_to_foreground_run_stops_and_removes_the_container(voila: Voila) -> None:
     voila.run("import", BASE)
     p = subprocess.Popen(
