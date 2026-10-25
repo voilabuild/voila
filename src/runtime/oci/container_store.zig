@@ -1,5 +1,6 @@
 const std = @import("std");
 const posix_util = @import("sys").posix_util;
+const fs = @import("sys").fs;
 
 pub const State = struct {
     id: []const u8,
@@ -22,6 +23,11 @@ pub fn containerDir(allocator: std.mem.Allocator, voila_root: []const u8, id: []
 
 pub fn statePath(allocator: std.mem.Allocator, voila_root: []const u8, id: []const u8) ![]const u8 {
     return std.fmt.allocPrint(allocator, "{s}/containers/{s}/state.json", .{ voila_root, id });
+}
+
+/// FUSE mountpoint of the image; under the container so a crashed run leaves nothing in /tmp.
+pub fn mountPath(allocator: std.mem.Allocator, voila_root: []const u8, id: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}/containers/{s}/mnt", .{ voila_root, id });
 }
 
 pub fn logPath(allocator: std.mem.Allocator, voila_root: []const u8, id: []const u8) ![]const u8 {
@@ -144,16 +150,16 @@ pub fn freeState(allocator: std.mem.Allocator, st: State) void {
     allocator.free(st.log_path);
 }
 
-pub fn removeContainer(allocator: std.mem.Allocator, voila_root: []const u8, id: []const u8) void {
-    const dir = containerDir(allocator, voila_root, id) catch return;
+/// Deletes the container's directory, then its index line; a dir that cannot be fully
+/// removed stays listed so `voila rm` can be retried.
+pub fn removeContainer(allocator: std.mem.Allocator, voila_root: []const u8, id: []const u8) !void {
+    const dir = try containerDir(allocator, voila_root, id);
     defer allocator.free(dir);
-    const cmd = std.fmt.allocPrint(allocator, "rm -rf {s}", .{dir}) catch return;
-    defer allocator.free(cmd);
-    const cmd_z = allocator.allocSentinel(u8, cmd.len, 0) catch return;
-    defer allocator.free(cmd_z);
-    @memcpy(cmd_z, cmd);
-    _ = posix_util.shell(cmd_z);
-    removeIndexLine(allocator, voila_root, id) catch {};
+    fs.removeTree(allocator, dir) catch |e| switch (e) {
+        error.FileNotFound => {},
+        else => return e,
+    };
+    try removeIndexLine(allocator, voila_root, id);
 }
 
 fn appendIndex(allocator: std.mem.Allocator, voila_root: []const u8, id: []const u8) !void {

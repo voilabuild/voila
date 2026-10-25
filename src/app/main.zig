@@ -105,7 +105,7 @@ pub fn main(init: std.process.Init) !void {
         const parsed = try parseWorkerArgs(init.gpa, &args);
         defer init.gpa.free(parsed.store_root);
         defer init.gpa.free(parsed.container_id);
-        const code = try container_run.runWorker(io, init.gpa, parsed.store_root, parsed.container_id);
+        const code = try container_run.runWorker(io, init.gpa, parsed.store_root, parsed.container_id, parsed.remove_on_exit);
         std.process.exit(code);
     }
     if (std.mem.eql(u8, sub, "build")) {
@@ -555,15 +555,6 @@ fn proveStoreDistroExtras(allocator: std.mem.Allocator, mount_dir: []const u8) !
     }
 }
 
-fn fusermountU(allocator: std.mem.Allocator, mount_dir: []const u8) !void {
-    const cmd = try std.fmt.allocPrint(allocator, "fusermount3 -u {s} 2>/dev/null || umount {s}", .{ mount_dir, mount_dir });
-    defer allocator.free(cmd);
-    const cmd_z = try allocator.allocSentinel(u8, cmd.len, 0);
-    defer allocator.free(cmd_z);
-    @memcpy(cmd_z, cmd);
-    _ = posix_util.shell(cmd_z);
-}
-
 fn verifyMountBytes(
     allocator: std.mem.Allocator,
     mount_dir: []const u8,
@@ -1008,13 +999,17 @@ fn parseRmiArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) 
 const WorkerParsed = struct {
     store_root: []const u8,
     container_id: []const u8,
+    remove_on_exit: bool,
 };
 
 fn parseWorkerArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !WorkerParsed {
     var root: ?[]const u8 = null;
     var container_id: ?[]const u8 = null;
+    var remove_on_exit = false;
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-root")) {
+        if (std.mem.eql(u8, arg, "--rm")) {
+            remove_on_exit = true;
+        } else if (std.mem.eql(u8, arg, "-root")) {
             root = args.next() orelse return error.NeedVoilaRoot;
         } else if (std.mem.eql(u8, arg, "-id")) {
             container_id = args.next() orelse return error.NeedContextId;
@@ -1025,6 +1020,7 @@ fn parseWorkerArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterato
     return .{
         .store_root = try resolveAbs(allocator, r),
         .container_id = try allocator.dupe(u8, id),
+        .remove_on_exit = remove_on_exit,
     };
 }
 

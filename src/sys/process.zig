@@ -9,8 +9,17 @@ const max_args = 16;
 /// Runs `argv[0]` (an absolute path, no shell, empty environment) and returns its exit
 /// status; a signal death is reported as 128 + signal.
 pub fn run(argv: []const []const u8) RunError!u8 {
+    return runWith(argv, false);
+}
+
+/// `run` with stdout and stderr sent to /dev/null.
+pub fn runQuiet(argv: []const []const u8) RunError!u8 {
+    return runWith(argv, true);
+}
+
+fn runWith(argv: []const []const u8, quiet: bool) RunError!u8 {
     if (argv.len == 0 or argv.len > max_args) return error.TooManyArgs;
-    var storage: [max_args][256:0]u8 = undefined;
+    var storage: [max_args][std.Io.Dir.max_path_bytes:0]u8 = undefined;
     var ptrs: [max_args:null]?[*:0]const u8 = @splat(null);
     for (argv, 0..) |arg, i| {
         if (arg.len >= storage[i].len) return error.NameTooLong;
@@ -23,6 +32,13 @@ pub fn run(argv: []const []const u8) RunError!u8 {
     if (linux.errno(rc) != .SUCCESS) return error.SpawnFailed;
     const pid: linux.pid_t = @intCast(rc);
     if (pid == 0) {
+        if (quiet) {
+            const null_fd = linux.open("/dev/null", .{ .ACCMODE = .WRONLY }, 0);
+            if (linux.errno(null_fd) == .SUCCESS) {
+                _ = linux.dup2(@intCast(null_fd), 1);
+                _ = linux.dup2(@intCast(null_fd), 2);
+            }
+        }
         _ = linux.execve(ptrs[0].?, &ptrs, &envp);
         linux.exit(127);
     }

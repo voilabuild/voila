@@ -9,7 +9,7 @@ const voila_image_pull = @import("./voila_image_pull.zig");
 const ingest_registry = @import("./ingest_registry.zig");
 const ingest_build = @import("store").ingest.ingest_build;
 const chunk_store = @import("store").ingest.ingest_chunk_store;
-const posix_util = @import("sys").posix_util;
+const fs = @import("sys").fs;
 
 pub const ImportOpts = struct {
     /// Upload chunks and manifest to the configured voila registry after local ingest.
@@ -25,7 +25,7 @@ pub fn importImage(
     push_ref: []const u8,
     opts: ImportOpts,
 ) !void {
-    try posix_util.makePath(voila_root);
+    try fs.makePath(voila_root);
 
     const parsed = try ocireg.parseRef(allocator, hub_ref);
     defer freeRef(allocator, parsed);

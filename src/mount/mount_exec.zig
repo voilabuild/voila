@@ -46,9 +46,31 @@ fn nextField(line: []const u8, start: usize) ?struct { value: []const u8, end: u
     return .{ .value = line[i..j], .end = j };
 }
 
+/// `/proc/mounts` encodes spaces and other bytes as `\NNN` octal.
+fn decodeProcMountPath(encoded: []const u8, buf: []u8) []const u8 {
+    var out: usize = 0;
+    var i: usize = 0;
+    while (i < encoded.len and out < buf.len) {
+        if (encoded[i] == '\\' and i + 3 <= encoded.len) {
+            const c = std.fmt.parseInt(u8, encoded[i + 1 .. i + 4], 8) catch null;
+            if (c) |byte| {
+                buf[out] = byte;
+                out += 1;
+                i += 4;
+                continue;
+            }
+        }
+        buf[out] = encoded[i];
+        out += 1;
+        i += 1;
+    }
+    return buf[0..out];
+}
+
 pub fn mountListed(mount_dir: []const u8) bool {
     const data = posix_util.readFileAlloc(std.heap.page_allocator, "/proc/mounts", 256 * 1024) catch return false;
     defer std.heap.page_allocator.free(data);
+    var decoded: [std.Io.Dir.max_path_bytes]u8 = undefined;
     var start: usize = 0;
     while (start < data.len) {
         var end = start;
@@ -58,7 +80,8 @@ pub fn mountListed(mount_dir: []const u8) bool {
         const mnt = nextField(line, 0) orelse continue;
         const mnt_pt = nextField(line, mnt.end) orelse continue;
         const fstype = nextField(line, mnt_pt.end) orelse continue;
-        if (!std.mem.eql(u8, mnt_pt.value, mount_dir)) continue;
+        const path = decodeProcMountPath(mnt_pt.value, &decoded);
+        if (!std.mem.eql(u8, path, mount_dir)) continue;
         if (!std.mem.eql(u8, fstype.value, "fuse")) continue;
         return true;
     }
@@ -156,6 +179,12 @@ fn executableOnVfs(vfs: *fuse_vfs_mod.FuseVfs, vfs_path: []const u8) bool {
     if (vfs.isFile(ino)) return true;
     // Alpine and others expose /bin/sh as a symlink; execve resolves it on the mount.
     return vfs.readlink(ino) != null;
+}
+
+test "decodeProcMountPath expands octal escapes from /proc/mounts" {
+    var buf: [64]u8 = undefined;
+    const path = decodeProcMountPath("/tmp/s\\040p/root", &buf);
+    try std.testing.expectEqualStrings("/tmp/s p/root", path);
 }
 
 pub const Error = error{
