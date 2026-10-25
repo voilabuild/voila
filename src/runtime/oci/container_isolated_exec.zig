@@ -23,6 +23,10 @@ pub const Spec = struct {
 };
 
 pub fn run(spec: Spec) Error!u8 {
+    // The worker (or `voila exec`) unmounts the image when it exits; nothing may outlive it.
+    const parent = std.os.linux.getppid();
+    ns.setParentDeathSignal(.KILL) catch return error.SetupFailed;
+    if (std.os.linux.getppid() != parent) return error.SetupFailed;
     if (!container_bind.enterUserNamespaceOnly()) return error.UserNamespacesRequired;
     ns.unshare(ns.CLONE.NEWNS) catch return error.UserNamespacesRequired;
     // Refused when / is not a mount point; pivotInto then falls back to chroot.
