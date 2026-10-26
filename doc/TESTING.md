@@ -33,3 +33,11 @@ On Ubuntu 24.04+ AppArmor allows user namespaces only for binaries named in an
 `~/.local/bin/voila`). The suite stops with that message when `VOILA_BIN` is
 not covered; install the build there and set `VOILA_BIN`, or run in the
 devcontainer.
+
+### Homelab smoke
+
+After `install.sh` (or with `VOILA_BIN` pointing at your build):
+
+```bash
+bash test/homelab/acceptance.sh
+```

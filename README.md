@@ -6,17 +6,21 @@ Run a container without downloading the whole image.
 to use a few megabytes. voila splits images into content-addressed chunks and
 mounts the rootfs lazily — file data is fetched only when something reads it.
 
-Very early software. Expect breakage. Linux only; `voila` is one static,
-daemonless binary that runs containers rootless.
+**Alpha:** `v0.1.0-alpha.1` is the current candidate ([changelog](CHANGELOG.md)).
+Linux only; one static, daemonless binary. Expect breakage before beta.
 
 ## Try it
 
-The install script downloads the release, verifies the checksum, installs
+The install script downloads a release, verifies the checksum, installs
 `voila`, sets up the AppArmor profile Ubuntu 24.04+ needs for unprivileged user
 namespaces, and can wire up the hosted registry:
 
 ```bash
+# latest stable tag (see GitHub Releases)
 curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sh
+
+# pin the alpha candidate
+curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sh -s -- --version v0.1.0-alpha.1 --yes
 ```
 
 More install flags: [doc/INSTALL.md](doc/INSTALL.md).
