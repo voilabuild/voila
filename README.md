@@ -46,7 +46,7 @@ step; see [doc/CLI.md](doc/CLI.md#building-images).
 ### Hosted registry
 
 The install script points at a free registry by default
-(`https://drift-registry-production.up.railway.app`). Public pulls need no
+(`https://registry.voila.build`). Public pulls need no
 account; chunks stream on first read. Sign up there to push under your org
 (`<org>/alpine:3.20`). Push needs an API key (`voila login`, or
 `VOILA_REGISTRY_TOKEN`).

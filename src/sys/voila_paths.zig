@@ -1,7 +1,7 @@
 const std = @import("std");
 const posix_util = @import("./posix_util.zig");
 
-pub const default_registry_url = "https://drift-registry-production.up.railway.app/registry";
+pub const default_registry_url = "https://registry.voila.build/registry";
 
 /// XDG config path: ~/.config/voila/credentials
 pub fn loginCredsPath(allocator: std.mem.Allocator) ![]const u8 {
