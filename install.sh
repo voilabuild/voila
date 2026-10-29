@@ -21,7 +21,7 @@ VERSION=""
 INSTALL_PREREQS=0
 ASSUME_YES=0
 TOKEN=""
-REGISTRY_URL="https://drift-registry-production.up.railway.app/registry"
+REGISTRY_URL="https://registry.voila.build/registry"
 
 usage() {
 	cat <<'EOF'
