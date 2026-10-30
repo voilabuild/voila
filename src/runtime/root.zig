@@ -21,6 +21,7 @@ pub const oci = struct {
     pub const container_fuse_sibling = @import("oci/container_fuse_sibling.zig");
     pub const container_isolated_exec = @import("oci/container_isolated_exec.zig");
     pub const container_lifecycle = @import("oci/container_lifecycle.zig");
+    pub const container_map_handshake = @import("oci/container_map_handshake.zig");
     pub const container_ports = @import("oci/container_ports.zig");
     pub const container_pty = @import("oci/container_pty.zig");
     pub const container_root = @import("oci/container_root.zig");
@@ -47,6 +48,7 @@ test {
     _ = @import("oci/container_fuse_sibling.zig");
     _ = @import("oci/container_isolated_exec.zig");
     _ = @import("oci/container_lifecycle.zig");
+    _ = @import("oci/container_map_handshake.zig");
     _ = @import("oci/container_ports.zig");
     _ = @import("oci/container_pty.zig");
     _ = @import("oci/container_root.zig");

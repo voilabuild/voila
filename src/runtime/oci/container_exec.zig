@@ -24,7 +24,9 @@ pub fn exec(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, sp
     if (!container_lifecycle.mountStillListed(st.mount_dir)) return error.NotRunning;
     const opts = try container_run_opts.readRunOpts(allocator, voila_root, id);
     defer opts.deinit(allocator);
-    const tree = try voila_loader.loadTreeRoot(io, allocator, voila_root, st.image);
+    const root_ref = try voila_loader.resolveRootRef(io, allocator, voila_root, st.image);
+    defer allocator.free(root_ref);
+    const tree = try voila_loader.loadTreeRoot(io, allocator, voila_root, root_ref);
     var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(allocator, tree) };
     defer fuse_vfs.deinit();
     const vfs_exec = try mount_exec.resolveArgv0VfsPath(allocator, &fuse_vfs, spec.argv[0]);
