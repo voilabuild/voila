@@ -63,8 +63,12 @@ pub fn fetchChunkRaw(
     const stored = resp.body;
     defer allocator.free(stored);
     if (resp.status != 200) {
+        if (resp.status == 404) {
+            log.err("chunk missing on registry: {s}", .{chunk_hex});
+            return error.ChunkNotInRegistry;
+        }
         log.err("registry returned {d} for chunk {s} ({s})", .{ resp.status, chunk_hex, url });
-        return if (resp.status == 404) error.ChunkNotInRegistry else error.RegistryFetch;
+        return error.RegistryFetch;
     }
 
     var raw: []u8 = stored;
