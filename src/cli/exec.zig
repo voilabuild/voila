@@ -32,6 +32,10 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator)
             continue;
         }
         if (context_id != null) {
+            if (cmd_list.items.len == 0 and std.mem.eql(u8, arg, "--")) {
+                after_sep = true;
+                continue;
+            }
             try cmd_list.append(allocator, try allocator.dupe(u8, arg));
             continue;
         }
@@ -83,4 +87,16 @@ pub fn execute(ctx: command.Ctx) !void {
         .interactive = parsed.interactive,
     });
     std.process.exit(code);
+}
+
+test "exec drops -- right after the container id" {
+    const alloc = std.testing.allocator;
+    const argv: []const [*:0]const u8 = &.{ "abc123", "--", "/bin/echo", "hi" };
+    var it = std.process.Args.Iterator.init(.{ .vector = argv });
+    const parsed = try parseArgs(alloc, &it);
+    defer parsed.deinit(alloc);
+    try std.testing.expectEqualStrings("abc123", parsed.context_id);
+    try std.testing.expectEqual(@as(usize, 2), parsed.cmd.len);
+    try std.testing.expectEqualStrings("/bin/echo", parsed.cmd[0]);
+    try std.testing.expectEqualStrings("hi", parsed.cmd[1]);
 }

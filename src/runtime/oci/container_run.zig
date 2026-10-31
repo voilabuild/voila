@@ -355,7 +355,21 @@ fn runMounted(
         .subgid = ids.gid.sub,
     });
     defer fuse_server.deinit();
-    const forwarders = try container_ports.start(io, opts.ports);
+    const forwarders = container_ports.start(io, opts.ports, log_path) catch |e| switch (e) {
+        error.SamePort => {
+            std.debug.print("voila: -p host and container ports must differ (containers share the host network)\n", .{});
+            return e;
+        },
+        error.SocatMissing => {
+            std.debug.print("voila: -p requires socat\n", .{});
+            return e;
+        },
+        error.ForwarderFailed => {
+            std.debug.print("voila: port forwarder exited; see the container log\n", .{});
+            return e;
+        },
+        else => return e,
+    };
     defer container_ports.stopAll(forwarders);
     try mount_exec.waitMountRootReady(mount_dir, io);
     if (!fuse_server.alive()) return error.FuseServerFailed;
@@ -514,4 +528,7 @@ pub const Error = error{
     FileWriteFailed,
     ExePathFailed,
     ForkFailed,
+    SamePort,
+    SocatMissing,
+    ForwarderFailed,
 };

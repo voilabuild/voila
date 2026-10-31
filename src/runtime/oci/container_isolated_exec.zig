@@ -7,8 +7,10 @@ const container_root = @import("container_root.zig");
 const container_run_opts = @import("container_run_opts.zig");
 const run_flags = @import("../run_flags.zig");
 const container_pty = @import("container_pty.zig");
+const map_handshake = @import("container_map_handshake.zig");
 
-extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+const default_path = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+const default_home = "HOME=/root";
 
 pub const Spec = struct {
     mount_dir: []const u8,
@@ -21,6 +23,9 @@ pub const Spec = struct {
     use_tty: bool,
     /// Unix socket the container's pty master is sent back on.
     console_fd: std.posix.fd_t = -1,
+    /// Handshake pipes so the parent can run newuidmap after we unshare (#118).
+    map_up_fd: std.posix.fd_t = -1,
+    map_down_fd: std.posix.fd_t = -1,
 };
 
 pub fn run(spec: Spec) Error!u8 {
@@ -28,7 +33,11 @@ pub fn run(spec: Spec) Error!u8 {
     const parent = std.os.linux.getppid();
     ns.setParentDeathSignal(.KILL) catch return error.SetupFailed;
     if (std.os.linux.getppid() != parent) return error.SetupFailed;
-    if (!container_bind.enterUserNamespaceOnly()) return error.UserNamespacesRequired;
+    if (spec.map_up_fd >= 0 and spec.map_down_fd >= 0) {
+        if (!map_handshake.childEnter(spec.map_up_fd, spec.map_down_fd)) return error.UserNamespacesRequired;
+        _ = std.c.close(spec.map_up_fd);
+        _ = std.c.close(spec.map_down_fd);
+    } else if (!container_bind.enterUserNamespaceOnly()) return error.UserNamespacesRequired;
     ns.unshare(ns.CLONE.NEWNS) catch return error.UserNamespacesRequired;
     // Refused when / is not a mount point; pivotInto then falls back to chroot.
     ns.mount(null, "/", null, ns.MS.REC | ns.MS.PRIVATE, null) catch {};
@@ -38,11 +47,6 @@ pub fn run(spec: Spec) Error!u8 {
     if (container_root.enterPidNamespace(&keep) catch return error.SetupFailed) |code| return code;
     try enterRoot(spec);
     if (container_root.forkCommand(&keep) catch return error.SetupFailed) |code| return code;
-    for (spec.opts.env) |e| {
-        const key_z = allocZ(e.key) catch return error.SetupFailed;
-        const val_z = allocZ(e.value) catch return error.SetupFailed;
-        _ = setenv(key_z, val_z, 1);
-    }
     if (spec.opts.workdir.len > 0) {
         const wd_z = allocZ(spec.opts.workdir) catch return error.SetupFailed;
         _ = std.c.chdir(wd_z);
@@ -103,8 +107,34 @@ fn execCommand(spec: Spec) Error {
     defer std.heap.page_allocator.free(cargv);
     for (argv_z.items, 0..) |a, i| cargv[i] = a;
     cargv[argv_z.items.len] = null;
-    _ = std.c.execve(a0.ptr, @ptrCast(cargv.ptr), std.c.environ);
+    const envp = envpFromOpts(spec.opts.env) catch return error.SetupFailed;
+    _ = std.c.execve(a0.ptr, @ptrCast(cargv.ptr), @ptrCast(envp.ptr));
     return if (std.c.errno(-1) == .NOENT) error.CommandNotFound else error.ExecFailed;
+}
+
+/// Image Env + `-e` only. Never the host environ (#114).
+fn envLines(allocator: std.mem.Allocator, env: []const run_flags.EnvPair) ![][]const u8 {
+    var has_path = false;
+    var has_home = false;
+    var out: std.ArrayList([]const u8) = .empty;
+    for (env) |e| {
+        if (std.mem.eql(u8, e.key, "PATH")) has_path = true;
+        if (std.mem.eql(u8, e.key, "HOME")) has_home = true;
+        try out.append(allocator, try std.fmt.allocPrint(allocator, "{s}={s}", .{ e.key, e.value }));
+    }
+    if (!has_path) try out.append(allocator, try allocator.dupe(u8, default_path));
+    if (!has_home) try out.append(allocator, try allocator.dupe(u8, default_home));
+    return out.toOwnedSlice(allocator);
+}
+
+fn envpFromOpts(env: []const run_flags.EnvPair) ![:null]?[*:0]const u8 {
+    const lines = try envLines(std.heap.page_allocator, env);
+    var out = try std.heap.page_allocator.allocSentinel(?[*:0]const u8, lines.len, null);
+    for (lines, 0..) |line, i| {
+        const z = try allocZ(line);
+        out[i] = z.ptr;
+    }
+    return out;
 }
 
 /// Exit code for a failed `run`: 127 command not found, 126 not executable, 125 sandbox setup.
@@ -157,6 +187,18 @@ pub fn spawnAndWait(_: std.Io, allocator: std.mem.Allocator, spec: Spec, timeout
         try argv.append(allocator, "--console-fd");
         try argv.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{c[1]}));
     }
+    var up: [2]std.posix.fd_t = undefined;
+    var down: [2]std.posix.fd_t = undefined;
+    if (std.c.pipe2(&up, .{ .CLOEXEC = true }) != 0) return error.ForkFailed;
+    if (std.c.pipe2(&down, .{ .CLOEXEC = true }) != 0) {
+        _ = std.c.close(up[0]);
+        _ = std.c.close(up[1]);
+        return error.ForkFailed;
+    }
+    try argv.append(allocator, "--map-up-fd");
+    try argv.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{up[1]}));
+    try argv.append(allocator, "--map-down-fd");
+    try argv.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{down[0]}));
     try argv.append(allocator, "--");
     for (spec.cmd_argv) |a| try argv.append(allocator, try allocator.dupe(u8, a));
 
@@ -179,12 +221,25 @@ pub fn spawnAndWait(_: std.Io, allocator: std.mem.Allocator, spec: Spec, timeout
     if (pid < 0) return error.ForkFailed;
     if (pid == 0) {
         const child_console: std.posix.fd_t = if (console) |c| c[1] else -1;
-        closeInheritedFds(child_console);
-        if (child_console >= 0) clearCloexec(child_console);
+        const keep = [_]std.posix.fd_t{ child_console, up[1], down[0] };
+        closeInheritedFds(&keep);
+        for (keep) |fd| if (fd >= 0) clearCloexec(fd);
         _ = std.c.execve(zargs.items[0].ptr, @ptrCast(cargv.ptr), std.c.environ);
         std.c._exit(127);
     }
+    _ = std.c.close(up[1]);
+    _ = std.c.close(down[0]);
+    defer {
+        _ = std.c.close(up[0]);
+        _ = std.c.close(down[1]);
+    }
+    const applied = map_handshake.parentApply(allocator, pid, up[0], down[1]);
+    if (!applied.ids.isRange()) {
+        std.debug.print("voila: warning: single-uid namespace (install uidmap and a subuid range to map image users)\n", .{});
+    }
     var status: i32 = 0;
+    const early = std.c.waitpid(pid, &status, std.c.W.NOHANG);
+    if (early == pid) return ns.exitCode(@bitCast(status));
     var pty_master: std.posix.fd_t = -1;
     if (console) |c| {
         ns.close(c[1]);
@@ -230,6 +285,8 @@ pub fn parseCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
     var vol_list: std.ArrayList(run_flags.Volume) = .empty;
     var cmd_list: std.ArrayList([]const u8) = .empty;
     var console_fd: std.posix.fd_t = -1;
+    var map_up_fd: std.posix.fd_t = -1;
+    var map_down_fd: std.posix.fd_t = -1;
     var rw_dir: []const u8 = "";
     var after_sep = false;
     while (args.next()) |arg| {
@@ -285,6 +342,14 @@ pub fn parseCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
             rw_dir = try allocator.dupe(u8, args.next() orelse return error.BadArgs);
             continue;
         }
+        if (std.mem.eql(u8, arg, "--map-up-fd")) {
+            map_up_fd = parseFd(args.next() orelse return error.BadArgs) catch return error.BadArgs;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--map-down-fd")) {
+            map_down_fd = parseFd(args.next() orelse return error.BadArgs) catch return error.BadArgs;
+            continue;
+        }
         return error.BadArgs;
     }
     const mount = mount_dir orelse return error.BadArgs;
@@ -309,6 +374,8 @@ pub fn parseCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
         .rw_dir = rw_dir,
         .use_tty = console_fd >= 0,
         .console_fd = console_fd,
+        .map_up_fd = map_up_fd,
+        .map_down_fd = map_down_fd,
     };
 }
 
@@ -318,11 +385,20 @@ fn monotonicMs() i64 {
     return @as(i64, @intCast(ts.sec)) * 1000 + @divFloor(@as(i64, @intCast(ts.nsec)), 1_000_000);
 }
 
-fn closeInheritedFds(keep: std.posix.fd_t) void {
+fn closeInheritedFds(keep: []const std.posix.fd_t) void {
     var fd: i32 = 3;
     while (fd < 512) : (fd += 1) {
-        if (fd != keep) _ = std.c.close(fd);
+        if (!containsFd(keep, fd)) _ = std.c.close(fd);
     }
+}
+
+fn containsFd(keep: []const std.posix.fd_t, fd: std.posix.fd_t) bool {
+    for (keep) |k| if (k == fd) return true;
+    return false;
+}
+
+fn parseFd(n: []const u8) !std.posix.fd_t {
+    return @intCast(std.fmt.parseInt(i32, n, 10) catch return error.BadArgs);
 }
 
 fn clearCloexec(fd: std.posix.fd_t) void {
@@ -357,4 +433,34 @@ test "errorExitCode separates setup and exec failures" {
     try std.testing.expectEqual(@as(u8, 126), errorExitCode(error.ExecFailed));
     try std.testing.expectEqual(@as(u8, 125), errorExitCode(error.SetupFailed));
     try std.testing.expectEqual(@as(u8, 125), errorExitCode(error.UserNamespacesRequired));
+}
+
+test "envLines is image Env plus -e, with PATH and HOME defaults" {
+    const a = std.testing.allocator;
+    const lines = try envLines(a, &.{.{ .key = "FOO", .value = "bar" }});
+    defer {
+        for (lines) |l| a.free(l);
+        a.free(lines);
+    }
+    try std.testing.expectEqual(@as(usize, 3), lines.len);
+    try std.testing.expectEqualStrings("FOO=bar", lines[0]);
+    try std.testing.expectEqualStrings(default_path, lines[1]);
+    try std.testing.expectEqualStrings(default_home, lines[2]);
+}
+
+test "envLines keeps image PATH and HOME" {
+    const a = std.testing.allocator;
+    const lines = try envLines(a, &.{
+        .{ .key = "PATH", .value = "/bin" },
+        .{ .key = "HOME", .value = "/home/app" },
+        .{ .key = "PGDATA", .value = "/var/lib/postgresql/data" },
+    });
+    defer {
+        for (lines) |l| a.free(l);
+        a.free(lines);
+    }
+    try std.testing.expectEqual(@as(usize, 3), lines.len);
+    try std.testing.expectEqualStrings("PATH=/bin", lines[0]);
+    try std.testing.expectEqualStrings("HOME=/home/app", lines[1]);
+    try std.testing.expectEqualStrings("PGDATA=/var/lib/postgresql/data", lines[2]);
 }

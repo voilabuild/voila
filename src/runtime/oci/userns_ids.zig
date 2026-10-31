@@ -19,8 +19,9 @@ pub fn detect(a: std.mem.Allocator, paths: Paths) idmap.Mapping {
     const uid = std.os.linux.getuid();
     const gid = std.os.linux.getgid();
     var m = idmap.Mapping.single(uid, gid);
-    const pw: []const u8 = posix_util.readFileAlloc(a, paths.passwd, 4 << 20) catch "";
-    const name = passwd.nameForUid(pw, uid);
+    const pw = posix_util.readFileAlloc(a, paths.passwd, 4 << 20) catch null;
+    defer if (pw) |p| a.free(p);
+    const name = if (pw) |p| passwd.nameForUid(p, uid) else null;
     m.uid.sub = lookup(a, paths.newuidmap, paths.subuid, name, uid);
     m.gid.sub = lookup(a, paths.newgidmap, paths.subgid, name, uid);
     return m;
@@ -29,6 +30,7 @@ pub fn detect(a: std.mem.Allocator, paths: Paths) idmap.Mapping {
 fn lookup(a: std.mem.Allocator, helper: []const u8, file: []const u8, name: ?[]const u8, uid: u32) ?idmap.Range {
     if (!posix_util.access(helper)) return null;
     const text = posix_util.readFileAlloc(a, file, 4 << 20) catch return null;
+    defer a.free(text);
     return idmap.parseSubid(text, name, uid);
 }
 

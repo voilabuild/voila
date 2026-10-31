@@ -73,18 +73,25 @@ paths resolve inside the image, with or without `-w`, `-v`, `-it` or `-p`. The
 command runs as PID 2 under a small init in its own user, mount and PID
 namespaces, with a fresh `/proc`, a minimal `/dev` (`null`, `zero`, `full`,
 `random`, `urandom`, `tty`, `pts`, `shm`) and a read-only view of the host's
-`/sys`; the host filesystem is not reachable. The image root is writable: writes
+`/sys`; the host filesystem is not reachable. The process environment is the
+image `Env` plus `-e` (a default `PATH` and `HOME=/root` if the image sets
+neither); the host environment is not inherited. The image root is writable: writes
 go to `<root>/containers/<id>/rw` on disk and are deleted with the container
 (`--rm` or `voila rm`). A `-v` target missing from the image is created. With
 `-it` the terminal comes from the container's own `/dev/pts`, so `tty` works.
 Without `-it`, output goes to the container log (`voila logs`) and a foreground
-run prints it when the command exits. Signals such as the `SIGTERM` from `voila
-stop` are forwarded to the command. Exit codes: the command's own, 128 + signal
-when it is killed, 125 when the sandbox cannot be set up, 126 when the command
-cannot be executed and 127 when it is not found. It needs `/dev/fuse` and
-unprivileged user namespaces (on Ubuntu 24.04+, the AppArmor profile installed
-by `install.sh`). When they are unavailable, `run` exits with an error. It does
-not fall back to running on the host.
+run prints it when the command exits. `-p host:ctr` publishes a port with
+`socat` (install it to use `-p`). Containers share the host network, so the
+host and container ports must differ; same-port publish is rejected. Signals
+such as the `SIGTERM` from `voila stop` are forwarded to the command. Exit
+codes: the command's own, 128 + signal when it is killed, 125 when the sandbox
+cannot be set up, 126 when the command cannot be executed and 127 when it is
+not found. It needs `/dev/fuse` and unprivileged user namespaces (on Ubuntu
+24.04+, the AppArmor profile installed by `install.sh`). When they are
+unavailable, `run` exits with an error. It does not fall back to running on the
+host. With `uidmap` and a subuid range, the run sandbox maps the same range
+`build` uses; without them it falls back to a single-uid namespace and prints
+a warning.
 
 ## Environment variables
 
