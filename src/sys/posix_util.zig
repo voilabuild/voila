@@ -121,16 +121,21 @@ pub fn selfExePath(allocator: std.mem.Allocator) ExePathError![]const u8 {
     return try allocator.dupe(u8, buf[0..@intCast(n)]);
 }
 
+/// `mkdir -p`.
 pub fn makePath(path: []const u8) !void {
-    if (access(path)) return;
-    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    if (path.len >= buf.len) return error.NameTooLong;
-    @memcpy(buf[0..path.len], path);
-    buf[path.len] = 0;
-    const rc = std.c.mkdir(buf[0..path.len :0], 0o755);
-    if (rc == 0) return;
-    const err: std.posix.E = @fromBackingInt(@intCast(std.c._errno().*));
-    if (err == .EXIST) return;
-    if (err == .SUCCESS) return error.Unexpected;
-    return std.posix.unexpectedErrno(err);
+    try @import("fs.zig").makePath(path);
+}
+
+test "makePath creates nested dirs" {
+    const fs = @import("fs.zig");
+    const a = std.testing.allocator;
+    const dir = try fs.makeTempDir(a, "voila-posix-mkdir");
+    defer {
+        fs.removeTree(a, dir) catch {}; // leftover temp dir is fine
+        a.free(dir);
+    }
+    const nested = try std.fmt.allocPrint(a, "{s}/.config/voila", .{dir});
+    defer a.free(nested);
+    try makePath(nested);
+    try std.testing.expect((try fs.lstat(nested)).kind == .dir);
 }

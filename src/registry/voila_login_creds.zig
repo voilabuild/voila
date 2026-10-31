@@ -1,5 +1,6 @@
 const std = @import("std");
 const posix_util = @import("sys").posix_util;
+const fs = @import("sys").fs;
 const voila_paths = @import("sys").voila_paths;
 const voila_http = @import("./voila_http.zig");
 const voila_registry_hub = @import("./voila_registry_hub.zig");
@@ -33,8 +34,18 @@ pub fn loadLoginCreds(allocator: std.mem.Allocator) !?LoginCreds {
 pub fn saveLoginCreds(allocator: std.mem.Allocator, registry: []const u8, token: []const u8, org: []const u8) !void {
     const path = try voila_paths.loginCredsPath(allocator);
     defer allocator.free(path);
+    try writeCredsFile(allocator, path, registry, token, org);
+}
+
+fn writeCredsFile(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    registry: []const u8,
+    token: []const u8,
+    org: []const u8,
+) !void {
     const dir = std.fs.path.dirname(path) orelse return error.BadPath;
-    try posix_util.makePath(dir);
+    try fs.makePath(dir);
     const out = try std.fmt.allocPrint(allocator, "{{\"registry\":\"{s}\",\"token\":\"{s}\",\"org\":\"{s}\"}}\n", .{
         registry, token, org,
     });
@@ -92,3 +103,21 @@ pub const Error = error{
     InvalidApiKey,
     RegistryProbeFailed,
 };
+
+test "writeCredsFile creates missing .config/voila parents" {
+    const testing = std.testing;
+    const home = try fs.makeTempDir(testing.allocator, "voila-login");
+    defer {
+        fs.removeTree(testing.allocator, home) catch {}; // leftover temp dir is fine
+        testing.allocator.free(home);
+    }
+    const path = try std.fmt.allocPrint(testing.allocator, "{s}/.config/voila/credentials", .{home});
+    defer testing.allocator.free(path);
+    try writeCredsFile(testing.allocator, path, "https://example/registry", "dreg_test", "acme");
+    const data = try posix_util.readFileAlloc(testing.allocator, path, 4096);
+    defer testing.allocator.free(data);
+    try testing.expectEqualStrings(
+        "{\"registry\":\"https://example/registry\",\"token\":\"dreg_test\",\"org\":\"acme\"}\n",
+        data,
+    );
+}

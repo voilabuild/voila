@@ -55,7 +55,10 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, init: std.process.Init) !void {
     defer gpa.free(org_owned);
 
     try voila_login_creds.probeRegistryAuth(io, gpa, registry, token);
-    try voila_login_creds.saveLoginCreds(gpa, registry, token, org_owned);
+    voila_login_creds.saveLoginCreds(gpa, registry, token, org_owned) catch |e| {
+        std.debug.print("voila login: could not write ~/.config/voila/credentials: {s}\n", .{@errorName(e)});
+        return e;
+    };
     std.debug.print("logged in to {s}\n", .{registry});
 }
 
