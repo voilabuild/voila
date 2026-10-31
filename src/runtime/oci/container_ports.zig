@@ -30,10 +30,10 @@ pub const Forwarder = struct {
 };
 
 /// Attach to `ns_pid`'s netns. Empty `ports` still starts pasta when present (outbound).
-pub fn start(io: std.Io, ns_pid: i32, ports: []const run_flags.PortMap, log_path: []const u8) ![]Forwarder {
-    if (findPasta()) |pasta| return startPasta(io, pasta, ns_pid, ports, log_path);
+pub fn start(io: std.Io, ns_pid: i32, ports: []const run_flags.PortMap) ![]Forwarder {
+    if (findPasta()) |pasta| return startPasta(io, pasta, ns_pid, ports);
     if (ports.len == 0) return &.{};
-    return startProxy(io, ns_pid, ports, log_path);
+    return startProxy(io, ns_pid, ports);
 }
 
 pub fn stopAll(forwarders: []Forwarder) void {
@@ -63,7 +63,7 @@ pub fn tcpSpec(allocator: std.mem.Allocator, ports: []const run_flags.PortMap) !
     return buf.toOwnedSlice(allocator);
 }
 
-fn startPasta(io: std.Io, pasta: []const u8, ns_pid: i32, ports: []const run_flags.PortMap, log_path: []const u8) ![]Forwarder {
+fn startPasta(io: std.Io, pasta: []const u8, ns_pid: i32, ports: []const run_flags.PortMap) ![]Forwarder {
     const spec = try tcpSpec(std.heap.page_allocator, ports);
     defer std.heap.page_allocator.free(spec);
     const pid_s = try std.fmt.allocPrint(std.heap.page_allocator, "{d}", .{ns_pid});
@@ -71,20 +71,19 @@ fn startPasta(io: std.Io, pasta: []const u8, ns_pid: i32, ports: []const run_fla
     const argv = [_][]const u8{
         pasta, "-f", "-q", "--config-net", "-u", "none", "-T", "none", "-U", "none", "-t", spec, pid_s,
     };
-    const log_file = openLog(log_path);
-    defer {
-        if (log_file) |f| _ = std.c.close(f.handle);
-    }
-    var fwd: Forwarder = .{ .pid = try spawnArgv(io, &argv, log_file) };
+    var fwd: Forwarder = .{ .pid = try spawnArgv(io, &argv) };
     try io.sleep(std.Io.Duration.fromMilliseconds(50), .awake);
-    if (!fwd.alive()) return error.ForwarderFailed;
+    if (!fwd.alive()) {
+        // A short-lived command can exit (and take pasta with it) before the check.
+        if (std.c.kill(ns_pid, 0) != 0) return &.{};
+        return error.ForwarderFailed;
+    }
     const out = try std.heap.page_allocator.alloc(Forwarder, 1);
     out[0] = fwd;
     return out;
 }
 
-fn startProxy(io: std.Io, ns_pid: i32, ports: []const run_flags.PortMap, log_path: []const u8) ![]Forwarder {
-    _ = log_path;
+fn startProxy(io: std.Io, ns_pid: i32, ports: []const run_flags.PortMap) ![]Forwarder {
     var out: std.ArrayList(Forwarder) = .empty;
     errdefer {
         for (out.items) |*f| f.stop();
@@ -211,32 +210,14 @@ fn copyFd(from: linux.fd_t, to: linux.fd_t) void {
     }
 }
 
-fn spawnArgv(io: std.Io, argv: []const []const u8, log_file: ?std.Io.File) !i32 {
-    const child = if (log_file) |f|
-        try std.process.spawn(io, .{
-            .argv = argv,
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .{ .file = f },
-        })
-    else
-        try std.process.spawn(io, .{
-            .argv = argv,
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .ignore,
-        });
+fn spawnArgv(io: std.Io, argv: []const []const u8) !i32 {
+    const child = try std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
     return if (child.id) |id| @intCast(id) else -1;
-}
-
-fn openLog(path: []const u8) ?std.Io.File {
-    if (path.len == 0) return null;
-    const path_z = std.heap.page_allocator.allocSentinel(u8, path.len, 0) catch return null;
-    defer std.heap.page_allocator.free(path_z);
-    @memcpy(path_z, path);
-    const fd = std.c.open(path_z, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true }, @as(std.c.mode_t, 0o644));
-    if (fd < 0) return null;
-    return .{ .handle = fd, .flags = .{ .nonblocking = false } };
 }
 
 fn nsFailed(rc: usize) bool {

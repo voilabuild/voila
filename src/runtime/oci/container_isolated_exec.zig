@@ -245,7 +245,7 @@ pub fn spawnAndWait(io: std.Io, allocator: std.mem.Allocator, spec: Spec, timeou
         std.debug.print("voila: warning: single-uid namespace (install uidmap and a subuid range to map image users)\n", .{});
     }
     const net: []container_ports.Forwarder = if (spec.start_net)
-        container_ports.start(io, pid, spec.opts.ports, spec.log_path) catch |e| {
+        container_ports.start(io, pid, spec.opts.ports) catch |e| {
             _ = std.c.kill(pid, std.c.SIG.KILL);
             var st: i32 = 0;
             _ = std.c.waitpid(pid, &st, 0);
