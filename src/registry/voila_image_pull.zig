@@ -20,7 +20,7 @@ pub fn pullManifestOnce(
     cfg: voila_registry_hub.Config,
     ref: []const u8,
 ) !voila_manifest_json.Manifest {
-    const escaped = try voila_http.queryEscape(allocator, ref);
+    const escaped = try voila_http.pathEscape(allocator, ref);
     defer allocator.free(escaped);
     const url = try std.fmt.allocPrint(allocator, "{s}/v1/images/{s}", .{ cfg.base_url, escaped });
     defer allocator.free(url);

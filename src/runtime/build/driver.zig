@@ -405,7 +405,7 @@ const Builder = struct {
         const owner = try self.resolveOwner(try self.expand(c.chown));
         const sources = try copy_sources.resolve(self.a, self.opts.context_dir, srcs.items, self.ignore);
         const dest = try steps.joinPath(self.a, try self.config.getString("WorkingDir"), dest_raw);
-        const into_dir = std.mem.endsWith(u8, dest_raw, "/") or sources.len > 1 or
+        const into_dir = steps.destIsDirectory(dest_raw) or sources.len > 1 or
             (sources.len == 1 and sources[0].is_dir) or glob.hasWildcard(srcs.items[0]);
 
         const chmod_key = if (c.chmod) |m| try std.fmt.allocPrint(self.a, "{o}", .{m}) else "-";
@@ -493,7 +493,7 @@ const Builder = struct {
 
         const tree = src_tree orelse try from_manifest.loadTree(self.a, self.opts.voila_root, src_root, voila_registry_fetch.fetcher(self.io));
         const matches = try copy_from.resolve(self.a, tree, srcs.items);
-        const into_dir = std.mem.endsWith(u8, dest_raw, "/") or matches.len > 1 or
+        const into_dir = steps.destIsDirectory(dest_raw) or matches.len > 1 or
             (matches.len == 1 and matches[0].node.node_type == .dir) or glob.hasWildcard(srcs.items[0]);
         const diff = try copy_from.graft(self.a, matches, std.mem.trimStart(u8, dest, "/"), into_dir, if (chown.len > 0) owner else null);
         try self.commit(key, diff);

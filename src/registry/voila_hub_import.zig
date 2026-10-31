@@ -11,14 +11,10 @@ pub fn tryImportFromHub(
     voila_root: []const u8,
     user_ref: []const u8,
 ) !void {
-    if (cfg.org.len == 0) return error.NoOrg;
     if (!shouldImportFromDockerHub(user_ref, cfg.org)) return error.SkipDockerImport;
     const hub_ref = try registry_ref.normalizeUserRef(allocator, user_ref);
     defer allocator.free(hub_ref);
-    const push_ref = try registry_ref.hubPushRef(allocator, hub_ref, cfg.org);
-    defer allocator.free(push_ref);
-
-    try voila_image_import.importImage(io, allocator, voila_root, cfg, hub_ref, push_ref, .{ .push = true });
+    try voila_image_import.importImage(io, allocator, voila_root, cfg, hub_ref, hub_ref, .{});
 }
 
 fn shouldImportFromDockerHub(user_ref: []const u8, org: []const u8) bool {
@@ -33,13 +29,9 @@ pub fn formatMissingImageHelp(
     user_ref: []const u8,
     org: []const u8,
 ) ![]const u8 {
+    _ = org;
     const hub_ref = try registry_ref.normalizeUserRef(allocator, user_ref);
     defer allocator.free(hub_ref);
-    const push_ref = if (org.len != 0)
-        try registry_ref.hubPushRef(allocator, hub_ref, org)
-    else
-        try allocator.dupe(u8, hub_ref);
-    defer allocator.free(push_ref);
     return std.fmt.allocPrint(
         allocator,
         "image not found on the voila registry. Import from Docker Hub, then retry:\n  voila import {s}\n(set VOILA_ORG and VOILA_REGISTRY to push to your org after import)",

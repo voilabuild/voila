@@ -4,10 +4,10 @@ const voila_paths = @import("sys").voila_paths;
 const voila_login_creds = @import("registry").voila_login_creds;
 
 pub fn execute(ctx: command.Ctx) !void {
-    try run(ctx.io, ctx.init);
+    try run(ctx.io, ctx.gpa(), ctx.init);
 }
 
-pub fn run(io: std.Io, init: std.process.Init) !void {
+pub fn run(io: std.Io, gpa: std.mem.Allocator, init: std.process.Init) !void {
     var args = std.process.Args.Iterator.init(init.minimal.args);
     _ = args.next();
     _ = args.next();
@@ -20,42 +20,42 @@ pub fn run(io: std.Io, init: std.process.Init) !void {
         raw_url = std.mem.span(e);
     } else {
         std.debug.print("Registry URL [{s}]: ", .{voila_paths.default_registry_url});
-        const line = try readLineAlloc(init.gpa);
-        defer init.gpa.free(line);
+        const line = try readLineAlloc(gpa);
+        defer gpa.free(line);
         if (line.len != 0) raw_url = line;
     }
 
-    const registry = try voila_paths.normalizeRegistryUrl(init.gpa, raw_url);
-    defer init.gpa.free(registry);
+    const registry = try voila_paths.normalizeRegistryUrl(gpa, raw_url);
+    defer gpa.free(registry);
 
     const token = if (std.c.getenv("VOILA_REGISTRY_TOKEN")) |t|
-        try init.gpa.dupe(u8, std.mem.span(t))
+        try gpa.dupe(u8, std.mem.span(t))
     else blk: {
         std.debug.print("API key (dreg_...): ", .{});
-        break :blk try readLineAlloc(init.gpa);
+        break :blk try readLineAlloc(gpa);
     };
-    defer init.gpa.free(token);
+    defer gpa.free(token);
     if (token.len == 0) return error.BadRunArgs;
 
     var org_default: []const u8 = "";
     if (std.c.getenv("VOILA_ORG")) |o| org_default = std.mem.span(o);
     const org_line = if (org_default.len != 0 and std.c.getenv("VOILA_REGISTRY_TOKEN") != null)
-        try init.gpa.dupe(u8, org_default)
+        try gpa.dupe(u8, org_default)
     else blk: {
         std.debug.print("Org namespace", .{});
         if (org_default.len != 0) std.debug.print(" [{s}]", .{org_default});
         std.debug.print(": ", .{});
-        break :blk try readLineAlloc(init.gpa);
+        break :blk try readLineAlloc(gpa);
     };
-    defer init.gpa.free(org_line);
+    defer gpa.free(org_line);
     const org_owned = if (org_line.len != 0)
-        try init.gpa.dupe(u8, org_line)
+        try gpa.dupe(u8, org_line)
     else
-        try init.gpa.dupe(u8, org_default);
-    defer init.gpa.free(org_owned);
+        try gpa.dupe(u8, org_default);
+    defer gpa.free(org_owned);
 
-    try voila_login_creds.probeRegistryAuth(io, init.gpa, registry, token);
-    try voila_login_creds.saveLoginCreds(init.gpa, registry, token, org_owned);
+    try voila_login_creds.probeRegistryAuth(io, gpa, registry, token);
+    try voila_login_creds.saveLoginCreds(gpa, registry, token, org_owned);
     std.debug.print("logged in to {s}\n", .{registry});
 }
 
