@@ -6,7 +6,7 @@ Run a container without downloading the whole image.
 to use a few megabytes. voila splits images into content-addressed chunks and
 mounts the rootfs lazily — file data is fetched only when something reads it.
 
-**Alpha:** `v0.1.0-alpha.1` is the current candidate ([changelog](CHANGELOG.md)).
+**Alpha:** `v0.1.0-alpha.2` is the current candidate ([changelog](CHANGELOG.md)).
 Linux only; one static, daemonless binary. Expect breakage before beta.
 
 ## Try it
@@ -20,7 +20,7 @@ namespaces, and can wire up the hosted registry:
 curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sh
 
 # pin the alpha candidate
-curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sh -s -- --version v0.1.0-alpha.1 --yes
+curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sh -s -- --version v0.1.0-alpha.2 --yes
 ```
 
 More install flags: [doc/INSTALL.md](doc/INSTALL.md).

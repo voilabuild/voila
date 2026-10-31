@@ -36,7 +36,15 @@ jobs:
           cache-key: ${{ matrix.zig_target }}
 
       - name: Build voila
-        run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.zig_target }}
+        env:
+          ZIG_TARGET: ${{ matrix.zig_target }}
+        run: |
+          set -euo pipefail
+          version=0.1.0-dev
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          zig build -Doptimize=ReleaseSafe -Dtarget="$ZIG_TARGET" -Dversion="$version"
 
       - name: Require a fully static binary
         run: |
