@@ -75,7 +75,7 @@ def test_unpublished_port_is_not_on_the_host(voila: Voila) -> None:
 
 def test_two_containers_can_listen_on_the_same_port(voila: Voila) -> None:
     voila.run("import", BASE)
-    ids = []
+    ids: list[str] = []
     try:
         for _ in range(2):
             ids.append(voila.run("run", "-d", BASE, "--", "nc", "-l", "-p", "5432").out.strip())
