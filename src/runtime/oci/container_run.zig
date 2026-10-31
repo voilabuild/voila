@@ -30,6 +30,7 @@ fn markExited(allocator: std.mem.Allocator, st: *container_store.State, code: u8
     st.status = allocator.dupe(u8, "exited") catch "exited";
     st.pid = 0;
     st.exit_code = code;
+    st.exit_set = true;
 }
 
 fn failCode(e: anyerror) u8 {
@@ -367,7 +368,7 @@ fn runDetached(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8,
         std.debug.print("voila: could not start container\n", .{});
         if (spec.ports.len > 0) std.debug.print("voila: could not publish ports\n", .{});
         dumpLogTail(allocator, log_path);
-        container_store.removeContainer(allocator, voila_root, id) catch {};
+        container_store.removeContainer(allocator, voila_root, id) catch {}; // leftover dir is retried by voila rm
         allocator.free(id);
         allocator.free(mount_dir);
         allocator.free(log_path);

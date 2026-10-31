@@ -68,10 +68,15 @@ pub fn stop(allocator: std.mem.Allocator, voila_root: []const u8, context_id: []
     terminateWorker(st0.pid, st0.mount_dir, std.c.SIG.TERM);
     var st = try container_store.readState(allocator, voila_root, id);
     defer container_store.freeState(allocator, st);
-    allocator.free(st.status);
-    st.status = try allocator.dupe(u8, "exited");
     st.pid = 0;
-    st.exit_code = 143;
+    if (!std.mem.eql(u8, st.status, "exited") or !st.exit_set) {
+        allocator.free(st.status);
+        st.status = try allocator.dupe(u8, "exited");
+        if (!st.exit_set) {
+            st.exit_code = 143;
+            st.exit_set = true;
+        }
+    }
     try container_store.writeState(allocator, voila_root, st);
 }
 
@@ -346,6 +351,7 @@ fn fileLen(path: []const u8) !i64 {
 
 fn statusCol(st: container_store.State, buf: []u8) []const u8 {
     if (std.mem.eql(u8, st.status, "exited")) {
+        if (!st.exit_set) return "exited";
         return std.fmt.bufPrint(buf, "exited ({d})", .{st.exit_code}) catch st.status;
     }
     return st.status;

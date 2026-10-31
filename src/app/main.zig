@@ -58,8 +58,22 @@ fn restWantsHelp(init: std.process.Init) bool {
     _ = it.next();
     _ = it.next();
     while (it.next()) |a| {
-        if (std.mem.eql(u8, a, "--")) return false;
         if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h")) return true;
+        if (std.mem.eql(u8, a, "--") or (a.len > 0 and a[0] != '-')) return false;
+        if (flagTakesValue(a)) _ = it.next();
+    }
+    return false;
+}
+
+fn flagTakesValue(a: []const u8) bool {
+    const names = [_][]const u8{
+        "-root",       "--root", "-backend", "--backend", "--name",     "-e",
+        "--env",       "-v",     "--volume", "-p",        "--publish",  "-w",
+        "--workdir",   "-t",     "--tag",    "-f",        "--file",     "--target",
+        "--build-arg", "-s",     "--signal", "-id",       "--ready-fd",
+    };
+    for (names) |n| {
+        if (std.mem.eql(u8, a, n)) return true;
     }
     return false;
 }

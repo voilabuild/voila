@@ -1,4 +1,5 @@
 //! User-facing messages for CLI errors. Subcommands return errors; `app` prints these.
+//! `anyerror` is the catch-all at process exit: subcommands return disjoint error sets.
 const std = @import("std");
 
 pub fn print(err: anyerror) void {
