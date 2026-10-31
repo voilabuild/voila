@@ -33,7 +33,7 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(2);
     };
 
-    if (restWantsHelp(init)) {
+    if (restWantsHelp(init, sub)) {
         cli.usage.printCommand(sub);
         return;
     }
@@ -53,25 +53,30 @@ fn isHelp(s: []const u8) bool {
     return std.mem.eql(u8, s, "--help") or std.mem.eql(u8, s, "-h") or std.mem.eql(u8, s, "help");
 }
 
-fn restWantsHelp(init: std.process.Init) bool {
+fn restWantsHelp(init: std.process.Init, sub: cli.commands.Name) bool {
     var it = std.process.Args.Iterator.init(init.minimal.args);
     _ = it.next();
     _ = it.next();
     while (it.next()) |a| {
         if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h")) return true;
         if (std.mem.eql(u8, a, "--") or (a.len > 0 and a[0] != '-')) return false;
-        if (flagTakesValue(a)) _ = it.next();
+        if (flagTakesValue(sub, a)) _ = it.next();
     }
     return false;
 }
 
-fn flagTakesValue(a: []const u8) bool {
-    const names = [_][]const u8{
-        "-root",       "--root", "-backend", "--backend", "--name",     "-e",
-        "--env",       "-v",     "--volume", "-p",        "--publish",  "-w",
-        "--workdir",   "-t",     "--tag",    "-f",        "--file",     "--target",
-        "--build-arg", "-s",     "--signal", "-id",       "--ready-fd",
+fn flagTakesValue(sub: cli.commands.Name, a: []const u8) bool {
+    if (eqlAny(a, &.{ "-root", "--root", "-backend", "--backend" })) return true;
+    return switch (sub) {
+        .run => eqlAny(a, &.{ "--name", "-e", "--env", "-v", "--volume", "-p", "--publish", "-w", "--workdir" }),
+        .build => eqlAny(a, &.{ "-t", "--tag", "-f", "--file", "--target", "--build-arg" }),
+        .kill => eqlAny(a, &.{ "-s", "--signal" }),
+        .container_worker => eqlAny(a, &.{ "-id", "--ready-fd" }),
+        else => false,
     };
+}
+
+fn eqlAny(a: []const u8, names: []const []const u8) bool {
     for (names) |n| {
         if (std.mem.eql(u8, a, n)) return true;
     }
