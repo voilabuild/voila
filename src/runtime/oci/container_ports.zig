@@ -74,10 +74,9 @@ fn startPasta(io: std.Io, pasta: []const u8, ns_pid: i32, ports: []const run_fla
     var fwd: Forwarder = .{ .pid = try spawnArgv(io, &argv) };
     try io.sleep(std.Io.Duration.fromMilliseconds(50), .awake);
     if (!fwd.alive()) {
-        // A short-lived command can exit (and take pasta with it) before the check.
-        var proc: [32]u8 = undefined;
-        const path = std.fmt.bufPrint(&proc, "/proc/{d}", .{ns_pid}) catch return error.ForwarderFailed;
-        if (!posix_util.access(path)) return &.{};
+        // Pasta quits when the target pid does. A short command can finish
+        // during the 50ms wait; outbound is gone, but that is fine.
+        if (ports.len == 0) return &.{};
         return error.ForwarderFailed;
     }
     const out = try std.heap.page_allocator.alloc(Forwarder, 1);
