@@ -16,6 +16,7 @@ const FakeRunner = struct {
     last_env: []const []const u8 = &.{},
     last_workdir: []const u8 = "",
     last_argv0: []const u8 = "",
+    last_scratch: []const u8 = "",
     arena: std.mem.Allocator,
 
     fn runner(self: *FakeRunner) driver.StepRunner {
@@ -30,6 +31,7 @@ const FakeRunner = struct {
         self.last_env = env.items;
         self.last_workdir = self.arena.dupe(u8, req.workdir) catch return error.OutOfMemory;
         self.last_argv0 = self.arena.dupe(u8, req.argv[0]) catch return error.OutOfMemory;
+        self.last_scratch = self.arena.dupe(u8, req.scratch_dir) catch return error.OutOfMemory;
         const cmd = req.argv[req.argv.len - 1];
         if (std.mem.eql(u8, cmd, "fail")) return .{ .code = 1 };
         var it = std.mem.tokenizeScalar(u8, cmd, ' ');
@@ -188,6 +190,9 @@ test "failing RUN reports the exit code and does not tag the image" {
     try std.testing.expectError(error.RunFailed, env.build(&runner, "FROM test/base:1\nRUN write /x 1\nRUN fail\n", &diag));
     try std.testing.expectEqual(@as(usize, 3), diag.line);
     try std.testing.expectEqual(@as(u8, 1), diag.exit_code);
+    const scratch_parent = try std.fmt.allocPrint(env.arena.allocator(), "{s}/tmp/", .{env.root});
+    try std.testing.expect(std.mem.startsWith(u8, runner.last_scratch, scratch_parent));
+    try std.testing.expectError(error.FileNotFound, fs.lstat(runner.last_scratch));
     try std.testing.expectError(error.NoImageMatch, voila_resolve.resolveImage(env.arena.allocator(), env.root, "test/app:1"));
 
     // The successful first RUN is cached even though the build failed.

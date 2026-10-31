@@ -276,13 +276,18 @@ pub fn removeTree(allocator: std.mem.Allocator, path: []const u8) Error!void {
     _ = try check(linux.unlinkat(linux.AT.FDCWD, try toZ(&zb, path), linux.AT.REMOVEDIR));
 }
 
-/// Fresh directory under `/tmp` for tests and build scratch space. Caller frees the path.
+/// Fresh directory under `/tmp` for tests. Caller frees the path.
 pub fn makeTempDir(allocator: std.mem.Allocator, prefix: []const u8) Error![]u8 {
+    return makeTempDirIn(allocator, "/tmp", prefix);
+}
+
+/// Fresh directory under the existing directory `parent`. Caller frees the path.
+pub fn makeTempDirIn(allocator: std.mem.Allocator, parent: []const u8, prefix: []const u8) Error![]u8 {
     var attempt: u32 = 0;
     while (attempt < 100) : (attempt += 1) {
         var ts: linux.timespec = undefined;
         _ = linux.clock_gettime(.MONOTONIC, &ts);
-        const path = try std.fmt.allocPrint(allocator, "/tmp/{s}-{d}-{d}-{d}", .{ prefix, linux.getpid(), ts.nsec, attempt });
+        const path = try std.fmt.allocPrint(allocator, "{s}/{s}-{d}-{d}-{d}", .{ parent, prefix, linux.getpid(), ts.nsec, attempt });
         mkdir(path, 0o700) catch |e| {
             allocator.free(path);
             if (e == error.Exists) continue;

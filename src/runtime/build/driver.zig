@@ -121,6 +121,14 @@ pub fn build(io: std.Io, gpa: std.mem.Allocator, opts: Options, diag: *Diagnosti
     return .{ .root = img.root, .config = config_chunk, .steps = steps_n, .cached = cached };
 }
 
+/// RUN scratch lives in the store, not `/tmp`, so the overlay upper sits on the
+/// store's filesystem (overlayfs cannot stack on an overlay `/tmp` in a userns).
+fn buildScratchDir(a: std.mem.Allocator, voila_root: []const u8) ![]u8 {
+    const parent = try std.fmt.allocPrint(a, "{s}/tmp", .{voila_root});
+    try fs.makePath(parent);
+    return fs.makeTempDirIn(a, parent, "voila-build");
+}
+
 const StageResult = struct {
     root: [32]u8,
     config_json: []const u8,
@@ -361,7 +369,7 @@ const Builder = struct {
         const key = cache_key.compute(.{ .parent_root = self.root, .instruction = instruction, .env = env, .workdir = workdir, .user = user });
         if (self.cacheHit(key)) return true;
 
-        const scratch = try fs.makeTempDir(self.a, "voila-build");
+        const scratch = try buildScratchDir(self.a, self.opts.voila_root);
         defer fs.removeTree(self.a, scratch) catch {};
         const upper = try std.fmt.allocPrint(self.a, "{s}/upper", .{scratch});
         try fs.mkdir(upper, 0o755);
