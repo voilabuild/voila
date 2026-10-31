@@ -75,7 +75,9 @@ fn startPasta(io: std.Io, pasta: []const u8, ns_pid: i32, ports: []const run_fla
     try io.sleep(std.Io.Duration.fromMilliseconds(50), .awake);
     if (!fwd.alive()) {
         // A short-lived command can exit (and take pasta with it) before the check.
-        if (std.c.kill(ns_pid, 0) != 0) return &.{};
+        var proc: [32]u8 = undefined;
+        const path = std.fmt.bufPrint(&proc, "/proc/{d}", .{ns_pid}) catch return error.ForwarderFailed;
+        if (!posix_util.access(path)) return &.{};
         return error.ForwarderFailed;
     }
     const out = try std.heap.page_allocator.alloc(Forwarder, 1);
