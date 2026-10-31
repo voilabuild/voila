@@ -69,7 +69,7 @@ pulled image, the grafted chunk ids may not be local; push relies on the
 registry already having them.
 
 **Rootless sandbox** (`voila run`, build `RUN`; `runtime/oci/container_root.zig`):
-a user, mount and PID namespace. PID 1 is a small voila init that runs the
+a user, mount, PID and network namespace. PID 1 is a small voila init that runs the
 command as PID 2, forwards signals to it, reaps orphans and exits with the
 command's status (128 + signal when it is killed). `voila run` makes the
 read-only FUSE root writable with an overlayfs whose upper and work dirs live
@@ -78,14 +78,17 @@ exec` and kernels that refuse the overlay get a read-only bind of the FUSE
 root. The root gets a fresh `proc`, a tmpfs `/dev` with the host's `null`,
 `zero`, `full`, `random`, `urandom` and `tty` bound in, a new `devpts`
 instance (the `-it` terminal is allocated there and its master is passed back
-over a unix socket) and a tmpfs `/dev/shm`. The host's `/sys` is bound
-read-only, submounts included (`mount_setattr`, Linux 5.12+), so host sysfs
-is visible but not writable; mounting a fresh `sysfs` would need a network
-namespace. The process then `pivot_root`s into the root and detaches the old
-one, so the host filesystem is no longer mounted in the namespace; plain
-`chroot` is used only if `pivot_root` is refused. The log file is opened
-before the root changes, so a non-`-it` command's output lands in
-`container.log`.
+over a unix socket) and a tmpfs `/dev/shm`. A fresh `sysfs` is mounted
+read-only; if that is refused (no network namespace) the host's `/sys` is
+bound read-only instead (`mount_setattr`, Linux 5.12+). Loopback is brought
+up in the container netns so ports do not appear on the host. Outbound
+traffic is `pasta` from the `passt` package when present (`--config-net`,
+automatic port copy disabled). `-p` is implemented as pasta TCP mappings, or
+a `setns` TCP proxy if pasta is missing. The process then `pivot_root`s into
+the root and detaches the old one, so the host filesystem is no longer
+mounted in the namespace; plain `chroot` is used only if `pivot_root` is
+refused. The log file is opened before the root changes, so a non-`-it`
+command's output lands in `container.log`.
 
 **Registry client** (`voila push` / `pull` / `login`): speaks the `/v1` HTTP
 wire protocol documented in [openapi.yaml](registry/openapi.yaml).

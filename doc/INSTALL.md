@@ -37,7 +37,9 @@ Flags (see `install.sh --help`):
 
 Optional: install `uidmap` (`newuidmap`/`newgidmap`) and give your user an
 `/etc/subuid` / `/etc/subgid` range, so `RUN` steps can switch users and
-`chown` (see [CLI.md](CLI.md#building-images)).
+`chown` (see [CLI.md](CLI.md#building-images)). Install `passt` (the `pasta`
+binary) so `voila run` has outbound network; without it the container has
+loopback only. `-p` works either way.
 
 ### Manual install
 

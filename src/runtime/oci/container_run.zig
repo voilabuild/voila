@@ -355,22 +355,9 @@ fn runMounted(
         .subgid = ids.gid.sub,
     });
     defer fuse_server.deinit();
-    const forwarders = container_ports.start(io, opts.ports, log_path) catch |e| switch (e) {
-        error.SamePort => {
-            std.debug.print("voila: -p host and container ports must differ (containers share the host network)\n", .{});
-            return e;
-        },
-        error.SocatMissing => {
-            std.debug.print("voila: -p requires socat\n", .{});
-            return e;
-        },
-        error.ForwarderFailed => {
-            std.debug.print("voila: port forwarder exited; see the container log\n", .{});
-            return e;
-        },
-        else => return e,
-    };
-    defer container_ports.stopAll(forwarders);
+    if (container_ports.findPasta() == null) {
+        std.debug.print("voila: pasta not found; the container has no outbound network (install the passt package)\n", .{});
+    }
     try mount_exec.waitMountRootReady(mount_dir, io);
     if (!fuse_server.alive()) return error.FuseServerFailed;
 
@@ -383,7 +370,14 @@ fn runMounted(
         .opts = opts,
         .rw_dir = rw_dir,
         .use_tty = opts.tty or opts.interactive,
-    }, 0);
+        .start_net = true,
+    }, 0) catch |e| switch (e) {
+        error.ForwarderFailed => {
+            std.debug.print("voila: port forwarder exited; see the container log\n", .{});
+            return e;
+        },
+        else => return e,
+    };
 }
 
 /// Disk-backed overlay upper for the container's writable root; removed with the container.
@@ -414,6 +408,7 @@ pub fn execInMount(
         .cmd_argv = cmd_argv,
         .opts = opts,
         .use_tty = use_tty,
+        .start_net = false,
     }, 120_000);
 }
 
@@ -528,7 +523,5 @@ pub const Error = error{
     FileWriteFailed,
     ExePathFailed,
     ForkFailed,
-    SamePort,
-    SocatMissing,
     ForwarderFailed,
 };

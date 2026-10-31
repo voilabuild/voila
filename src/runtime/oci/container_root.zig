@@ -63,10 +63,16 @@ pub fn plan(a: std.mem.Allocator, root: []const u8) std.mem.Allocator.Error![]Op
         } });
     }
 
-    // sysfs itself needs a network namespace; bind the host's instead.
+    // A fresh sysfs needs a network namespace; bind the host's if that mount is refused.
     const sys = try join(a, root, "/sys");
     try ops.append(a, .{ .mkdir = sys });
-    try ops.append(a, .{ .mount = .{ .source = "/sys", .target = sys, .flags = MS.BIND | MS.REC } });
+    try ops.append(a, .{ .mount = .{
+        .source = "sysfs",
+        .target = sys,
+        .fstype = "sysfs",
+        .flags = MS.NOSUID | MS.NODEV | MS.NOEXEC | MS.RDONLY,
+        .fallback_bind = "/sys",
+    } });
     try ops.append(a, .{ .readonly = sys });
     return ops.toOwnedSlice(a);
 }
@@ -205,12 +211,13 @@ test "plan binds device nodes into a tmpfs /dev" {
     try testing.expect(indexOfMount(ops, "/r/dev/shm").? > dev);
 }
 
-test "plan binds /sys and then makes it read-only" {
+test "plan mounts sysfs with a host bind fallback" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const ops = try plan(arena.allocator(), "/r");
     const i = indexOfMount(ops, "/r/sys").?;
-    try testing.expectEqualStrings("/sys", ops[i].mount.source.?);
+    try testing.expectEqualStrings("sysfs", ops[i].mount.fstype.?);
+    try testing.expectEqualStrings("/sys", ops[i].mount.fallback_bind.?);
     try testing.expectEqualStrings("/r/sys", ops[i + 1].readonly);
     try testing.expectEqual(ops.len, i + 2);
 }
