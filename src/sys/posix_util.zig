@@ -131,7 +131,7 @@ test "makePath creates nested dirs" {
     const a = std.testing.allocator;
     const dir = try fs.makeTempDir(a, "voila-posix-mkdir");
     defer {
-        fs.removeTree(a, dir) catch {};
+        fs.removeTree(a, dir) catch {}; // leftover temp dir is fine
         a.free(dir);
     }
     const nested = try std.fmt.allocPrint(a, "{s}/.config/voila", .{dir});

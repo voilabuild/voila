@@ -108,7 +108,7 @@ test "writeCredsFile creates missing .config/voila parents" {
     const testing = std.testing;
     const home = try fs.makeTempDir(testing.allocator, "voila-login");
     defer {
-        fs.removeTree(testing.allocator, home) catch {};
+        fs.removeTree(testing.allocator, home) catch {}; // leftover temp dir is fine
         testing.allocator.free(home);
     }
     const path = try std.fmt.allocPrint(testing.allocator, "{s}/.config/voila/credentials", .{home});
