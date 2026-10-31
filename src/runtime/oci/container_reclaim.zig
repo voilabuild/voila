@@ -8,7 +8,7 @@ const container_bind = @import("container_bind.zig");
 const container_map_handshake = @import("container_map_handshake.zig");
 const userns_ids = @import("userns_ids.zig");
 
-pub fn removeTree(allocator: std.mem.Allocator, path: []const u8) !void {
+pub fn removeTree(allocator: std.mem.Allocator, path: []const u8) fs.Error!void {
     fs.removeTree(allocator, path) catch |e| switch (e) {
         error.FileNotFound => return,
         error.AccessDenied => try removeMapped(allocator, path),
@@ -41,7 +41,9 @@ fn removeMapped(allocator: std.mem.Allocator, path: []const u8) !void {
     defer _ = std.c.close(down[1]);
     _ = container_map_handshake.parentApply(allocator, pid, up[0], down[1]);
     var wst: i32 = 0;
-    while (std.c.waitpid(pid, &wst, 0) < 0) {}
+    while (std.c.waitpid(pid, &wst, 0) < 0) {
+        if (std.c.errno(-1) != .INTR) return error.AccessDenied;
+    }
     const st: u32 = @bitCast(wst);
     if (std.c.W.IFEXITED(st) and std.c.W.EXITSTATUS(st) == 0) return;
     return error.AccessDenied;

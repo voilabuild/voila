@@ -1,11 +1,14 @@
 """Container lifecycle: signals, stop, crashed workers and cleanup."""
 
 import os
+import shutil
 import signal
 import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
+
+import pytest
 
 from conftest import VOILA_BIN, Voila
 
@@ -136,7 +139,28 @@ def test_rm_removes_every_id(voila: Voila) -> None:
     assert "a" not in names and "b" not in names
 
 
+def host_owners(path: Path) -> set[int]:
+    owners = {path.stat().st_uid}
+    if not path.is_dir():
+        return owners
+    try:
+        children = list(path.iterdir())
+    except PermissionError:
+        return owners
+    for child in children:
+        owners |= host_owners(child)
+    return owners
+
+
 def test_rm_removes_a_container_that_ran_as_nobody(voila: Voila, tmp_path: Path) -> None:
+    if shutil.which("newuidmap") is None:
+        pytest.skip("newuidmap not installed")
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    subuid = Path("/etc/subuid")
+    if not subuid.exists() or (
+        user and user not in subuid.read_text() and str(os.getuid()) not in subuid.read_text()
+    ):
+        pytest.skip("no subuid range for this user")
     voila.run("import", BASE)
     ctx = tmp_path / "nobody"
     ctx.mkdir()
@@ -144,7 +168,15 @@ def test_rm_removes_a_container_that_ran_as_nobody(voila: Voila, tmp_path: Path)
     voila.run("build", "-t", "as-nobody:1", str(ctx))
     # /tmp is mode 1777 and owned by root, so nobody can create this directory.
     # The directory itself is then owned by nobody's subordinate id.
-    voila.run("run", "--name", "u", "as-nobody:1", "--", "mkdir", "-p", "/tmp/nested/dir")
+    res = voila.run(
+        "run", "--name", "u", "as-nobody:1", "--", "sh", "-c", "id; mkdir -p /tmp/nested/dir"
+    )
+    assert "uid=65534(nobody)" in res.out, res.out
+    uppers = list((voila.root / "containers").glob("*/rw/upper"))
+    assert len(uppers) == 1
+    owners = host_owners(uppers[0])
+    # Copy-up keeps /tmp owned by root's host uid. The directory nobody created is not.
+    assert any(uid not in (0, os.getuid()) for uid in owners), owners
     voila.run("rm", "u")
     assert containers(voila) == []
     assert [p.name for p in (voila.root / "containers").iterdir() if p.is_dir()] == []
