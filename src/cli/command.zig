@@ -7,9 +7,10 @@ pub const Ctx = struct {
     io: std.Io,
     init: std.process.Init,
     args: *std.process.Args.Iterator,
+    allocator: std.mem.Allocator,
 
     pub fn gpa(self: Ctx) std.mem.Allocator {
-        return self.init.gpa;
+        return self.allocator;
     }
 };
 

@@ -1,11 +1,13 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const zio = @import("zio");
 const cli = @import("cli");
 
 pub const std_options_debug_io = zio.debug_io;
 
 pub fn main(init: std.process.Init) !void {
-    const zio_rt = try zio.Runtime.init(init.gpa, .{});
+    const gpa = if (builtin.mode == .debug) init.gpa else std.heap.smp_allocator;
+    const zio_rt = try zio.Runtime.init(gpa, .{});
     defer zio_rt.deinit();
     const io = zio_rt.io();
 
@@ -21,6 +23,6 @@ pub fn main(init: std.process.Init) !void {
         return;
     };
 
-    const ctx = cli.command.Ctx{ .io = io, .init = init, .args = &args };
+    const ctx = cli.command.Ctx{ .io = io, .init = init, .args = &args, .allocator = gpa };
     try cli.dispatch.run(sub, ctx);
 }

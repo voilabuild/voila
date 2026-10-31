@@ -69,6 +69,14 @@ pub fn formArgv(a: std.mem.Allocator, form: dockerfile.Form, shell: []const []co
     };
 }
 
+/// Docker: `.`, `./`, a trailing `/`, or an empty dest means copy into a directory.
+pub fn destIsDirectory(dest_raw: []const u8) bool {
+    if (std.mem.endsWith(u8, dest_raw, "/")) return true;
+    const trimmed = std.mem.trimEnd(u8, dest_raw, "/");
+    if (trimmed.len == 0) return true;
+    return std.mem.eql(u8, std.fs.path.basename(trimmed), ".");
+}
+
 /// Absolute, normalized path of `p` relative to `cwd` (empty cwd is `/`).
 pub fn joinPath(a: std.mem.Allocator, cwd: []const u8, p: []const u8) ![]const u8 {
     var parts: std.ArrayList([]const u8) = .empty;
@@ -120,6 +128,16 @@ pub const MountpointSkip = struct {
 };
 
 const testing = std.testing;
+
+test "destIsDirectory treats dot and trailing slash as a directory" {
+    try testing.expect(destIsDirectory("."));
+    try testing.expect(destIsDirectory("./"));
+    try testing.expect(destIsDirectory("foo/"));
+    try testing.expect(destIsDirectory("foo/."));
+    try testing.expect(destIsDirectory(""));
+    try testing.expect(!destIsDirectory("app.py"));
+    try testing.expect(!destIsDirectory("/usr/local/bin/t"));
+}
 
 test "joinPath resolves relative to the working directory" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);

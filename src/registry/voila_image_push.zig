@@ -24,12 +24,15 @@ pub fn pushImage(
         allocator.free(rec.merged_root_manifest);
     }
 
+    var http = voila_http.Session.init(io, allocator);
+    defer http.deinit();
+
     const manifest_body = voila_manifest_cache.load(allocator, voila_root, rec.ref) catch blk: {
-        const escaped = try voila_http.queryEscape(allocator, rec.ref);
+        const escaped = try voila_http.pathEscape(allocator, rec.ref);
         defer allocator.free(escaped);
         const url = try std.fmt.allocPrint(allocator, "{s}/v1/images/{s}", .{ cfg.base_url, escaped });
         defer allocator.free(url);
-        break :blk try voila_http.httpGet(io, allocator, url, cfg.token);
+        break :blk try http.get(allocator, url, cfg.token);
     };
     defer allocator.free(manifest_body);
 
@@ -46,7 +49,8 @@ pub fn pushImage(
         allocator.free(ids);
     }
 
-    const missing = try missingChunks(io, allocator, cfg, ids);
+    std.debug.print("checking {d} chunks…\n", .{ids.len});
+    const missing = try missingChunks(&http, allocator, cfg, ids);
     defer {
         for (missing) |id| allocator.free(id);
         allocator.free(missing);
@@ -54,12 +58,13 @@ pub fn pushImage(
 
     var uploaded: usize = 0;
     var upload_bytes: u64 = 0;
-    for (missing) |chunk_hex| {
+    for (missing, 0..) |chunk_hex, i| {
+        std.debug.print("uploading {d}/{d}\n", .{ i + 1, missing.len });
         const wire = try chunkWireBody(allocator, voila_root, chunk_hex);
         defer allocator.free(wire);
         const url = try std.fmt.allocPrint(allocator, "{s}/v1/chunks/{s}", .{ cfg.base_url, chunk_hex });
         defer allocator.free(url);
-        const code = voila_http.httpPut(io, allocator, url, cfg.token, wire, "application/octet-stream", "zstd") catch return error.ChunkPut;
+        const code = http.put(url, cfg.token, wire, "application/octet-stream", "zstd") catch return error.ChunkPut;
         if (code != 200 and code != 201) return error.ChunkPut;
         uploaded += 1;
         const cid = chunkIdFromHex(chunk_hex);
@@ -69,11 +74,11 @@ pub fn pushImage(
         upload_bytes += raw.len;
     }
 
-    const escaped_put = try voila_http.queryEscape(allocator, man.image_ref);
+    const escaped_put = try voila_http.pathEscape(allocator, man.image_ref);
     defer allocator.free(escaped_put);
     const put_url = try std.fmt.allocPrint(allocator, "{s}/v1/images/{s}", .{ cfg.base_url, escaped_put });
     defer allocator.free(put_url);
-    const put_code = voila_http.httpPut(io, allocator, put_url, cfg.token, manifest_body, "application/json", null) catch return error.ManifestPut;
+    const put_code = http.put(put_url, cfg.token, manifest_body, "application/json", null) catch return error.ManifestPut;
     if (put_code != 200 and put_code != 201) return error.ManifestPut;
 
     const already = ids.len - missing.len;
@@ -103,7 +108,7 @@ fn chunkWireBody(allocator: std.mem.Allocator, voila_root: []const u8, chunk_hex
 }
 
 fn missingChunks(
-    io: std.Io,
+    http: *voila_http.Session,
     allocator: std.mem.Allocator,
     cfg: voila_registry_hub.Config,
     ids: []const []const u8,
@@ -117,7 +122,7 @@ fn missingChunks(
         defer allocator.free(body);
         const url = try std.fmt.allocPrint(allocator, "{s}/v1/chunks/missing", .{cfg.base_url});
         defer allocator.free(url);
-        const resp = voila_http.httpPostJson(io, allocator, url, cfg.token, body) catch return error.MissingNegotiation;
+        const resp = http.postJson(allocator, url, cfg.token, body) catch return error.MissingNegotiation;
         defer allocator.free(resp);
         try parseMissingResponse(allocator, resp, &missing);
         i = end;

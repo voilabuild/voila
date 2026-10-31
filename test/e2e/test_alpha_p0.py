@@ -1,4 +1,4 @@
-"""Alpha.1 P0s from #130: env, ports, exec, uidmap."""
+"""Alpha.1 P0s from #130: env, ports, exec, uidmap, COPY dest, org-slash push."""
 
 import os
 import shutil
@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import Voila, free_port
-from test_hello import BASE
+from conftest import Machine, Registry, Voila, free_port
+from test_hello import BASE, write_hello_context
 from test_lifecycle import containers, mounts_under, wait_until
 
 
@@ -79,6 +79,29 @@ def test_publish_port_forwards(voila: Voila) -> None:
     finally:
         voila.run("stop", cid, check=False)
         voila.run("rm", cid, check=False)
+
+
+def test_build_copy_chown_dot_keeps_workdir(voila: Voila, tmp_path: Path) -> None:
+    ctx = tmp_path / "copybug"
+    ctx.mkdir()
+    (ctx / "app.py").write_text("hello\n")
+    (ctx / "Dockerfile").write_text(
+        f"FROM {BASE}\nWORKDIR /srv\nCOPY --chown=1:1 app.py .\nCMD [\"cat\", \"/srv/app.py\"]\n"
+    )
+    voila.run("import", BASE)
+    voila.run("build", "-t", "copybug:1", str(ctx))
+    res = voila.run("run", "--rm", "copybug:1", "--", "sh", "-c", "ls -ld /srv; cat /srv/app.py")
+    assert "hello" in res.out
+    assert "not a directory" not in res.err.lower()
+
+
+def test_push_pull_org_slash_ref(machine: Machine, registry_server: Registry, tmp_path: Path) -> None:
+    a, b = machine("a"), machine("b")
+    a.run("import", BASE)
+    a.run("build", "-t", "testorg/hello:1", str(write_hello_context(tmp_path / "ctx")))
+    a.run("push", "testorg/hello:1")
+    assert b.run("run", "--rm", "testorg/hello:1").out == "hello world\n"
+    assert len(registry_server.state.images) >= 1
 
 
 def _can_connect(port: int) -> bool:
