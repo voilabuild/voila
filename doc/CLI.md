@@ -86,7 +86,8 @@ host and container ports must differ; same-port publish is rejected. Signals
 such as the `SIGTERM` from `voila stop` are forwarded to the command. Exit
 codes: the command's own, 128 + signal when it is killed, 125 when the sandbox
 cannot be set up, 126 when the command cannot be executed and 127 when it is
-not found. It needs `/dev/fuse` and unprivileged user namespaces (on Ubuntu
+not found. An unknown flag before the image exits 2 without creating a
+container. It needs `/dev/fuse` and unprivileged user namespaces (on Ubuntu
 24.04+, the AppArmor profile installed by `install.sh`). When they are
 unavailable, `run` exits with an error. It does not fall back to running on the
 host. With `uidmap` and a subuid range, the run sandbox maps the same range
