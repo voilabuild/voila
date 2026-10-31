@@ -20,7 +20,7 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator)
     var context_id: ?[]const u8 = null;
     while (args.next()) |arg| {
         if (try flags.tryRuntimeFlag(allocator, arg, args, &root, &kind)) continue;
-        if (std.mem.eql(u8, arg, "-follow") or std.mem.eql(u8, arg, "-f")) {
+        if (std.mem.eql(u8, arg, "-follow") or std.mem.eql(u8, arg, "--follow") or std.mem.eql(u8, arg, "-f")) {
             follow = true;
         } else if (context_id == null) {
             context_id = try allocator.dupe(u8, arg);

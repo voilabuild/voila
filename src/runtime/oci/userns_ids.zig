@@ -13,6 +13,21 @@ pub const Paths = struct {
     newgidmap: []const u8 = "/usr/bin/newgidmap",
 };
 
+pub const Fallback = enum { range, missing_helper, missing_subid };
+
+/// Why `detect` would fall back to a single-uid map, without applying helpers.
+pub fn detectFallback(a: std.mem.Allocator, paths: Paths) Fallback {
+    const uid = std.os.linux.getuid();
+    const pw = posix_util.readFileAlloc(a, paths.passwd, 4 << 20) catch null;
+    defer if (pw) |p| a.free(p);
+    const name = if (pw) |p| passwd.nameForUid(p, uid) else null;
+    const text = posix_util.readFileAlloc(a, paths.subuid, 4 << 20) catch return .missing_subid;
+    defer a.free(text);
+    if (idmap.parseSubid(text, name, uid) == null) return .missing_subid;
+    if (!posix_util.access(paths.newuidmap) or !posix_util.access(paths.newgidmap)) return .missing_helper;
+    return .range;
+}
+
 /// The mapping a rootless namespace will get: a subid range where both the helper and
 /// an entry exist, else the single invoking id.
 pub fn detect(a: std.mem.Allocator, paths: Paths) idmap.Mapping {
@@ -72,6 +87,36 @@ fn runHelper(helper: []const u8, pid: std.posix.pid_t, m: idmap.IdMap) bool {
     };
     const code = process.run(&args) catch return false;
     return code == 0;
+}
+
+test "detectFallback is missing_subid when the subuid file is empty" {
+    const fs = @import("sys").fs;
+    const a = std.testing.allocator;
+    const dir = try fs.makeTempDir(a, "voila-uidmap");
+    defer {
+        fs.removeTree(a, dir) catch {}; // leftover temp dir is fine
+        a.free(dir);
+    }
+    const sub = try std.fmt.allocPrint(a, "{s}/subuid", .{dir});
+    defer a.free(sub);
+    try fs.writeFile(sub, "", 0o644);
+    const gid = try std.fmt.allocPrint(a, "{s}/subgid", .{dir});
+    defer a.free(gid);
+    try fs.writeFile(gid, "", 0o644);
+    const pw = try std.fmt.allocPrint(a, "{s}/passwd", .{dir});
+    defer a.free(pw);
+    try fs.writeFile(pw, "nobody:x:65534:65534::/:\n", 0o644);
+    const helper = try std.fmt.allocPrint(a, "{s}/newuidmap", .{dir});
+    defer a.free(helper);
+    try fs.writeFile(helper, "", 0o755);
+    const got = detectFallback(a, .{
+        .subuid = sub,
+        .subgid = gid,
+        .passwd = pw,
+        .newuidmap = helper,
+        .newgidmap = helper,
+    });
+    try std.testing.expectEqual(Fallback.missing_subid, got);
 }
 
 test "effective keeps only the ranges whose helper succeeded" {

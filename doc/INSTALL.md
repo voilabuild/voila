@@ -30,7 +30,7 @@ Flags (see `install.sh --help`):
 
 - `--prefix <dir>`: install directory.
 - `--version <tag>`: pin a release instead of the latest.
-- `--install-prereqs`: install missing `fuse3` via apt-get / dnf / yum / zypper.
+- `--install-prereqs`: install missing `fuse3` and `uidmap` via apt-get / dnf / yum / zypper.
 - `--registry <url>` / `--registry ""`: set or clear the default registry.
 - `--token <key>`: configure a registry API key (`dreg_...`) non-interactively.
 - `--yes`: accept prompts.

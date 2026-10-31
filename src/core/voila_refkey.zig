@@ -4,6 +4,7 @@ const hex_util = @import("./hex_util.zig");
 /// Matches imagestore.RefKey: sanitize ref + 8-hex sha256 suffix.
 pub fn refKey(allocator: std.mem.Allocator, ref: []const u8) ![]const u8 {
     var sanitized: std.ArrayList(u8) = .empty;
+    defer sanitized.deinit(allocator);
     for (ref) |c| {
         const ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or
             c == '.' or c == '_' or c == '-';

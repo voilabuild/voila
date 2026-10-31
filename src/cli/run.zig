@@ -217,7 +217,9 @@ pub fn execute(ctx: command.Ctx) !void {
         workdir = workdir_from_image.?;
     }
     defer if (workdir_from_image) |w| gpa.free(w);
-    const code = worker.run(ctx.io, gpa, .{
+    const user = try voila_image_run_config.imageUser(ctx.io, gpa, parsed.runtime_cfg.store_root, parsed.image);
+    defer gpa.free(user);
+    const code = try worker.run(ctx.io, gpa, .{
         .image = parsed.image,
         .argv = argv,
         .detach = parsed.detach,
@@ -229,10 +231,8 @@ pub fn execute(ctx: command.Ctx) !void {
         .ports = parsed.ports,
         .tty = parsed.tty,
         .interactive = parsed.interactive,
-    }) catch |e| {
-        if (e == error.UserNamespacesRequired) std.process.exit(1);
-        return e;
-    };
+        .user = user,
+    });
     std.process.exit(code);
 }
 

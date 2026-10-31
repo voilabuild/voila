@@ -18,11 +18,48 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(2);
     };
 
-    const sub = cli.commands.parse(sub_name) orelse {
+    if (isVersion(sub_name)) {
+        cli.version.print();
+        return;
+    }
+    if (isHelp(sub_name)) {
         cli.usage.printUsage();
         return;
+    }
+
+    const sub = cli.commands.parse(sub_name) orelse {
+        std.debug.print("voila: unknown command {s}\n", .{sub_name});
+        cli.usage.printUsage();
+        std.process.exit(2);
     };
 
+    if (restWantsHelp(init)) {
+        cli.usage.printCommand(sub);
+        return;
+    }
+
     const ctx = cli.command.Ctx{ .io = io, .init = init, .args = &args, .allocator = gpa };
-    try cli.dispatch.run(sub, ctx);
+    cli.dispatch.run(sub, ctx) catch |e| {
+        cli.user_error.print(e);
+        std.process.exit(cli.user_error.exitStatus(e));
+    };
+}
+
+fn isVersion(s: []const u8) bool {
+    return std.mem.eql(u8, s, "--version") or std.mem.eql(u8, s, "-v") or std.mem.eql(u8, s, "version");
+}
+
+fn isHelp(s: []const u8) bool {
+    return std.mem.eql(u8, s, "--help") or std.mem.eql(u8, s, "-h") or std.mem.eql(u8, s, "help");
+}
+
+fn restWantsHelp(init: std.process.Init) bool {
+    var it = std.process.Args.Iterator.init(init.minimal.args);
+    _ = it.next();
+    _ = it.next();
+    while (it.next()) |a| {
+        if (std.mem.eql(u8, a, "--")) return false;
+        if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h")) return true;
+    }
+    return false;
 }

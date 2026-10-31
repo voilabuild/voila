@@ -10,16 +10,27 @@ pub fn ps(allocator: std.mem.Allocator, voila_root: []const u8) !void {
         for (states) |st| container_store.freeState(allocator, st);
         allocator.free(states);
     }
-    std.debug.print("ID           NAME                 IMAGE                          STATUS    PID\n", .{});
+    std.debug.print("ID           NAME                 IMAGE                          STATUS         PID\n", .{});
     for (states) |st| {
         const name = if (st.name.len != 0) st.name else "-";
-        std.debug.print("{s:<12} {s:<20} {s:<30} {s:<9} {d}\n", .{
-            trimId(st.id),
-            trimCol(name, 20),
-            trimCol(st.image, 30),
-            st.status,
-            st.pid,
-        });
+        var status_buf: [20]u8 = undefined;
+        const status = statusCol(st, &status_buf);
+        if (st.pid > 0) {
+            std.debug.print("{s:<12} {s:<20} {s:<30} {s:<14} {d}\n", .{
+                trimId(st.id),
+                trimCol(name, 20),
+                trimCol(st.image, 30),
+                status,
+                st.pid,
+            });
+        } else {
+            std.debug.print("{s:<12} {s:<20} {s:<30} {s:<14} -\n", .{
+                trimId(st.id),
+                trimCol(name, 20),
+                trimCol(st.image, 30),
+                status,
+            });
+        }
     }
 }
 
@@ -60,6 +71,7 @@ pub fn stop(allocator: std.mem.Allocator, voila_root: []const u8, context_id: []
     allocator.free(st.status);
     st.status = try allocator.dupe(u8, "exited");
     st.pid = 0;
+    st.exit_code = 143;
     try container_store.writeState(allocator, voila_root, st);
 }
 
@@ -188,7 +200,23 @@ pub fn isRunning(st: container_store.State) bool {
 
 fn isPidAlive(pid: i32) bool {
     if (pid <= 0) return false;
-    return std.c.kill(pid, @fromBackingInt(@intCast(0))) == 0;
+    if (std.c.kill(pid, @fromBackingInt(@intCast(0))) != 0) return false;
+    return !isZombie(pid);
+}
+
+/// `kill(pid, 0)` succeeds for a zombie; pid 1 may not reap it before `voila ps`.
+fn isZombie(pid: i32) bool {
+    var path_buf: [64]u8 = undefined;
+    const path = std.fmt.bufPrintSentinel(&path_buf, "/proc/{d}/stat", .{pid}, 0) catch return false;
+    const fd = std.c.open(path, .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
+    if (fd < 0) return false;
+    defer _ = std.c.close(fd);
+    var buf: [256]u8 = undefined;
+    const n = std.c.read(fd, &buf, buf.len);
+    if (n <= 0) return false;
+    const s = buf[0..@intCast(n)];
+    const rparen = std.mem.lastIndexOfScalar(u8, s, ')') orelse return false;
+    return rparen + 2 < s.len and s[rparen + 2] == 'Z';
 }
 
 /// True while the path still appears in /proc/self/mountinfo or /proc/mounts (including stale rows).
@@ -316,6 +344,13 @@ fn fileLen(path: []const u8) !i64 {
     return off;
 }
 
+fn statusCol(st: container_store.State, buf: []u8) []const u8 {
+    if (std.mem.eql(u8, st.status, "exited")) {
+        return std.fmt.bufPrint(buf, "exited ({d})", .{st.exit_code}) catch st.status;
+    }
+    return st.status;
+}
+
 fn trimId(id: []const u8) []const u8 {
     return if (id.len > 12) id[0..12] else id;
 }
@@ -325,3 +360,17 @@ fn trimCol(s: []const u8, max: usize) []const u8 {
 }
 
 pub const Error = error{ NameInUse, MountStillActive };
+
+test "isPidAlive is false for a zombie child" {
+    const pid = std.c.fork();
+    if (pid < 0) return error.SkipZigTest;
+    if (pid == 0) std.c._exit(0);
+    defer {
+        var st: i32 = 0;
+        _ = std.c.waitpid(pid, &st, 0);
+    }
+    var n: usize = 0;
+    while (n < 100 and !isZombie(@intCast(pid))) : (n += 1) posix_util.sleepMs(1);
+    try std.testing.expect(isZombie(@intCast(pid)));
+    try std.testing.expect(!isPidAlive(@intCast(pid)));
+}
