@@ -208,6 +208,28 @@ test "missing base image and bad COPY source are reported" {
     try std.testing.expectError(error.CopySourceMissing, env.build(&runner, "FROM scratch\nCOPY nothere /\n", &diag));
 }
 
+test "COPY to relative dest . lands inside WORKDIR" {
+    var env = try Env.init();
+    defer env.deinit();
+    try env.file("app.py", "hello\n");
+    try env.file("other.py", "other\n");
+    var runner: FakeRunner = .{ .arena = env.arena.allocator() };
+    var diag: driver.Diagnostic = .{};
+    const res = try env.build(&runner,
+        \\FROM scratch
+        \\WORKDIR /srv
+        \\COPY --chown=1:1 app.py .
+        \\COPY other.py .
+    , &diag);
+    const t = try env.imageTree(res.root);
+    try std.testing.expect(t.lookup("srv") != null);
+    try std.testing.expect(t.lookup("srv").?.node_type == .dir);
+    const app = t.lookup("srv/app.py") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u32, 1), app.uid);
+    try std.testing.expectEqual(@as(u32, 1), app.gid);
+    try std.testing.expect(t.lookup("srv/other.py") != null);
+}
+
 test "FROM scratch with COPY of a single file to a file path" {
     var env = try Env.init();
     defer env.deinit();

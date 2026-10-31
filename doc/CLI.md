@@ -105,8 +105,9 @@ a warning.
 - `VOILA_REGISTRY_TOKEN`: registry API key. Precedence:
   `$VOILA_REGISTRY_TOKEN`, then the login file. Chunk GETs are
   unauthenticated; the token is used for manifests and uploads.
-- `VOILA_ORG`: your registry org. `import` retags `<image>` as
-  `<org>/<image>` and pushes it (see #69).
+- `VOILA_ORG`: your registry org. Default namespace for an explicit
+  `voila push` or `voila build --push`. `import` and `FROM` resolution
+  keep the Hub ref and do not upload anything.
 - `VOILA_RUNTIME`: `local` (default) or `remote`. `remote` is not
   implemented yet.
 

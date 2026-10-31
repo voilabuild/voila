@@ -19,10 +19,5 @@ pub fn execute(ctx: command.Ctx) !void {
     }
     const hub_ref = try registry_ref_mod.normalizeUserRef(gpa, parsed.image);
     defer gpa.free(hub_ref);
-    const push_ref = if (cfg.org.len != 0)
-        try registry_ref_mod.hubPushRef(gpa, hub_ref, cfg.org)
-    else
-        try gpa.dupe(u8, hub_ref);
-    defer gpa.free(push_ref);
-    try voila_image_import.importImage(ctx.io, gpa, parsed.runtime_cfg.store_root, cfg, hub_ref, push_ref, .{});
+    try voila_image_import.importImage(ctx.io, gpa, parsed.runtime_cfg.store_root, cfg, hub_ref, hub_ref, .{});
 }

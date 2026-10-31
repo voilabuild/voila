@@ -36,6 +36,9 @@ class Voila:
             [VOILA_BIN, *args], env=self.env, cwd=cwd, capture_output=True, text=True, timeout=300
         )
         res = Result(p.returncode, p.stdout, p.stderr)
+        leak = "error(SafeAllocator)"
+        if leak in res.err or leak in res.out:
+            pytest.fail(f"voila {' '.join(args)} printed allocator leaks\n{res.err}\n{res.out}")
         if check and p.returncode != 0:
             pytest.fail(f"voila {' '.join(args)} exited {p.returncode}\n{p.stderr}")
         return res
