@@ -14,7 +14,7 @@ Every command accepts `-root <dir>` (default: `$VOILA_ROOT`).
 
 | Command | What it does |
 |---|---|
-| `voila login [registry-url]` | Save the registry URL and API key to `~/.config/voila/credentials` (0600) |
+| `voila login [registry-url]` | Save the registry URL and API key to `~/.config/voila/credentials` (0600), creating `~/.config/voila` if needed |
 | `voila logout` | Remove saved registry credentials |
 | `voila import <ref>` | Pull an image from an OCI registry (Docker Hub, ghcr.io, …) and store it as chunks. No Docker daemon needed |
 | `voila pull <ref>` | Fetch an image's manifest from the voila registry; chunks stream on first read |
