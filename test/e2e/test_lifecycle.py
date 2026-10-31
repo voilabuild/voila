@@ -136,6 +136,20 @@ def test_rm_removes_every_id(voila: Voila) -> None:
     assert "a" not in names and "b" not in names
 
 
+def test_rm_removes_a_container_that_ran_as_nobody(voila: Voila, tmp_path: Path) -> None:
+    voila.run("import", BASE)
+    ctx = tmp_path / "nobody"
+    ctx.mkdir()
+    (ctx / "Dockerfile").write_text("FROM alpine:3.20\nUSER nobody\n")
+    voila.run("build", "-t", "as-nobody:1", str(ctx))
+    # /tmp is mode 1777 and owned by root, so nobody can create this directory.
+    # The directory itself is then owned by nobody's subordinate id.
+    voila.run("run", "--name", "u", "as-nobody:1", "--", "mkdir", "-p", "/tmp/nested/dir")
+    voila.run("rm", "u")
+    assert containers(voila) == []
+    assert [p.name for p in (voila.root / "containers").iterdir() if p.is_dir()] == []
+
+
 def test_rm_handles_a_root_with_spaces(voila: Voila, tmp_path: Path) -> None:
     # Before the fix, `sh -c "rm -rf <tmp>/s p/..."` also deleted <tmp>/s.
     sentinel = tmp_path / "s" / "keep"

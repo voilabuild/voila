@@ -1,6 +1,6 @@
 const std = @import("std");
 const posix_util = @import("sys").posix_util;
-const fs = @import("sys").fs;
+const container_reclaim = @import("container_reclaim.zig");
 
 pub const State = struct {
     id: []const u8,
@@ -168,10 +168,7 @@ pub fn freeState(allocator: std.mem.Allocator, st: State) void {
 pub fn removeContainer(allocator: std.mem.Allocator, voila_root: []const u8, id: []const u8) !void {
     const dir = try containerDir(allocator, voila_root, id);
     defer allocator.free(dir);
-    fs.removeTree(allocator, dir) catch |e| switch (e) {
-        error.FileNotFound => {},
-        else => return e,
-    };
+    try container_reclaim.removeTree(allocator, dir);
     try removeIndexLine(allocator, voila_root, id);
 }
 
