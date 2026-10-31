@@ -42,7 +42,10 @@ pub const Parsed = struct {
     }
 };
 
-pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !Parsed {
+/// Filled by `parseArgs` when it returns `error.UnknownFlag`; points into argv.
+pub const Diag = struct { flag: []const u8 = "" };
+
+pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, diag: *Diag) !Parsed {
     var root: ?[]const u8 = null;
     var kind = voila_runtime.kindFromEnv();
     var image: ?[]const u8 = null;
@@ -130,6 +133,10 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator)
             tty = true;
             continue;
         }
+        if (arg.len > 1 and arg[0] == '-') {
+            diag.flag = arg;
+            return error.UnknownFlag;
+        }
         if (root == null and image == null and !voila_refkey.looksLikeRef(arg)) {
             root = try allocator.dupe(u8, arg);
             continue;
@@ -171,7 +178,14 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator)
 
 pub fn execute(ctx: command.Ctx) !void {
     const gpa = ctx.gpa();
-    const parsed = try parseArgs(gpa, ctx.args);
+    var diag: Diag = .{};
+    const parsed = parseArgs(gpa, ctx.args, &diag) catch |e| {
+        if (e == error.UnknownFlag) {
+            std.debug.print("voila run: unknown flag {s}\n", .{diag.flag});
+            std.process.exit(2);
+        }
+        return e;
+    };
     defer parsed.deinit(gpa);
     try registry_session.prepare(ctx.io, gpa, parsed.runtime_cfg.store_root);
     var worker = try command.openRuntime(gpa, parsed.runtime_cfg);
@@ -226,7 +240,8 @@ test "run drops -- right after image ref" {
     const alloc = std.testing.allocator;
     const argv: []const [*:0]const u8 = &.{ "-root", "/voila-test-root", "alpine:3", "--", "echo", "--", "hi" };
     var it = std.process.Args.Iterator.init(.{ .vector = argv });
-    const parsed = try parseArgs(alloc, &it);
+    var diag: Diag = .{};
+    const parsed = try parseArgs(alloc, &it, &diag);
     defer parsed.deinit(alloc);
     try std.testing.expectEqualStrings("alpine:3", parsed.image);
     try std.testing.expectEqual(@as(usize, 3), parsed.cmd.len);
@@ -239,10 +254,32 @@ test "run keeps argv without separator after image ref" {
     const alloc = std.testing.allocator;
     const argv: []const [*:0]const u8 = &.{ "-root", "/voila-test-root", "alpine:3", "echo", "hi" };
     var it = std.process.Args.Iterator.init(.{ .vector = argv });
-    const parsed = try parseArgs(alloc, &it);
+    var diag: Diag = .{};
+    const parsed = try parseArgs(alloc, &it, &diag);
     defer parsed.deinit(alloc);
     try std.testing.expectEqualStrings("alpine:3", parsed.image);
     try std.testing.expectEqual(@as(usize, 2), parsed.cmd.len);
     try std.testing.expectEqualStrings("echo", parsed.cmd[0]);
     try std.testing.expectEqualStrings("hi", parsed.cmd[1]);
+}
+
+test "run rejects unknown flags before the image ref" {
+    const alloc = std.testing.allocator;
+    for ([_][:0]const u8{ "--bogus", "--detatch", "-x" }) |flag| {
+        const argv: []const [*:0]const u8 = &.{ "-d", flag.ptr, "alpine:3", "true" };
+        var it = std.process.Args.Iterator.init(.{ .vector = argv });
+        var diag: Diag = .{};
+        try std.testing.expectError(error.UnknownFlag, parseArgs(alloc, &it, &diag));
+        try std.testing.expectEqualStrings(flag, diag.flag);
+    }
+}
+
+test "run passes flags after the image ref to the command" {
+    const alloc = std.testing.allocator;
+    const argv: []const [*:0]const u8 = &.{ "-root", "/voila-test-root", "alpine:3", "ls", "-la" };
+    var it = std.process.Args.Iterator.init(.{ .vector = argv });
+    var diag: Diag = .{};
+    const parsed = try parseArgs(alloc, &it, &diag);
+    defer parsed.deinit(alloc);
+    try std.testing.expectEqualStrings("-la", parsed.cmd[1]);
 }
