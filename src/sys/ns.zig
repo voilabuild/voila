@@ -24,6 +24,7 @@ pub const Error = error{
     WaitFailed,
     SocketFailed,
     PtyFailed,
+    SetnsFailed,
 };
 
 fn failed(rc: usize) bool {
@@ -64,6 +65,26 @@ pub fn unshare(flags: usize) Error!void {
     if (failed(linux.unshare(flags))) return error.UnshareFailed;
 }
 
+pub fn setns(fd: linux.fd_t, nstype: u32) Error!void {
+    if (failed(linux.setns(fd, nstype))) return error.SetnsFailed;
+}
+
+/// Bring up `lo` in the current network namespace.
+pub fn bringUpLoopback() Error!void {
+    const rc = linux.socket(linux.AF.INET, linux.SOCK.DGRAM | linux.SOCK.CLOEXEC, 0);
+    if (failed(rc)) return error.SocketFailed;
+    const sock: linux.fd_t = @intCast(rc);
+    defer close(sock);
+    var ifr: linux.ifreq = undefined;
+    @memset(std.mem.asBytes(&ifr), 0);
+    ifr.ifrn.name[0] = 'l';
+    ifr.ifrn.name[1] = 'o';
+    if (failed(linux.ioctl(sock, linux.SIOCGIFFLAGS, @intFromPtr(&ifr)))) return error.SocketFailed;
+    ifr.ifru.flags.UP = true;
+    ifr.ifru.flags.RUNNING = true;
+    if (failed(linux.ioctl(sock, linux.SIOCSIFFLAGS, @intFromPtr(&ifr)))) return error.SocketFailed;
+}
+
 pub fn setParentDeathSignal(sig: SIG) Error!void {
     const rc = linux.prctl(@backingInt(linux.PR.SET_PDEATHSIG), @backingInt(sig), 0, 0, 0);
     if (failed(rc)) return error.PrctlFailed;
@@ -91,6 +112,12 @@ pub fn symlink(target: [*:0]const u8, link: [*:0]const u8) Error!void {
 /// O_PATH directory handle, kept to reach a directory after it is mounted over.
 pub fn openPath(path: [*:0]const u8) Error!linux.fd_t {
     const rc = linux.open(path, .{ .ACCMODE = .RDONLY, .PATH = true, .DIRECTORY = true, .CLOEXEC = true }, 0);
+    if (failed(rc)) return error.OpenFailed;
+    return @intCast(rc);
+}
+
+pub fn openRead(path: [*:0]const u8) Error!linux.fd_t {
+    const rc = linux.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
     if (failed(rc)) return error.OpenFailed;
     return @intCast(rc);
 }

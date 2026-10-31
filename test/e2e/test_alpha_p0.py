@@ -59,9 +59,35 @@ def test_run_uid_map_has_subuid_range(voila: Voila) -> None:
     assert len(lines) >= 2, res.out
 
 
+def test_unpublished_port_is_not_on_the_host(voila: Voila) -> None:
+    voila.run("import", BASE)
+    port = free_port()
+    cid = voila.run("run", "-d", BASE, "--", "nc", "-l", "-p", str(port)).out.strip()
+    try:
+        assert wait_until(lambda: any(c["status"] == "running" for c in containers(voila)))
+        assert wait_until(lambda: mounts_under(voila.root) != []), "container never mounted"
+        assert not _can_connect(port), f"container port {port} leaked onto the host"
+        assert any(c["status"] == "running" for c in containers(voila))
+    finally:
+        voila.run("stop", cid, check=False)
+        voila.run("rm", cid, check=False)
+
+
+def test_two_containers_can_listen_on_the_same_port(voila: Voila) -> None:
+    voila.run("import", BASE)
+    ids: list[str] = []
+    try:
+        for _ in range(2):
+            ids.append(voila.run("run", "-d", BASE, "--", "nc", "-l", "-p", "5432").out.strip())
+        assert wait_until(lambda: sum(1 for c in containers(voila) if c["status"] == "running") >= 2)
+        assert not _can_connect(5432)
+    finally:
+        for cid in ids:
+            voila.run("stop", cid, check=False)
+            voila.run("rm", cid, check=False)
+
+
 def test_publish_port_forwards(voila: Voila) -> None:
-    if shutil.which("socat") is None:
-        pytest.skip("socat not installed")
     voila.run("import", BASE)
     host = free_port()
     cid = voila.run(
@@ -71,11 +97,13 @@ def test_publish_port_forwards(voila: Voila) -> None:
         f"{host}:8080",
         BASE,
         "--",
-        "sleep",
-        "300",
+        "sh",
+        "-c",
+        "while true; do nc -l -p 8080; done",
     ).out.strip()
     try:
-        assert wait_until(lambda: _can_connect(host), timeout=5)
+        assert wait_until(lambda: any(c["status"] == "running" for c in containers(voila)))
+        assert wait_until(lambda: _can_connect(host), timeout=8)
     finally:
         voila.run("stop", cid, check=False)
         voila.run("rm", cid, check=False)

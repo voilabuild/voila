@@ -32,7 +32,7 @@ def test_registry_image(machine: Machine, tmp_path: Path) -> None:
 
     port = free_port()
     url = f"http://127.0.0.1:{port}"
-    host.run("run", "-d", "--name", "registry", "-e", f"PORT={port}", "e2e/registry:1")
+    host.run("run", "-d", "--name", "registry", "-p", f"{port}:{port}", "-e", f"PORT={port}", "e2e/registry:1")
     try:
         try:
             wait_http(f"{url}/registry/v1/registry/config")

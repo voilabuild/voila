@@ -122,6 +122,7 @@ check_runtime_prereqs() {
 	local missing=0
 	[ -e /dev/fuse ] || { warn "/dev/fuse not found"; missing=1; }
 	command -v fusermount3 >/dev/null 2>&1 || command -v fusermount >/dev/null 2>&1 || { warn "fuse3 not found"; missing=1; }
+	command -v pasta >/dev/null 2>&1 || warn "pasta (passt) not found; voila run has no outbound network"
 	return $missing
 }
 

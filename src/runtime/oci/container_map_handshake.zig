@@ -29,6 +29,7 @@ pub fn childEnter(up: std.posix.fd_t, down: std.posix.fd_t) bool {
     const host_uid = std.c.getuid();
     const host_gid = std.c.getgid();
     ns.unshare(ns.CLONE.NEWUSER) catch return false;
+    ns.unshare(ns.CLONE.NEWNET) catch return false;
     if (std.c.write(up, "u", 1) != 1) return false;
     var written: u8 = 0;
     if (std.c.read(down, @ptrCast(&written), 1) != 1) return false;

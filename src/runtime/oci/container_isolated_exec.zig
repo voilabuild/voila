@@ -8,6 +8,7 @@ const container_run_opts = @import("container_run_opts.zig");
 const run_flags = @import("../run_flags.zig");
 const container_pty = @import("container_pty.zig");
 const map_handshake = @import("container_map_handshake.zig");
+const container_ports = @import("container_ports.zig");
 
 const default_path = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const default_home = "HOME=/root";
@@ -26,6 +27,8 @@ pub const Spec = struct {
     /// Handshake pipes so the parent can run newuidmap after we unshare (#118).
     map_up_fd: std.posix.fd_t = -1,
     map_down_fd: std.posix.fd_t = -1,
+    /// Parent attaches pasta / `-p` to this process's netns. Off for `voila exec`.
+    start_net: bool = true,
 };
 
 pub fn run(spec: Spec) Error!u8 {
@@ -38,6 +41,10 @@ pub fn run(spec: Spec) Error!u8 {
         _ = std.c.close(spec.map_up_fd);
         _ = std.c.close(spec.map_down_fd);
     } else if (!container_bind.enterUserNamespaceOnly()) return error.UserNamespacesRequired;
+    if (spec.map_up_fd < 0 or spec.map_down_fd < 0) {
+        ns.unshare(ns.CLONE.NEWNET) catch return error.SetupFailed;
+    }
+    ns.bringUpLoopback() catch return error.SetupFailed;
     ns.unshare(ns.CLONE.NEWNS) catch return error.UserNamespacesRequired;
     // Refused when / is not a mount point; pivotInto then falls back to chroot.
     ns.mount(null, "/", null, ns.MS.REC | ns.MS.PRIVATE, null) catch {};
@@ -146,7 +153,7 @@ pub fn errorExitCode(err: Error) u8 {
     };
 }
 
-pub fn spawnAndWait(_: std.Io, allocator: std.mem.Allocator, spec: Spec, timeout_ms: u64) !u8 {
+pub fn spawnAndWait(io: std.Io, allocator: std.mem.Allocator, spec: Spec, timeout_ms: u64) !u8 {
     const console: ?[2]std.posix.fd_t = if (spec.use_tty) ns.socketPair() catch null else null;
     defer if (console) |c| ns.close(c[0]);
     const exe = posix_util.selfExePath(allocator) catch return error.ExecFailed;
@@ -237,6 +244,16 @@ pub fn spawnAndWait(_: std.Io, allocator: std.mem.Allocator, spec: Spec, timeout
     if (!applied.ids.isRange()) {
         std.debug.print("voila: warning: single-uid namespace (install uidmap and a subuid range to map image users)\n", .{});
     }
+    const net: []container_ports.Forwarder = if (spec.start_net)
+        container_ports.start(io, pid, spec.opts.ports) catch |e| {
+            _ = std.c.kill(pid, std.c.SIG.KILL);
+            var st: i32 = 0;
+            _ = std.c.waitpid(pid, &st, 0);
+            return e;
+        }
+    else
+        &.{};
+    defer container_ports.stopAll(net);
     var status: i32 = 0;
     const early = std.c.waitpid(pid, &status, std.c.W.NOHANG);
     if (early == pid) return ns.exitCode(@bitCast(status));
@@ -426,6 +443,7 @@ pub const Error = error{
     ExecFailed,
     ForkFailed,
     ExecTimeout,
+    ForwarderFailed,
 };
 
 test "errorExitCode separates setup and exec failures" {

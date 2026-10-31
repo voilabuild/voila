@@ -70,19 +70,22 @@ like any imported image, so `voila run` and `voila push` work on it unchanged.
 
 `voila run` always runs the command inside the image root, so absolute
 paths resolve inside the image, with or without `-w`, `-v`, `-it` or `-p`. The
-command runs as PID 2 under a small init in its own user, mount and PID
-namespaces, with a fresh `/proc`, a minimal `/dev` (`null`, `zero`, `full`,
-`random`, `urandom`, `tty`, `pts`, `shm`) and a read-only view of the host's
-`/sys`; the host filesystem is not reachable. The process environment is the
+command runs as PID 2 under a small init in its own user, mount, PID and
+network namespaces, with a fresh `/proc`, a minimal `/dev` (`null`, `zero`, `full`,
+`random`, `urandom`, `tty`, `pts`, `shm`) and a fresh `sysfs` (or a read-only
+bind of the host's `/sys` if that mount is refused); the host filesystem is not
+reachable. Listening sockets stay in the container: they are not on `0.0.0.0`
+on the host, and two containers can bind the same port. The process environment is the
 image `Env` plus `-e` (a default `PATH` and `HOME=/root` if the image sets
 neither); the host environment is not inherited. The image root is writable: writes
 go to `<root>/containers/<id>/rw` on disk and are deleted with the container
 (`--rm` or `voila rm`). A `-v` target missing from the image is created. With
 `-it` the terminal comes from the container's own `/dev/pts`, so `tty` works.
 Without `-it`, output goes to the container log (`voila logs`) and a foreground
-run prints it when the command exits. `-p host:ctr` publishes a port with
-`socat` (install it to use `-p`). Containers share the host network, so the
-host and container ports must differ; same-port publish is rejected. Signals
+run prints it when the command exits. `-p host:ctr` publishes a TCP port onto
+the host (`-p 8080:8080` is allowed). Outbound traffic uses `pasta` from the
+`passt` package when it is installed; without `pasta` the container has
+loopback only and `voila` prints a warning, but `-p` still works. Signals
 such as the `SIGTERM` from `voila stop` are forwarded to the command. Exit
 codes: the command's own, 128 + signal when it is killed, 125 when the sandbox
 cannot be set up, 126 when the command cannot be executed and 127 when it is
