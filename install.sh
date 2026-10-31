@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # install.sh — one-shot installer for the voila Zig CLI on Linux.
 #
 # Usage:
@@ -13,7 +13,7 @@
 #   --install-prereqs    Install missing fuse3 and uidmap via the distro package manager.
 #   --yes                Assume yes to prompts (non-interactive).
 
-set -euo pipefail
+set -eu
 
 REPO="voilabuild/voila"
 PREFIX=""
@@ -78,13 +78,18 @@ confirm() {
 	[ "$ASSUME_YES" -eq 1 ] && return 0
 	local prompt="$1 [y/N] " reply
 	if [ -t 0 ]; then
-		read -r -p "$prompt" reply
+		printf '%s' "$prompt"
+		read -r reply
 	else
-		if ! read -r -p "$prompt" reply < /dev/tty; then
+		printf '%s' "$prompt" > /dev/tty
+		if ! read -r reply < /dev/tty; then
 			die "no terminal for prompts; use --yes or --install-prereqs"
 		fi
 	fi
-	[[ "$reply" =~ ^[Yy]$ ]]
+	case "$reply" in
+		y|Y) return 0 ;;
+		*) return 1 ;;
+	esac
 }
 
 log "checking prerequisites"

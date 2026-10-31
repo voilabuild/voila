@@ -23,6 +23,7 @@ pub const oci = struct {
     pub const container_lifecycle = @import("oci/container_lifecycle.zig");
     pub const container_map_handshake = @import("oci/container_map_handshake.zig");
     pub const container_ports = @import("oci/container_ports.zig");
+    pub const container_reclaim = @import("oci/container_reclaim.zig");
     pub const container_pty = @import("oci/container_pty.zig");
     pub const container_root = @import("oci/container_root.zig");
     pub const container_run = @import("oci/container_run.zig");
@@ -51,6 +52,7 @@ test {
     _ = @import("oci/container_lifecycle.zig");
     _ = @import("oci/container_map_handshake.zig");
     _ = @import("oci/container_ports.zig");
+    _ = @import("oci/container_reclaim.zig");
     _ = @import("oci/container_pty.zig");
     _ = @import("oci/container_root.zig");
     _ = @import("oci/container_run.zig");
