@@ -253,7 +253,8 @@ pub fn chmodNoFollow(path: []const u8, perm: u32) Error!void {
     _ = try check(linux.fchmod(fd, perm));
 }
 
-/// `rm -rf`; a missing path is not an error.
+/// `rm -rf`; a missing path is not an error. Owned directories without `u+rwx`
+/// (overlayfs leaves `work/work` at 000) are opened up before being emptied.
 pub fn removeTree(allocator: std.mem.Allocator, path: []const u8) Error!void {
     const st = lstat(path) catch |e| switch (e) {
         error.FileNotFound => return,
@@ -264,6 +265,7 @@ pub fn removeTree(allocator: std.mem.Allocator, path: []const u8) Error!void {
         _ = try check(linux.unlinkat(linux.AT.FDCWD, try toZ(&zb, path), 0));
         return;
     }
+    if (st.perm & 0o700 != 0o700) try chmodNoFollow(path, st.perm | 0o700);
     const names = try listDir(allocator, path);
     defer freeNames(allocator, names);
     for (names) |n| {
@@ -337,6 +339,21 @@ test "fs round trip: write, stat, list, readlink, remove" {
     defer a.free(target);
     try std.testing.expectEqualStrings("b.txt", target);
     try std.testing.expect((try getXattr(a, f, "user.voila.absent")) == null);
+
+    try removeTree(a, dir);
+    try std.testing.expectError(error.FileNotFound, lstat(dir));
+}
+
+test "removeTree removes directories left at mode 000" {
+    const a = std.testing.allocator;
+    const dir = try makeTempDir(a, "voila-fs-test");
+    defer a.free(dir);
+    defer removeTree(a, dir) catch {};
+    const inner = try std.fmt.allocPrint(a, "{s}/work/work/x", .{dir});
+    defer a.free(inner);
+    try makePath(inner);
+    try chmodNoFollow(inner, 0);
+    try chmodNoFollow(inner[0 .. inner.len - 2], 0);
 
     try removeTree(a, dir);
     try std.testing.expectError(error.FileNotFound, lstat(dir));
