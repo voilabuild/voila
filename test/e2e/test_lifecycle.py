@@ -22,9 +22,19 @@ def wait_until(cond: Callable[[], bool], timeout: float = 20) -> bool:
 
 
 def containers(v: Voila) -> list[dict[str, str]]:
-    lines = v.run("ps").err.splitlines()[1:]
-    keys = ["id", "name", "image", "status", "pid"]
-    return [dict(zip(keys, line.split())) for line in lines if line.strip()]
+    rows: list[dict[str, str]] = []
+    for line in v.run("ps").err.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        pid = parts[-1]
+        if parts[-2].startswith("(") and len(parts) >= 6:
+            status = f"{parts[-3]} {parts[-2]}"
+            image, name, cid = parts[-4], parts[-5], parts[0]
+        else:
+            cid, name, image, status = parts[0], parts[1], parts[2], parts[3]
+        rows.append({"id": cid, "name": name, "image": image, "status": status, "pid": pid})
+    return rows
 
 
 def mounts_under(root: Path) -> list[str]:
@@ -103,8 +113,27 @@ def test_killed_worker_leaves_no_mount_or_process(voila: Voila) -> None:
     os.kill(worker, signal.SIGKILL)
     assert wait_until(lambda: mounts_under(voila.root) == []), mounts_under(voila.root)
     assert wait_until(lambda: processes_matching("sleep 3172") == [])
-    assert containers(voila)[0]["status"] == "exited"
+    assert containers(voila)[0]["status"].startswith("exited")
     voila.run("rm", "victim")
+
+
+def test_ps_shows_exit_code_for_missing_command(voila: Voila) -> None:
+    voila.run("import", BASE)
+    voila.run("run", "-d", "--name", "bad", BASE, "--", "nosuchcmd", check=False)
+    assert wait_until(
+        lambda: any(c["name"] == "bad" and "127" in c["status"] for c in containers(voila))
+    ), containers(voila)
+    voila.run("rm", "bad", check=False)
+
+
+def test_rm_removes_every_id(voila: Voila) -> None:
+    voila.run("import", BASE)
+    voila.run("run", "-d", "--name", "a", BASE, "--", "sleep", "30")
+    voila.run("run", "-d", "--name", "b", BASE, "--", "sleep", "30")
+    assert wait_until(lambda: {c["name"] for c in containers(voila)} >= {"a", "b"})
+    voila.run("rm", "a", "b")
+    names = {c["name"] for c in containers(voila)}
+    assert "a" not in names and "b" not in names
 
 
 def test_rm_handles_a_root_with_spaces(voila: Voila, tmp_path: Path) -> None:

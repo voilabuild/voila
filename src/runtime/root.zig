@@ -28,6 +28,7 @@ pub const oci = struct {
     pub const container_run = @import("oci/container_run.zig");
     pub const container_run_opts = @import("oci/container_run_opts.zig");
     pub const container_store = @import("oci/container_store.zig");
+    pub const container_user = @import("oci/container_user.zig");
     pub const container_userns = @import("oci/container_userns.zig");
     pub const userns_ids = @import("oci/userns_ids.zig");
     pub const voila_image_run_config = @import("oci/voila_image_run_config.zig");
@@ -55,6 +56,7 @@ test {
     _ = @import("oci/container_run.zig");
     _ = @import("oci/container_run_opts.zig");
     _ = @import("oci/container_store.zig");
+    _ = @import("oci/container_user.zig");
     _ = @import("oci/container_userns.zig");
     _ = @import("oci/userns_ids.zig");
     _ = @import("oci/voila_image_run_config.zig");

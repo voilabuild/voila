@@ -10,7 +10,8 @@ this repo ships the registry client (`login`, `import`, `pull`, `push`).
 
 ## Commands
 
-Every command accepts `-root <dir>` (default: `$VOILA_ROOT`).
+Every command accepts `--root <dir>` (also `-root`; default: `$VOILA_ROOT`).
+`voila <command> --help` prints that command's usage.
 
 | Command | What it does |
 |---|---|
@@ -18,14 +19,15 @@ Every command accepts `-root <dir>` (default: `$VOILA_ROOT`).
 | `voila logout` | Remove saved registry credentials |
 | `voila import <ref>` | Pull an image from an OCI registry (Docker Hub, ghcr.io, …) and store it as chunks. No Docker daemon needed |
 | `voila pull <ref>` | Fetch an image's manifest from the voila registry; chunks stream on first read |
-| `voila push <ref>` | Upload an image's missing chunks and its manifest to the voila registry |
+| `voila push <ref>` | Upload an image's missing chunks (up to 16 at a time) and its manifest to the voila registry |
 | `voila build -t <ref> [-f Dockerfile] [--build-arg K=V]... [--target stage] [--no-cache] [--push] <context>` | Build an image from a Dockerfile (see [Building images](#building-images)) |
 | `voila run [-d] [-it] [--name N] [--rm] [-e K=V] [-v host:ctr] [-p host:ctr] [-w dir] <ref> [--] [cmd...]` | Run a container (see [Running containers](#running-containers)) |
 | `voila exec <id> [--] <cmd...>` | Run an extra process in a running container |
-| `voila ps` | List containers |
-| `voila logs [-follow] <id>` | Print (and optionally follow) a container's output |
-| `voila stop <id>` / `voila kill <id>` / `voila rm <id>` | Stop, signal or remove a container |
-| `voila images` / `voila rmi <ref>` | List or remove local images |
+| `voila ps` | List containers (`exited (N)` includes the command's exit code) |
+| `voila logs [-f/--follow] <id>` | Print (and optionally follow) a container's output |
+| `voila stop <id> [id…]` / `voila kill [-s N] <id> [id…]` / `voila rm <id> [id…]` | Stop, signal or remove one or more containers |
+| `voila images` / `voila rmi <ref> [ref…]` | List or remove local images. `rmi` of a missing ref prints `voila rmi: no such image …` and exits 1 |
+| `voila --version` | Print `voila <version> (<commit>)` |
 
 ## Building images
 
@@ -57,7 +59,9 @@ like any imported image, so `voila run` and `voila push` work on it unchanged.
   `newgidmap` from `/usr/bin` (package `uidmap`). Then `su`, `apt-get`'s
   `_apt` sandbox and `chown` to other ids work, and layers keep those owners.
   Without the helpers or a subid entry, `RUN` falls back to a single-uid
-  namespace (root only): switching users and `chown` to other ids fail.
+  namespace: namespace root still cannot open files owned by unmapped uids
+  (`_apt`, `shadow`), so `apt-get` and `useradd` fail. `voila build` prints
+  a warning before the first `RUN` telling you to install `uidmap`.
 - `USER` applies to later `RUN` steps: `user[:group]` names are looked up in
   the image's `/etc/passwd` and `/etc/group`, numeric ids always work (gid
   defaults to the user's group, or 0), and `HOME` is set from `/etc/passwd`
@@ -76,13 +80,18 @@ network namespaces, with a fresh `/proc`, a minimal `/dev` (`null`, `zero`, `ful
 bind of the host's `/sys` if that mount is refused); the host filesystem is not
 reachable. Listening sockets stay in the container: they are not on `0.0.0.0`
 on the host, and two containers can bind the same port. The process environment is the
-image `Env` plus `-e` (a default `PATH` and `HOME=/root` if the image sets
-neither); the host environment is not inherited. The image root is writable: writes
+image `Env` plus `-e` (a default `PATH` and `HOME` from the image `USER`'s
+`/etc/passwd` entry, or `HOME=/root` if the image sets neither); the host
+environment is not inherited. The command runs as the image `USER` when that
+id is mapped in the user namespace; without a subuid range it stays root and
+`voila` prints a warning. The image root is writable: writes
 go to `<root>/containers/<id>/rw` on disk and are deleted with the container
 (`--rm` or `voila rm`). A `-v` target missing from the image is created. With
 `-it` the terminal comes from the container's own `/dev/pts`, so `tty` works.
 Without `-it`, output goes to the container log (`voila logs`) and a foreground
-run prints it when the command exits. `-p host:ctr` publishes a TCP port onto
+run prints it when the command exits. `voila run -d` prints the container id
+only after the sandbox is up, including `-p` forwards; a failure to start
+(or to publish ports) exits non-zero without an id. `-p host:ctr` publishes a TCP port onto
 the host (`-p 8080:8080` is allowed). Outbound traffic uses `pasta` from the
 `passt` package when it is installed; without `pasta` the container has
 loopback only and `voila` prints a warning, but `-p` still works. Signals
@@ -100,7 +109,7 @@ a warning.
 ## Environment variables
 
 - `VOILA_ROOT`: data root. Default: `/var/lib/voila` when it exists,
-  otherwise `~/.local/share/voila`. `-root` overrides it.
+  otherwise `~/.local/share/voila`. `--root` / `-root` overrides it.
 - `VOILA_REGISTRY`: voila registry base URL used by `pull`, `push`, `import`
   and lazy chunk fetches. For a registry served under a path prefix, give the
   full base (e.g. `https://host/registry`); the client appends `/v1/...`.
@@ -117,4 +126,6 @@ a warning.
 Registry errors are reported per HTTP status. A `404` on pull prints `image
 "<ref>" not found on <registry>`: private images return 404 to non-owners, so
 404 cannot tell "missing" from "no access". A `401`/`403` prints `not
-authorized ... (check VOILA_REGISTRY_TOKEN or run voila login)`.
+authorized ... (check VOILA_REGISTRY_TOKEN or run voila login)`. Other CLI
+errors print a short message instead of a Zig error name; unknown errors ask
+you to report them with `voila --version`.

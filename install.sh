@@ -10,7 +10,7 @@
 #   --prefix <dir>       Install directory (default: /usr/local/bin if writable, else ~/.local/bin).
 #   --registry <url>     Default registry base (optional; login via `voila login` is preferred).
 #   --token <key>        Registry API key (optional; prefer `voila login`).
-#   --install-prereqs    Install missing fuse3 via the distro package manager.
+#   --install-prereqs    Install missing fuse3 and uidmap via the distro package manager.
 #   --yes                Assume yes to prompts (non-interactive).
 
 set -euo pipefail
@@ -32,9 +32,9 @@ install.sh — install the voila Zig CLI (static musl binary) on Linux.
 Flags:
   --version <tag>      Pin to a release tag (default: latest).
   --prefix <dir>       Install directory (default: /usr/local/bin or ~/.local/bin).
-  --registry <url>     Remote registry base URL (default: hosted drift registry).
+  --registry <url>     Remote registry base URL (default: registry.voila.build).
   --token <key>        Registry API key (dreg_...); prefer `voila login` after install.
-  --install-prereqs    Install missing fuse3 via apt-get/dnf/yum/zypper.
+  --install-prereqs    Install missing fuse3 and uidmap via apt-get/dnf/yum/zypper.
   --yes                Non-interactive (accept prompts).
   -h, --help           Show this help.
 EOF
@@ -123,6 +123,10 @@ check_runtime_prereqs() {
 	[ -e /dev/fuse ] || { warn "/dev/fuse not found"; missing=1; }
 	command -v fusermount3 >/dev/null 2>&1 || command -v fusermount >/dev/null 2>&1 || { warn "fuse3 not found"; missing=1; }
 	command -v pasta >/dev/null 2>&1 || warn "pasta (passt) not found; voila run has no outbound network"
+	command -v newuidmap >/dev/null 2>&1 && command -v newgidmap >/dev/null 2>&1 || {
+		warn "uidmap (newuidmap/newgidmap) not found; RUN apt-get/useradd will fail"
+		missing=1
+	}
 	return $missing
 }
 
@@ -137,7 +141,7 @@ detect_pkgmgr() {
 pkg_install() {
 	local mgr
 	mgr="$(detect_pkgmgr)"
-	[ -n "$mgr" ] || die "no supported package manager; install fuse3 manually"
+	[ -n "$mgr" ] || die "no supported package manager; install fuse3 and uidmap manually"
 	log "installing via $mgr: $*"
 	case "$mgr" in
 		apt-get)
@@ -151,11 +155,11 @@ pkg_install() {
 
 if ! check_runtime_prereqs; then
 	if [ "$INSTALL_PREREQS" -eq 1 ] || [ "$ASSUME_YES" -eq 1 ]; then
-		pkg_install fuse3 || warn "continuing without fuse3 (install failed or no sudo)"
-	elif confirm "install missing prerequisite (fuse3)?"; then
-		pkg_install fuse3 || warn "continuing without fuse3"
+		pkg_install fuse3 uidmap || warn "continuing without fuse3/uidmap (install failed or no sudo)"
+	elif confirm "install missing prerequisites (fuse3, uidmap)?"; then
+		pkg_install fuse3 uidmap || warn "continuing without fuse3/uidmap"
 	else
-		warn "continuing without fuse3"
+		warn "continuing without fuse3/uidmap"
 	fi
 fi
 
@@ -241,9 +245,6 @@ fi
 log "installing voila into $PREFIX"
 $SUDO mkdir -p "$PREFIX"
 $SUDO install -m 0755 "$WORK/voila" "$PREFIX/voila"
-if [ "$PREFIX/voila" != "$PREFIX/zig-fuse" ]; then
-	$SUDO ln -sf voila "$PREFIX/zig-fuse"
-fi
 
 case "$PREFIX" in
 	/usr/local/bin|/usr/bin) VOILA_ROOT="/var/lib/voila" ;;
@@ -257,7 +258,7 @@ cat >"$USER_ENV" <<EOF
 export VOILA_ROOT="\${VOILA_ROOT:-$VOILA_ROOT}"
 EOF
 if [ -n "$REGISTRY_URL" ]; then
-	echo "export VOILA_REGISTRY=\"\${VOILA_REGISTRY:-$REGISTRY_URL}\"" >>"$USER_ENV"
+	echo "export VOILA_REGISTRY=\"$REGISTRY_URL\"" >>"$USER_ENV"
 fi
 if [ -n "$TOKEN" ]; then
 	echo "export VOILA_REGISTRY_TOKEN=\"\${VOILA_REGISTRY_TOKEN:-$TOKEN}\"" >>"$USER_ENV"
@@ -322,9 +323,9 @@ cat <<EOF
 
 Next steps:
   1. source $USER_ENV   # or add it to your shell rc
-  2. voila login        # save drift URL, org, and API key (~/.config/voila/credentials)
-  3. voila pull nginx     # imports from Docker Hub on first pull when needed
-  4. voila run --rm alpine echo hi
+  2. voila login        # save registry URL, org, and API key (~/.config/voila/credentials)
+  3. voila import alpine:3.20
+  4. voila run --rm alpine:3.20 -- echo hi
 
 Docs: https://github.com/${REPO}/blob/main/doc/INSTALL.md
 EOF

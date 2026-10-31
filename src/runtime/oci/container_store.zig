@@ -8,6 +8,8 @@ pub const State = struct {
     image: []const u8,
     status: []const u8,
     pid: i32,
+    exit_code: u8 = 0,
+    exit_set: bool = false,
     mount_dir: []const u8,
     log_path: []const u8,
     rm_on_exit: bool,
@@ -59,10 +61,10 @@ pub fn writeState(allocator: std.mem.Allocator, voila_root: []const u8, st: Stat
     const path = try statePath(allocator, voila_root, st.id);
     defer allocator.free(path);
     const json = try std.fmt.allocPrint(allocator,
-        \\{{"id":"{s}","name":"{s}","image":"{s}","status":"{s}","pid":{d},"mount_dir":"{s}","log_path":"{s}","rm_on_exit":{s}}}
+        \\{{"id":"{s}","name":"{s}","image":"{s}","status":"{s}","pid":{d},"exit_code":{d},"exit_set":{s},"mount_dir":"{s}","log_path":"{s}","rm_on_exit":{s}}}
     , .{
-        st.id,                                  st.name, st.image, st.status, st.pid, st.mount_dir, st.log_path,
-        if (st.rm_on_exit) "true" else "false",
+        st.id,                                st.name,      st.image,    st.status,                              st.pid, st.exit_code,
+        if (st.exit_set) "true" else "false", st.mount_dir, st.log_path, if (st.rm_on_exit) "true" else "false",
     });
     defer allocator.free(json);
     try writeFile(path, json);
@@ -88,6 +90,17 @@ pub fn readState(allocator: std.mem.Allocator, voila_root: []const u8, id: []con
         .image = try dupField(allocator, o, "image"),
         .status = try dupField(allocator, o, "status"),
         .pid = pid,
+        .exit_code = blk: {
+            const v = o.get("exit_code") orelse break :blk 0;
+            break :blk switch (v) {
+                .integer => |n| std.math.cast(u8, n) orelse 0,
+                else => 0,
+            };
+        },
+        .exit_set = blk: {
+            const v = o.get("exit_set");
+            break :blk v != null and v.? == .bool and v.?.bool;
+        },
         .mount_dir = try dupField(allocator, o, "mount_dir"),
         .log_path = try dupField(allocator, o, "log_path"),
         .rm_on_exit = blk: {

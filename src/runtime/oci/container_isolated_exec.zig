@@ -9,6 +9,7 @@ const run_flags = @import("../run_flags.zig");
 const container_pty = @import("container_pty.zig");
 const map_handshake = @import("container_map_handshake.zig");
 const container_ports = @import("container_ports.zig");
+const container_user = @import("container_user.zig");
 
 const default_path = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const default_home = "HOME=/root";
@@ -29,6 +30,8 @@ pub const Spec = struct {
     map_down_fd: std.posix.fd_t = -1,
     /// Parent attaches pasta / `-p` to this process's netns. Off for `voila exec`.
     start_net: bool = true,
+    /// Detached `voila run -d` waits on this fd until the sandbox (and `-p`) is up.
+    ready_fd: std.posix.fd_t = -1,
 };
 
 pub fn run(spec: Spec) Error!u8 {
@@ -66,6 +69,13 @@ pub fn run(spec: Spec) Error!u8 {
         _ = std.c.close(log_fd);
     }
     return execCommand(spec);
+}
+
+fn signalReady(fd: std.posix.fd_t) void {
+    if (fd < 0) return;
+    const b: u8 = 'R';
+    _ = std.c.write(fd, @ptrCast(&b), 1);
+    _ = std.c.close(fd);
 }
 
 /// In PID 1: mount the root (overlay on `rw_dir`, else a read-only bind), apply `-v`,
@@ -114,13 +124,15 @@ fn execCommand(spec: Spec) Error {
     defer std.heap.page_allocator.free(cargv);
     for (argv_z.items, 0..) |a, i| cargv[i] = a;
     cargv[argv_z.items.len] = null;
-    const envp = envpFromOpts(spec.opts.env) catch return error.SetupFailed;
+    const cred = container_user.resolve(spec.opts.user);
+    const envp = envpFromOpts(spec.opts.env, if (cred) |c| c.home else null) catch return error.SetupFailed;
+    container_user.apply(cred);
     _ = std.c.execve(a0.ptr, @ptrCast(cargv.ptr), @ptrCast(envp.ptr));
     return if (std.c.errno(-1) == .NOENT) error.CommandNotFound else error.ExecFailed;
 }
 
 /// Image Env + `-e` only. Never the host environ (#114).
-fn envLines(allocator: std.mem.Allocator, env: []const run_flags.EnvPair) ![][]const u8 {
+fn envLines(allocator: std.mem.Allocator, env: []const run_flags.EnvPair, home: ?[]const u8) ![][]const u8 {
     var has_path = false;
     var has_home = false;
     var out: std.ArrayList([]const u8) = .empty;
@@ -130,12 +142,18 @@ fn envLines(allocator: std.mem.Allocator, env: []const run_flags.EnvPair) ![][]c
         try out.append(allocator, try std.fmt.allocPrint(allocator, "{s}={s}", .{ e.key, e.value }));
     }
     if (!has_path) try out.append(allocator, try allocator.dupe(u8, default_path));
-    if (!has_home) try out.append(allocator, try allocator.dupe(u8, default_home));
+    if (!has_home) {
+        if (home) |h| {
+            try out.append(allocator, try std.fmt.allocPrint(allocator, "HOME={s}", .{h}));
+        } else {
+            try out.append(allocator, try allocator.dupe(u8, default_home));
+        }
+    }
     return out.toOwnedSlice(allocator);
 }
 
-fn envpFromOpts(env: []const run_flags.EnvPair) ![:null]?[*:0]const u8 {
-    const lines = try envLines(std.heap.page_allocator, env);
+fn envpFromOpts(env: []const run_flags.EnvPair, home: ?[]const u8) ![:null]?[*:0]const u8 {
+    const lines = try envLines(std.heap.page_allocator, env, home);
     var out = try std.heap.page_allocator.allocSentinel(?[*:0]const u8, lines.len, null);
     for (lines, 0..) |line, i| {
         const z = try allocZ(line);
@@ -189,6 +207,10 @@ pub fn spawnAndWait(io: std.Io, allocator: std.mem.Allocator, spec: Spec, timeou
     if (spec.rw_dir.len > 0) {
         try argv.append(allocator, "--rw-dir");
         try argv.append(allocator, spec.rw_dir);
+    }
+    if (spec.opts.user.len > 0) {
+        try argv.append(allocator, "--user");
+        try argv.append(allocator, spec.opts.user);
     }
     if (console) |c| {
         try argv.append(allocator, "--console-fd");
@@ -254,6 +276,7 @@ pub fn spawnAndWait(io: std.Io, allocator: std.mem.Allocator, spec: Spec, timeou
     else
         &.{};
     defer container_ports.stopAll(net);
+    signalReady(spec.ready_fd);
     var status: i32 = 0;
     const early = std.c.waitpid(pid, &status, std.c.W.NOHANG);
     if (early == pid) return ns.exitCode(@bitCast(status));
@@ -305,6 +328,7 @@ pub fn parseCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
     var map_up_fd: std.posix.fd_t = -1;
     var map_down_fd: std.posix.fd_t = -1;
     var rw_dir: []const u8 = "";
+    var user: []const u8 = "";
     var after_sep = false;
     while (args.next()) |arg| {
         if (after_sep) {
@@ -359,6 +383,10 @@ pub fn parseCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
             rw_dir = try allocator.dupe(u8, args.next() orelse return error.BadArgs);
             continue;
         }
+        if (std.mem.eql(u8, arg, "--user")) {
+            user = try allocator.dupe(u8, args.next() orelse return error.BadArgs);
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--map-up-fd")) {
             map_up_fd = parseFd(args.next() orelse return error.BadArgs) catch return error.BadArgs;
             continue;
@@ -383,6 +411,7 @@ pub fn parseCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
         .opts = .{
             .env = try env_list.toOwnedSlice(allocator),
             .workdir = wd,
+            .user = user,
             .volumes = try vol_list.toOwnedSlice(allocator),
             .ports = &.{},
             .tty = false,
@@ -455,7 +484,7 @@ test "errorExitCode separates setup and exec failures" {
 
 test "envLines is image Env plus -e, with PATH and HOME defaults" {
     const a = std.testing.allocator;
-    const lines = try envLines(a, &.{.{ .key = "FOO", .value = "bar" }});
+    const lines = try envLines(a, &.{.{ .key = "FOO", .value = "bar" }}, null);
     defer {
         for (lines) |l| a.free(l);
         a.free(lines);
@@ -466,13 +495,24 @@ test "envLines is image Env plus -e, with PATH and HOME defaults" {
     try std.testing.expectEqualStrings(default_home, lines[2]);
 }
 
+test "envLines uses passwd home when USER is set and Env has none" {
+    const a = std.testing.allocator;
+    const lines = try envLines(a, &.{.{ .key = "FOO", .value = "bar" }}, "/home/app");
+    defer {
+        for (lines) |l| a.free(l);
+        a.free(lines);
+    }
+    try std.testing.expectEqual(@as(usize, 3), lines.len);
+    try std.testing.expectEqualStrings("HOME=/home/app", lines[2]);
+}
+
 test "envLines keeps image PATH and HOME" {
     const a = std.testing.allocator;
     const lines = try envLines(a, &.{
         .{ .key = "PATH", .value = "/bin" },
         .{ .key = "HOME", .value = "/home/app" },
         .{ .key = "PGDATA", .value = "/var/lib/postgresql/data" },
-    });
+    }, null);
     defer {
         for (lines) |l| a.free(l);
         a.free(lines);

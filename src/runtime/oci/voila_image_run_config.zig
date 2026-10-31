@@ -17,6 +17,7 @@ const OciConfig = struct {
     entrypoint: []const []const u8,
     cmd: []const []const u8,
     workdir: []const u8,
+    user: []const u8,
 };
 
 fn configChunkFromManifestJson(allocator: std.mem.Allocator, voila_root: []const u8, store_ref: []const u8) ![]u8 {
@@ -90,6 +91,7 @@ fn parseOciConfig(allocator: std.mem.Allocator, json: []const u8) !OciConfig {
         .entrypoint = try dupStrArray(allocator, obj.get("Entrypoint")),
         .cmd = try dupStrArray(allocator, obj.get("Cmd")),
         .workdir = try dupOptStr(allocator, obj.get("WorkingDir")),
+        .user = try dupOptStr(allocator, obj.get("User")),
     };
 }
 
@@ -120,6 +122,7 @@ fn freeOci(allocator: std.mem.Allocator, c: OciConfig) void {
     for (c.cmd) |s| allocator.free(s);
     allocator.free(c.cmd);
     allocator.free(c.workdir);
+    allocator.free(c.user);
 }
 
 fn mergeArgv(allocator: std.mem.Allocator, c: OciConfig, override: []const []const u8) ![]const []const u8 {
@@ -176,6 +179,15 @@ pub fn imageWorkdir(io: std.Io, allocator: std.mem.Allocator, voila_root: []cons
     return allocator.dupe(u8, oci.workdir);
 }
 
+/// `User` from the image config (empty when unset).
+pub fn imageUser(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) ![]const u8 {
+    const raw = loadConfigJson(io, allocator, voila_root, image_ref) catch return allocator.dupe(u8, "");
+    defer allocator.free(raw);
+    const oci = parseOciConfig(allocator, raw) catch return allocator.dupe(u8, "");
+    defer freeOci(allocator, oci);
+    return allocator.dupe(u8, oci.user);
+}
+
 /// `Env` of the image config as key/value pairs (empty when the image has none).
 pub fn imageEnv(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) ![]run_flags.EnvPair {
     const raw = loadConfigJson(io, allocator, voila_root, image_ref) catch return allocator.alloc(run_flags.EnvPair, 0);
@@ -230,3 +242,13 @@ pub const Error = error{
     NoImageConfig,
     NoDefaultCommand,
 };
+
+test "parseOciConfig reads User" {
+    const json =
+        \\{"config":{"User":"app","Cmd":["id"]}}
+    ;
+    const oci = try parseOciConfig(std.testing.allocator, json);
+    defer freeOci(std.testing.allocator, oci);
+    try std.testing.expectEqualStrings("app", oci.user);
+    try std.testing.expectEqual(@as(usize, 1), oci.cmd.len);
+}

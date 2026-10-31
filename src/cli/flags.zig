@@ -32,18 +32,29 @@ pub fn tryRuntimeFlag(
     root: *?[]const u8,
     kind: *voila_runtime.Kind,
 ) !bool {
-    if (std.mem.eql(u8, arg, "-root")) {
+    if (std.mem.eql(u8, arg, "-root") or std.mem.eql(u8, arg, "--root")) {
         const r = args.next() orelse return error.NeedVoilaRoot;
         if (root.*) |owned| allocator.free(owned);
         root.* = try allocator.dupe(u8, r);
         return true;
     }
-    if (std.mem.eql(u8, arg, "-backend")) {
+    if (std.mem.eql(u8, arg, "-backend") or std.mem.eql(u8, arg, "--backend")) {
         const b = args.next() orelse return error.BadRunArgs;
         kind.* = parseBackendArg(b) orelse return error.BadRunArgs;
         return true;
     }
     return false;
+}
+
+test "tryRuntimeFlag accepts --root" {
+    const alloc = std.testing.allocator;
+    const argv: []const [*:0]const u8 = &.{"/voila-test-root"};
+    var it = std.process.Args.Iterator.init(.{ .vector = argv });
+    var root: ?[]const u8 = null;
+    var kind = voila_runtime.kindFromEnv();
+    try std.testing.expect(try tryRuntimeFlag(alloc, "--root", &it, &root, &kind));
+    defer if (root) |r| alloc.free(r);
+    try std.testing.expectEqualStrings("/voila-test-root", root.?);
 }
 
 pub fn finishRuntimeConfig(

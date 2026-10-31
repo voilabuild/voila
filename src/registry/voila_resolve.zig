@@ -23,6 +23,7 @@ pub const ImageRecord = struct {
 
 pub fn refKey(allocator: std.mem.Allocator, ref: []const u8) ![]const u8 {
     var sanitized: std.ArrayList(u8) = .empty;
+    defer sanitized.deinit(allocator);
     for (ref) |c| {
         const ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or
             c == '.' or c == '_' or c == '-';
@@ -177,6 +178,16 @@ fn listImages(allocator: std.mem.Allocator, db: *sqlite.sqlite3) ![]ImageRecord 
 }
 
 pub fn removeImage(allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) !void {
+    const rec = resolveImage(allocator, voila_root, image_ref) catch |e| switch (e) {
+        error.NoImageMatch, error.SqliteOpen, error.SqlitePrepare => return error.NoImageMatch,
+        else => return e,
+    };
+    defer {
+        allocator.free(rec.ref);
+        allocator.free(rec.image_digest);
+        allocator.free(rec.merged_root_manifest);
+    }
+
     const db_path = try std.fmt.allocPrint(allocator, "{s}/images.db", .{voila_root});
     defer allocator.free(db_path);
     const db_path_z = try allocator.allocSentinel(u8, db_path.len, 0);
@@ -190,12 +201,13 @@ pub fn removeImage(allocator: std.mem.Allocator, voila_root: []const u8, image_r
     var stmt: ?*sqlite.sqlite3_stmt = null;
     if (sqlite.sqlite3_prepare_v2(db_ptr, sql, -1, &stmt, null) != sqlite.SQLITE_OK) return Error.SqlitePrepare;
     defer _ = sqlite.sqlite3_finalize(stmt);
-    const ref_z = try allocator.allocSentinel(u8, image_ref.len, 0);
+    const ref_z = try allocator.allocSentinel(u8, rec.ref.len, 0);
     defer allocator.free(ref_z);
-    @memcpy(ref_z, image_ref);
+    @memcpy(ref_z, rec.ref);
     _ = sqlite.sqlite3_bind_text(stmt, 1, ref_z, -1, sqlite.SQLITE_STATIC);
     if (sqlite.sqlite3_step(stmt) != sqlite.SQLITE_DONE) return Error.SqliteStep;
-    try deleteImageSidecars(allocator, voila_root, image_ref);
+    if (sqlite.sqlite3_changes(db_ptr) == 0) return Error.NoImageMatch;
+    try deleteImageSidecars(allocator, voila_root, rec.ref);
 }
 
 fn deleteImageSidecars(allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) !void {
@@ -221,4 +233,81 @@ fn unlinkQuiet(path: []const u8) void {
     defer std.heap.page_allocator.free(path_z);
     @memcpy(path_z, path);
     _ = std.c.unlink(path_z);
+}
+
+const testing = std.testing;
+const fs = @import("sys").fs;
+
+fn testOpenImagesDb(root: []const u8) !*sqlite.sqlite3 {
+    const db_path_z = try std.fmt.allocPrintSentinel(testing.allocator, "{s}/images.db", .{root}, 0);
+    defer testing.allocator.free(db_path_z);
+    var db: ?*sqlite.sqlite3 = null;
+    try testing.expect(sqlite.sqlite3_open(db_path_z, &db) == sqlite.SQLITE_OK);
+    const db_ptr = db orelse return error.SqliteOpen;
+    _ = sqlite.sqlite3_exec(db_ptr,
+        \\CREATE TABLE IF NOT EXISTS images (
+        \\  ref TEXT PRIMARY KEY,
+        \\  image_digest BLOB NOT NULL,
+        \\  merged_root_manifest_chunk BLOB NOT NULL,
+        \\  total_size INTEGER NOT NULL,
+        \\  chunk_count INTEGER NOT NULL,
+        \\  ingested_ns INTEGER NOT NULL,
+        \\  last_used_ns INTEGER NOT NULL
+        \\);
+    , null, null, null);
+    return db_ptr;
+}
+
+fn testInsertImage(db: *sqlite.sqlite3, ref: []const u8) !void {
+    const sql = "INSERT INTO images (ref, image_digest, merged_root_manifest_chunk, total_size, chunk_count, ingested_ns, last_used_ns) VALUES (?1, ?2, ?3, 0, 0, 0, 0)";
+    var stmt: ?*sqlite.sqlite3_stmt = null;
+    try testing.expect(sqlite.sqlite3_prepare_v2(db, sql, -1, &stmt, null) == sqlite.SQLITE_OK);
+    defer _ = sqlite.sqlite3_finalize(stmt);
+    const ref_z = try testing.allocator.allocSentinel(u8, ref.len, 0);
+    defer testing.allocator.free(ref_z);
+    @memcpy(ref_z, ref);
+    const digest = "digest-bytes-32-padding-ok!!!!";
+    const man = "merged-root-manifest-chunk!!!!";
+    _ = sqlite.sqlite3_bind_text(stmt, 1, ref_z, -1, sqlite.SQLITE_STATIC);
+    _ = sqlite.sqlite3_bind_blob(stmt, 2, digest.ptr, @intCast(digest.len), sqlite.SQLITE_STATIC);
+    _ = sqlite.sqlite3_bind_blob(stmt, 3, man.ptr, @intCast(man.len), sqlite.SQLITE_STATIC);
+    try testing.expect(sqlite.sqlite3_step(stmt) == sqlite.SQLITE_DONE);
+}
+
+test "removeImage of a missing store is NoImageMatch" {
+    try testing.expectError(error.NoImageMatch, removeImage(testing.allocator, "/no-such-voila-root", "nope:1"));
+}
+
+test "removeImage of an empty store dir is NoImageMatch" {
+    const root = try fs.makeTempDir(testing.allocator, "voila-rmi-empty");
+    defer {
+        fs.removeTree(testing.allocator, root) catch {}; // leftover temp dir is fine
+        testing.allocator.free(root);
+    }
+    try testing.expectError(error.NoImageMatch, removeImage(testing.allocator, root, "nope:1"));
+}
+
+test "removeImage fails when the ref is not in the store" {
+    const root = try fs.makeTempDir(testing.allocator, "voila-rmi-test");
+    defer {
+        fs.removeTree(testing.allocator, root) catch {}; // leftover temp dir is fine
+        testing.allocator.free(root);
+    }
+    const db = try testOpenImagesDb(root);
+    defer _ = sqlite.sqlite3_close(db);
+    try testing.expectError(error.NoImageMatch, removeImage(testing.allocator, root, "nope:1"));
+}
+
+test "removeImage deletes a stored ref and a second remove fails" {
+    const root = try fs.makeTempDir(testing.allocator, "voila-rmi-test");
+    defer {
+        fs.removeTree(testing.allocator, root) catch {}; // leftover temp dir is fine
+        testing.allocator.free(root);
+    }
+    const db = try testOpenImagesDb(root);
+    try testInsertImage(db, "hello:1");
+    _ = sqlite.sqlite3_close(db);
+
+    try removeImage(testing.allocator, root, "hello:1");
+    try testing.expectError(error.NoImageMatch, removeImage(testing.allocator, root, "hello:1"));
 }

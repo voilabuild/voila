@@ -34,5 +34,10 @@ pub fn executePull(ctx: command.Ctx) !void {
     defer gpa.free(parsed.image);
     var worker = try command.openRuntime(gpa, parsed.runtime_cfg);
     defer worker.deinit(gpa);
-    try worker.pull(ctx.io, gpa, .{ .image = parsed.image });
+    worker.pull(ctx.io, gpa, .{ .image = parsed.image }) catch |e| {
+        command.exitIfNotImplemented(e);
+        // local already printed a Hub-import hint for a missing registry image
+        if (e == error.HttpStatus or e == error.FetchFailed) std.process.exit(1);
+        return e;
+    };
 }

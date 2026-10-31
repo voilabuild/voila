@@ -219,6 +219,11 @@ pub fn build(b: *std.Build) void {
     const test_options = b.addOptions();
     test_options.addOption(bool, "privileged", privileged);
 
+    const version = b.option([]const u8, "version", "CLI version string") orelse "0.1.0-dev";
+    const version_info = b.addOptions();
+    version_info.addOption([]const u8, "version", version);
+    version_info.addOption([]const u8, "commit", gitCommit(b));
+
     const zio = b.dependency("zio", .{
         .target = target,
         .optimize = optimize,
@@ -270,6 +275,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "blake3_c", .module = blake3_mod },
         .{ .name = "sqlite_c", .module = sqlite_mod },
         .{ .name = "build_options", .module = test_options.createModule() },
+        .{ .name = "voila_version", .module = version_info.createModule() },
     };
 
     // One module per layer. Each may import only the layers listed before it
@@ -283,7 +289,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "registry", .deps = &.{ "core", "codec", "sys", "store" }, .ext = &.{"sqlite_c"} },
         .{ .name = "mount", .deps = &.{ "core", "codec", "sys", "store", "registry" }, .ext = &.{ "fuse3", "zio" } },
         .{ .name = "runtime", .deps = &.{ "core", "codec", "sys", "store", "registry", "mount" }, .ext = &.{} },
-        .{ .name = "cli", .deps = &.{ "core", "sys", "registry", "mount", "runtime" }, .ext = &.{} },
+        .{ .name = "cli", .deps = &.{ "core", "sys", "registry", "mount", "runtime" }, .ext = &.{"voila_version"} },
         .{ .name = "app", .deps = &.{ "core", "codec", "sys", "store", "registry", "mount", "runtime", "cli" }, .ext = &.{"zio"} },
     };
     var layers: [layer_specs.len]*std.Build.Module = undefined;
@@ -332,4 +338,16 @@ pub fn build(b: *std.Build) void {
         const unit_tests = b.addTest(.{ .root_module = layer });
         test_step.dependOn(&b.addRunArtifact(unit_tests).step);
     }
+}
+
+fn gitCommit(b: *std.Build) []const u8 {
+    var code: u8 = 0;
+    const out = b.runAllowFail(
+        &.{ "git", "rev-parse", "--short=9", "HEAD" },
+        &code,
+        .ignore,
+    ) catch return "unknown";
+    const t = std.mem.trim(u8, out, " \t\r\n");
+    if (t.len == 0) return "unknown";
+    return t;
 }

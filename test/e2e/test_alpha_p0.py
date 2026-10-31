@@ -109,6 +109,46 @@ def test_publish_port_forwards(voila: Voila) -> None:
         voila.run("rm", cid, check=False)
 
 
+def test_detached_publish_fails_if_host_port_busy(voila: Voila) -> None:
+    voila.run("import", BASE)
+    sock = socket.socket()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+    host = sock.getsockname()[1]
+    try:
+        res = voila.run(
+            "run", "-d", "-p", f"{host}:8080", BASE, "--", "sleep", "60", check=False
+        )
+        assert res.rc != 0, res.out + res.err
+        assert res.out.strip() == ""
+        assert "could not" in res.err
+        assert not any(c["status"] == "running" for c in containers(voila))
+    finally:
+        sock.close()
+        for c in containers(voila):
+            voila.run("stop", c["id"], check=False)
+            voila.run("rm", c["id"], check=False)
+
+
+def test_run_image_user(voila: Voila, tmp_path: Path) -> None:
+    if shutil.which("newuidmap") is None:
+        pytest.skip("newuidmap not installed")
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    subuid = Path("/etc/subuid")
+    if not subuid.exists() or (
+        user and user not in subuid.read_text() and str(os.getuid()) not in subuid.read_text()
+    ):
+        pytest.skip("no subuid range for this user")
+    ctx = tmp_path / "usertest"
+    ctx.mkdir()
+    (ctx / "Dockerfile").write_text(f'FROM {BASE}\nUSER nobody\nCMD ["id"]\n')
+    voila.run("import", BASE)
+    voila.run("build", "-t", "usertest:1", str(ctx))
+    res = voila.run("run", "--rm", "usertest:1")
+    assert "uid=65534(nobody)" in res.out, res.out
+
+
 def test_build_copy_chown_dot_keeps_workdir(voila: Voila, tmp_path: Path) -> None:
     ctx = tmp_path / "copybug"
     ctx.mkdir()

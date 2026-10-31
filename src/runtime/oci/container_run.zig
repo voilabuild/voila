@@ -25,10 +25,37 @@ const ServeCtx = struct {
     err: ?anyerror,
 };
 
-fn markExited(allocator: std.mem.Allocator, st: *container_store.State) void {
+fn markExited(allocator: std.mem.Allocator, st: *container_store.State, code: u8) void {
     allocator.free(st.status);
     st.status = allocator.dupe(u8, "exited") catch "exited";
     st.pid = 0;
+    st.exit_code = code;
+    st.exit_set = true;
+}
+
+fn failCode(e: anyerror) u8 {
+    return switch (e) {
+        error.ExecNotFound => 127,
+        error.NeedFuse, error.UserNamespacesRequired, error.FuseServerFailed, error.MountNotReady, error.OverlayFailed => 125,
+        else => 1,
+    };
+}
+
+fn failMessage(e: anyerror) []const u8 {
+    return switch (e) {
+        error.ExecNotFound => "command not found in image",
+        error.SqlitePrepare, error.NoImageMatch => "image not found locally; run `voila import <ref>`",
+        error.NeedFuse => "needs /dev/fuse",
+        error.UserNamespacesRequired => "needs unprivileged user namespaces",
+        else => @errorName(e),
+    };
+}
+
+fn signalReady(fd: std.posix.fd_t) void {
+    if (fd < 0) return;
+    const b: u8 = 'R';
+    _ = std.c.write(fd, @ptrCast(&b), 1);
+    _ = std.c.close(fd);
 }
 
 fn setStatus(allocator: std.mem.Allocator, st: *container_store.State, status: []const u8) void {
@@ -69,6 +96,7 @@ pub fn runOptsFromSpec(allocator: std.mem.Allocator, spec: types.RunSpec) !conta
     return .{
         .env = try env.toOwnedSlice(allocator),
         .workdir = try allocator.dupe(u8, spec.workdir),
+        .user = try allocator.dupe(u8, spec.user),
         .volumes = try volumes.toOwnedSlice(allocator),
         .ports = ports,
         .tty = spec.tty,
@@ -77,7 +105,7 @@ pub fn runOptsFromSpec(allocator: std.mem.Allocator, spec: types.RunSpec) !conta
 }
 
 /// `remove_on_exit`: a detached `--rm` run; a foreground run removes the container itself.
-pub fn runWorker(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, container_id: []const u8, remove_on_exit: bool) !u8 {
+pub fn runWorker(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, container_id: []const u8, remove_on_exit: bool, ready_fd: std.posix.fd_t) !u8 {
     _ = std.c.setpgid(0, 0);
     // `voila stop` and a foreground `voila run` signal this whole group; the namespace parent
     // forwards the signal to the container, and the worker stays to unmount and clean up.
@@ -101,15 +129,21 @@ pub fn runWorker(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u
     defer opts.deinit(allocator);
     const rw_dir = try rwDir(allocator, voila_root, container_id);
     defer allocator.free(rw_dir);
-    const code = runMounted(io, allocator, voila_root, image, mount_dir, log_path, rw_dir, argv, opts) catch |e| {
-        std.debug.print("voila: run failed: {}\n", .{e});
-        return 1;
+    const code = runMounted(io, allocator, voila_root, image, mount_dir, log_path, rw_dir, argv, opts, ready_fd) catch |e| {
+        const c = failCode(e);
+        std.debug.print("voila: {s}\n", .{failMessage(e)});
+        var st_fail = container_store.readState(allocator, voila_root, container_id) catch return c;
+        defer container_store.freeState(allocator, st_fail);
+        markExited(allocator, &st_fail, c);
+        container_store.writeState(allocator, voila_root, st_fail) catch {}; // best-effort; sweepDead will mark it
+        if (e == error.ExecNotFound) signalReady(ready_fd);
+        return c;
     };
     var st_exit = try container_store.readState(allocator, voila_root, container_id);
     defer container_store.freeState(allocator, st_exit);
-    markExited(allocator, &st_exit);
+    markExited(allocator, &st_exit, code);
     try container_store.writeState(allocator, voila_root, st_exit);
-    if (remove_on_exit) container_store.removeContainer(allocator, voila_root, container_id) catch {};
+    if (remove_on_exit) container_store.removeContainer(allocator, voila_root, container_id) catch {}; // leftover dir is retried by voila rm
     return code;
 }
 
@@ -144,7 +178,7 @@ fn runForeground(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u
     const code = try spawnContainerWorkerAndWait(io, allocator, voila_root, id, log_path, spec.tty or spec.interactive, &st);
     var st_exit = try container_store.readState(allocator, voila_root, id);
     defer container_store.freeState(allocator, st_exit);
-    markExited(allocator, &st_exit);
+    markExited(allocator, &st_exit, code);
     try container_store.writeState(allocator, voila_root, st_exit);
     if (spec.rm_on_exit) container_store.removeContainer(allocator, voila_root, id) catch |e|
         std.debug.print("voila: could not remove container {s}: {s}\n", .{ id, @errorName(e) });
@@ -296,7 +330,12 @@ fn runDetached(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8,
         std.Io.File{ .handle = log_fd, .flags = .{ .nonblocking = false } }
     else
         std.Io.File{ .handle = std.c.STDOUT_FILENO, .flags = .{ .nonblocking = false } };
-    const worker = try std.process.spawn(io, .{
+    var ready: [2]std.posix.fd_t = undefined;
+    if (std.c.pipe2(&ready, .{ .CLOEXEC = true }) != 0) return error.ForkFailed;
+    const ready_z = try std.fmt.allocPrint(allocator, "{d}", .{ready[1]});
+    defer allocator.free(ready_z);
+    const inherit = [_]std.Io.File{.{ .handle = ready[1], .flags = .{ .nonblocking = false } }};
+    const worker = std.process.spawn(io, .{
         .argv = &[_][]const u8{
             exe,
             "container-worker",
@@ -305,16 +344,35 @@ fn runDetached(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8,
             "-id",
             id_z,
             if (spec.rm_on_exit) "--rm" else "--keep",
+            "--ready-fd",
+            ready_z,
         },
         .stdin = .ignore,
         .stdout = .{ .file = log_out },
         .stderr = .{ .file = log_out },
         .pgid = 0,
-    });
+        .inherit_files = &inherit,
+    }) catch |e| {
+        _ = std.c.close(ready[0]);
+        _ = std.c.close(ready[1]);
+        return e;
+    };
+    _ = std.c.close(ready[1]);
+    defer _ = std.c.close(ready[0]);
     if (worker.id) |wp| {
         st.pid = @intCast(wp);
         setStatus(allocator, &st, "running");
         try container_store.writeState(allocator, voila_root, st);
+    }
+    if (!waitReadyByte(ready[0])) {
+        std.debug.print("voila: could not start container\n", .{});
+        if (spec.ports.len > 0) std.debug.print("voila: could not publish ports\n", .{});
+        dumpLogTail(allocator, log_path);
+        container_store.removeContainer(allocator, voila_root, id) catch {}; // leftover dir is retried by voila rm
+        allocator.free(id);
+        allocator.free(mount_dir);
+        allocator.free(log_path);
+        return 1;
     }
     const stdout_fd = std.c.STDOUT_FILENO;
     _ = std.c.write(stdout_fd, id.ptr, id.len);
@@ -323,6 +381,20 @@ fn runDetached(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8,
     allocator.free(mount_dir);
     allocator.free(log_path);
     return 0;
+}
+
+fn waitReadyByte(fd: std.posix.fd_t) bool {
+    var b: [1]u8 = undefined;
+    const n = std.c.read(fd, &b, 1);
+    return n == 1;
+}
+
+fn dumpLogTail(allocator: std.mem.Allocator, log_path: []const u8) void {
+    const data = posix_util.readFileAlloc(allocator, log_path, 64 * 1024) catch return;
+    defer allocator.free(data);
+    if (data.len == 0) return;
+    _ = std.c.write(std.c.STDERR_FILENO, data.ptr, data.len);
+    if (data[data.len - 1] != '\n') _ = std.c.write(std.c.STDERR_FILENO, "\n", 1);
 }
 
 fn runMounted(
@@ -335,6 +407,7 @@ fn runMounted(
     rw_dir: []const u8,
     cmd_argv: []const []const u8,
     opts: container_run_opts.RunOpts,
+    ready_fd: std.posix.fd_t,
 ) !u8 {
     if (!fuse_linux.canUseFuse()) return error.NeedFuse;
     voila_registry.setIo(io, allocator);
@@ -371,6 +444,7 @@ fn runMounted(
         .rw_dir = rw_dir,
         .use_tty = opts.tty or opts.interactive,
         .start_net = true,
+        .ready_fd = ready_fd,
     }, 0) catch |e| switch (e) {
         error.ForwarderFailed => {
             std.debug.print("voila: port forwarder exited; see the container log\n", .{});
@@ -445,6 +519,7 @@ fn ownedState(
         .image = try allocator.dupe(u8, image),
         .status = try allocator.dupe(u8, status),
         .pid = pid,
+        .exit_code = 0,
         .mount_dir = try allocator.dupe(u8, mount_dir),
         .log_path = try allocator.dupe(u8, log_path),
         .rm_on_exit = rm_on_exit,

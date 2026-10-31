@@ -14,6 +14,7 @@ pub const RunSpec = struct {
     ports: []const run_flags.PortMap = &.{},
     tty: bool = false,
     interactive: bool = false,
+    user: []const u8 = "",
 };
 
 pub const ExecSpec = struct {

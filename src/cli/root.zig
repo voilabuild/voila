@@ -16,7 +16,9 @@ pub const rmi = @import("rmi.zig");
 pub const run = @import("run.zig");
 pub const runtime_only = @import("runtime_only.zig");
 pub const usage = @import("usage.zig");
+pub const user_error = @import("user_error.zig");
 pub const userns_probe = @import("userns_probe.zig");
+pub const version = @import("version.zig");
 pub const worker = @import("worker.zig");
 
 test {

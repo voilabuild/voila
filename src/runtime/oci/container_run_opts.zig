@@ -9,6 +9,7 @@ pub const RunOpts = struct {
     ports: []run_flags.PortMap,
     tty: bool,
     interactive: bool,
+    user: []const u8 = "",
 
     pub fn deinit(self: RunOpts, allocator: std.mem.Allocator) void {
         for (self.env) |e| {
@@ -17,6 +18,7 @@ pub const RunOpts = struct {
         }
         allocator.free(self.env);
         allocator.free(self.workdir);
+        allocator.free(self.user);
         for (self.volumes) |v| {
             allocator.free(v.host);
             allocator.free(v.container);
@@ -42,6 +44,8 @@ pub fn writeRunOpts(allocator: std.mem.Allocator, voila_root: []const u8, id: []
     try buf.appendSlice(allocator, if (opts.tty) "true" else "false");
     try buf.appendSlice(allocator, ",\"interactive\":");
     try buf.appendSlice(allocator, if (opts.interactive) "true" else "false");
+    try buf.appendSlice(allocator, ",\"user\":");
+    try appendJsonString(allocator, &buf, opts.user);
     try buf.appendSlice(allocator, ",\"env\":[");
     for (opts.env, 0..) |e, i| {
         if (i > 0) try buf.append(allocator, ',');
@@ -87,6 +91,7 @@ pub fn readRunOpts(allocator: std.mem.Allocator, voila_root: []const u8, id: []c
     defer parsed.deinit();
     const o = parsed.value.object;
     const workdir = try dupStrField(allocator, o, "workdir");
+    const user = try dupStrField(allocator, o, "user");
     const tty = boolField(o, "tty");
     const interactive = boolField(o, "interactive");
     var env_list: std.ArrayList(run_flags.EnvPair) = .empty;
@@ -132,6 +137,7 @@ pub fn readRunOpts(allocator: std.mem.Allocator, voila_root: []const u8, id: []c
     return .{
         .env = try env_list.toOwnedSlice(allocator),
         .workdir = workdir,
+        .user = user,
         .volumes = try vol_list.toOwnedSlice(allocator),
         .ports = try port_list.toOwnedSlice(allocator),
         .tty = tty,
@@ -143,6 +149,7 @@ fn emptyOpts(allocator: std.mem.Allocator) RunOpts {
     return .{
         .env = &.{},
         .workdir = allocator.dupe(u8, "") catch "",
+        .user = allocator.dupe(u8, "") catch "",
         .volumes = &.{},
         .ports = &.{},
         .tty = false,

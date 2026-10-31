@@ -35,7 +35,7 @@ fn parseArgs(a: std.mem.Allocator, it: *std.process.Args.Iterator) !Args {
     var push = false;
     var build_args: std.ArrayList(dockerfile.KeyValue) = .empty;
     while (it.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-root")) {
+        if (std.mem.eql(u8, arg, "-root") or std.mem.eql(u8, arg, "--root")) {
             root = it.next() orelse return error.BadBuildArgs;
         } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--tag")) {
             tag = it.next() orelse return error.BadBuildArgs;
@@ -84,8 +84,9 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, it: *std.process.Args.Iterator) !
         std.debug.print("voila build: cannot read {s}: {s}\n", .{ df_path, @errorName(e) });
         return 1;
     };
-    registry_session.prepare(io, gpa, args.root) catch {};
+    registry_session.prepare(io, gpa, args.root) catch {}; // registry is optional for a local build
 
+    warnUidmap(a);
     var ns_runner: run_step.NamespaceRunner = .{ .allocator = gpa, .ids = userns_ids.detect(a, .{}) };
     var runner: WarnOnce = .{ .inner = ns_runner.runner() };
     var printer: Printer = .{};
@@ -150,6 +151,20 @@ fn reportError(df_path: []const u8, e: anyerror, diag: driver.Diagnostic) void {
         std.debug.print("{s}:{d}: {s} (exit status {d})\n", .{ df_path, diag.line, what, diag.exit_code });
     } else {
         std.debug.print("{s}:{d}: {s}\n", .{ df_path, diag.line, what });
+    }
+}
+
+fn warnUidmap(a: std.mem.Allocator) void {
+    switch (userns_ids.detectFallback(a, .{})) {
+        .range => {},
+        .missing_helper => std.debug.print(
+            "voila: uidmap is not installed; apt-get, useradd and chown to other users will fail. Install it with `sudo apt install uidmap`.\n",
+            .{},
+        ),
+        .missing_subid => std.debug.print(
+            "voila: no /etc/subuid range for this user; RUN is a single-uid namespace. apt-get and useradd will fail on files owned by other uids.\n",
+            .{},
+        ),
     }
 }
 

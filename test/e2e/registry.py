@@ -3,6 +3,7 @@
 Standalone: uv run uvicorn registry:app --port 7423
 """
 
+import asyncio
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -16,6 +17,9 @@ class State:
     images: dict[str, bytes] = field(default_factory=dict[str, bytes])
     chunk_gets: Counter[str] = field(default_factory=Counter[str])
     chunk_puts: Counter[str] = field(default_factory=Counter[str])
+    put_delay_ms: float = 0
+    inflight: int = 0
+    max_inflight: int = 0
 
 
 class MissingRequest(BaseModel):
@@ -47,10 +51,17 @@ def get_chunk(chunk_id: str) -> Response:
 
 @app.put("/registry/v1/chunks/{chunk_id}")
 async def put_chunk(chunk_id: str, request: Request) -> Response:
-    existed = chunk_id in state.chunks
-    state.chunks[chunk_id] = await request.body()
-    state.chunk_puts[chunk_id] += 1
-    return Response(status_code=200 if existed else 201)
+    state.inflight += 1
+    state.max_inflight = max(state.max_inflight, state.inflight)
+    try:
+        if state.put_delay_ms > 0:
+            await asyncio.sleep(state.put_delay_ms / 1000)
+        existed = chunk_id in state.chunks
+        state.chunks[chunk_id] = await request.body()
+        state.chunk_puts[chunk_id] += 1
+        return Response(status_code=200 if existed else 201)
+    finally:
+        state.inflight -= 1
 
 
 @app.post("/registry/v1/chunks/missing")

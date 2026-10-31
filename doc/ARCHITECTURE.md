@@ -92,6 +92,8 @@ command's output lands in `container.log`.
 
 **Registry client** (`voila push` / `pull` / `login`): speaks the `/v1` HTTP
 wire protocol documented in [openapi.yaml](registry/openapi.yaml).
+`voila push` uploads missing chunks several at a time (a window of 16 HTTP PUTs),
+then writes the image manifest.
 The standalone filesystem server (`voila-registry`) and the hosted Postgres/S3
 service are maintained outside this release line — see branch
 `backup/main-before-go-registry-move` and
