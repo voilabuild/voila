@@ -57,7 +57,10 @@ image without tarballs or OCI blobs. The base image is mounted read-only with
 the FUSE backend (image ids shown as the host ids they map to when a subuid
 range is available), an unprivileged overlayfs on top captures each `RUN`'s
 writes in an upper dir, and the command runs in the rootless sandbox described
-below. The namespace maps 0 to the build user and 1..N to its `/etc/subuid`
+below. When the store itself is on overlayfs (a nested container), that upper
+cannot live on disk: the child mounts a private tmpfs for it, keeps the tmpfs
+alive after the command exits, and the parent walks `/proc/<pid>/root/.../upper`
+before releasing the child. The namespace maps 0 to the build user and 1..N to its `/etc/subuid`
 range (`newuidmap`/`newgidmap`, run by the parent while the child waits on a
 pipe), else just 0. After the command, the sandbox records the owner of every
 non-root upper entry in an owners file and chowns it back to the build user so
@@ -80,8 +83,9 @@ a user, mount, PID, network and (for `run`) UTS namespace. PID 1 is a small voil
 command as PID 2, forwards signals to it, reaps orphans and exits with the
 command's status (128 + signal when it is killed). `voila run` makes the
 read-only FUSE root writable with an overlayfs whose upper and work dirs live
-on disk in `<root>/containers/<id>/rw` (removed with the container); kernels
-that refuse the overlay get a read-only bind of the FUSE root. `voila exec`
+on disk in `<root>/containers/<id>/rw` (removed with the container). When that
+path is itself on overlayfs, the writable layer is a private tmpfs for the
+life of the container instead (writes are not kept after `rm`). `voila exec`
 does not build a sandbox: it finds the container's init (the first process
 below the worker in another PID namespace) and `setns`es into its user,
 mount, UTS, net and PID namespaces and its root, like `nsenter`. Generated

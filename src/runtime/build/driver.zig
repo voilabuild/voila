@@ -7,6 +7,7 @@ const glob = @import("core").glob;
 const passwd = @import("core").passwd;
 const fs = @import("sys").fs;
 const clock = @import("sys").clock;
+const process = @import("sys").process;
 const posix_util = @import("sys").posix_util;
 const idmap = @import("core").idmap;
 const oci_config = @import("codec").oci_image_config;
@@ -122,8 +123,14 @@ pub fn build(io: std.Io, gpa: std.mem.Allocator, opts: Options, diag: *Diagnosti
     return .{ .root = img.root, .config = config_chunk, .steps = steps_n, .cached = cached };
 }
 
-/// RUN scratch lives in the store, not `/tmp`, so the overlay upper sits on the
-/// store's filesystem (overlayfs cannot stack on an overlay `/tmp` in a userns).
+/// RUN scratch lives in the store, not `/tmp`. When that filesystem is overlayfs,
+/// the step's writable layer is a tmpfs in the RUN process instead.
+fn releaseHold(pid: i32, ack: i32) void {
+    if (pid == 0) return;
+    if (ack >= 0) @import("sys").ns.close(@intCast(ack));
+    process.waitForever(pid);
+}
+
 fn buildScratchDir(a: std.mem.Allocator, voila_root: []const u8) ![]u8 {
     const parent = try std.fmt.allocPrint(a, "{s}/tmp", .{voila_root});
     try fs.makePath(parent);
@@ -386,6 +393,7 @@ const Builder = struct {
             .user = user,
             .owners_path = owners_path,
         });
+        defer releaseHold(res.hold_pid, res.hold_ack);
         if (res.code != 0) {
             self.diag.exit_code = res.code;
             return error.RunFailed;
@@ -402,7 +410,8 @@ const Builder = struct {
             .skip = skip.skip(),
         });
         defer w.deinit();
-        try w.add(upper, "");
+        const walked = if (res.hold_pid == 0) upper else try std.fmt.allocPrint(self.a, "/proc/{d}/root{s}/ram/upper", .{ res.hold_pid, scratch });
+        try w.add(walked, "");
         try self.commit(key, (try w.finish()).tree);
         return false;
     }

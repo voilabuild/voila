@@ -1,5 +1,6 @@
 //! Container root setup: PID namespace init, fresh /proc, minimal /dev, read-only /sys, pivot_root.
 const std = @import("std");
+const fs = @import("sys").fs;
 const ns = @import("sys").ns;
 
 const MS = ns.MS;
@@ -116,16 +117,26 @@ pub fn pivotInto(root: [:0]const u8) ns.Error!void {
     try ns.chdir("/");
 }
 
-/// Writable root: overlay of the read-only `lower` with upper/work dirs under `rw_dir`,
-/// mounted at `<rw_dir>/root`, whose path is returned in `buf`.
+/// Writable root: overlay of the read-only `lower` with upper/work dirs under `rw_dir`
+/// (or a tmpfs there, when `rw_dir` is on overlayfs), mounted at `.../root`.
 pub fn mountOverlayRoot(lower: []const u8, rw_dir: [:0]const u8, buf: []u8) (ns.Error || error{NameTooLong})![:0]const u8 {
     var upper_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     var work_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     var opts_buf: [3 * std.Io.Dir.max_path_bytes]u8 = undefined;
-    const upper = std.mem.printSentinel(&upper_buf, "{s}/upper", .{rw_dir}, 0) catch return error.NameTooLong;
-    const work = std.mem.printSentinel(&work_buf, "{s}/work", .{rw_dir}, 0) catch return error.NameTooLong;
-    const root = std.mem.printSentinel(buf, "{s}/root", .{rw_dir}, 0) catch return error.NameTooLong;
-    for ([_][:0]const u8{ rw_dir, upper, work, root }) |d| try ns.mkdir(d, 0o755);
+    var ram_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    try ns.mkdir(rw_dir, 0o755);
+    // overlayfs cannot be an overlay upper. A private tmpfs can, and it lives
+    // only as long as this container's mount namespace.
+    const base: [:0]const u8 = if (!fs.onOverlay(rw_dir)) rw_dir else blk: {
+        const ram = std.mem.printSentinel(&ram_buf, "{s}/ram", .{rw_dir}, 0) catch return error.NameTooLong;
+        try ns.mkdir(ram, 0o755);
+        try ns.mount("tmpfs", ram, "tmpfs", 0, "mode=0755");
+        break :blk ram;
+    };
+    const upper = std.mem.printSentinel(&upper_buf, "{s}/upper", .{base}, 0) catch return error.NameTooLong;
+    const work = std.mem.printSentinel(&work_buf, "{s}/work", .{base}, 0) catch return error.NameTooLong;
+    const root = std.mem.printSentinel(buf, "{s}/root", .{base}, 0) catch return error.NameTooLong;
+    for ([_][:0]const u8{ upper, work, root }) |d| try ns.mkdir(d, 0o755);
     const opts = std.mem.printSentinel(&opts_buf, "lowerdir={s},upperdir={s},workdir={s},userxattr", .{ lower, upper, work }, 0) catch return error.NameTooLong;
     try ns.mount("overlay", root, "overlay", 0, opts);
     return root;

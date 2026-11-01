@@ -24,7 +24,9 @@ const MS_PRIVATE: usize = 1 << 18;
 const MS_REC: usize = 16384;
 
 /// Status-pipe bytes the child writes before failing; exec success closes the pipe.
-const Failure = enum(u8) { setup = 'S', user = 'U', release = 'R', _ };
+/// `keep_mark` is not a failure: the upper is a tmpfs and the child waits until it is read.
+const Failure = enum(u8) { setup = 'S', user = 'U', release = 'R', overlay = 'O', _ };
+const keep_mark: u8 = 'K';
 
 pub const NamespaceRunner = struct {
     allocator: std.mem.Allocator,
@@ -76,21 +78,33 @@ pub const NamespaceRunner = struct {
             closeBoth(down);
             return error.SpawnFailed;
         }
+        var ack: [2]std.posix.fd_t = .{ -1, -1 };
+        if (plan.use_ram and std.c.pipe2(&ack, .{ .CLOEXEC = true }) != 0) {
+            closeBoth(up);
+            closeBoth(down);
+            closeBoth(status);
+            return error.SpawnFailed;
+        }
         const pid = std.c.fork();
         if (pid == 0) {
             _ = std.c.close(up[0]);
             _ = std.c.close(down[1]);
             _ = std.c.close(status[0]);
-            plan.child(.{ .up = up[1], .down = down[0], .status = status[1] });
+            if (ack[1] >= 0) _ = std.c.close(ack[1]);
+            plan.child(.{ .up = up[1], .down = down[0], .status = status[1], .ack = ack[0] });
         }
         // Close the child's ends so a child that dies early unblocks the reads below.
         _ = std.c.close(up[1]);
         _ = std.c.close(down[0]);
         _ = std.c.close(status[1]);
+        if (ack[0] >= 0) _ = std.c.close(ack[0]);
         defer _ = std.c.close(up[0]);
         defer _ = std.c.close(down[1]);
         defer _ = std.c.close(status[0]);
-        if (pid < 0) return error.SpawnFailed;
+        if (pid < 0) {
+            if (ack[1] >= 0) _ = std.c.close(ack[1]);
+            return error.SpawnFailed;
+        }
 
         var ids = userns_ids.effective(self.ids, 0);
         var byte: u8 = 0;
@@ -103,12 +117,26 @@ pub const NamespaceRunner = struct {
             }
             _ = std.c.write(down[1], @ptrCast(&written), 1);
         }
+        var msg: [2]u8 = undefined;
+        const n = std.c.read(status[0], @ptrCast(&msg), msg.len);
+        if (n == 2 and msg[0] == keep_mark) {
+            return .{
+                .code = msg[1],
+                .ids = ids,
+                .user_not_applied = userSwitch(plan.cred, ids) == .not_mapped,
+                .hold_pid = pid,
+                .hold_ack = ack[1],
+            };
+        }
+        if (ack[1] >= 0) _ = std.c.close(ack[1]);
         var wst: c_int = 0;
         while (std.c.waitpid(pid, &wst, 0) < 0) {}
-        if (std.c.read(status[0], @ptrCast(&byte), 1) == 1) {
-            return switch (@as(Failure, @fromBackingInt(@intCast(byte)))) {
+        if (n < 0) return error.OverlayFailed;
+        if (n == 1) {
+            return switch (@as(Failure, @fromBackingInt(msg[0]))) {
                 .user => error.UserSwitchFailed,
                 .release => error.ReleaseFailed,
+                .overlay => error.OverlayUpperUnsupported,
                 .setup => error.OverlayFailed,
                 _ => error.OverlayFailed,
             };
@@ -177,7 +205,7 @@ fn readImageFile(a: std.mem.Allocator, root: []const u8, rel: []const u8) error{
     return out.items;
 }
 
-const ChildFds = struct { up: std.posix.fd_t, down: std.posix.fd_t, status: std.posix.fd_t };
+const ChildFds = struct { up: std.posix.fd_t, down: std.posix.fd_t, status: std.posix.fd_t, ack: std.posix.fd_t };
 
 /// Everything the child needs, prepared before fork so the child only makes syscalls.
 const Plan = struct {
@@ -187,6 +215,11 @@ const Plan = struct {
     owners_path: []const u8,
     merged_z: [:0]const u8,
     overlay_opts: [:0]const u8,
+    /// Store is on overlayfs: the writable layer is a tmpfs the parent reads through /proc.
+    use_ram: bool = false,
+    ram_z: [:0]const u8 = "",
+    ram_upper_z: [:0]const u8 = "",
+    ram_work_z: [:0]const u8 = "",
     workdir_z: ?[:0]const u8,
     argv: [:null]?[*:0]const u8,
     envp: [:null]?[*:0]const u8,
@@ -216,13 +249,23 @@ const Plan = struct {
             var it = std.mem.tokenizeScalar(u8, path_var, ':');
             while (it.next()) |dir| try cands.append(a, try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ dir, exe }, 0));
         }
+        const use_ram = fs.onOverlay(req.upper_dir);
+        const ram = try std.fmt.allocPrint(a, "{s}/ram", .{req.scratch_dir});
+        const ram_upper = try std.fmt.allocPrint(a, "{s}/upper", .{ram});
+        const ram_work = try std.fmt.allocPrint(a, "{s}/work", .{ram});
+        const ov_upper = if (use_ram) ram_upper else req.upper_dir;
+        const ov_work = if (use_ram) ram_work else work;
         return .{
             .ids = ids,
             .cred = cred,
             .upper = req.upper_dir,
             .owners_path = req.owners_path,
             .merged_z = try a.dupeSentinel(u8, merged, 0),
-            .overlay_opts = try std.fmt.allocPrintSentinel(a, "lowerdir={s},upperdir={s},workdir={s},userxattr", .{ lower, req.upper_dir, work }, 0),
+            .overlay_opts = try std.fmt.allocPrintSentinel(a, "lowerdir={s},upperdir={s},workdir={s},userxattr", .{ lower, ov_upper, ov_work }, 0),
+            .use_ram = use_ram,
+            .ram_z = try a.dupeSentinel(u8, ram, 0),
+            .ram_upper_z = try a.dupeSentinel(u8, ram_upper, 0),
+            .ram_work_z = try a.dupeSentinel(u8, ram_work, 0),
             .workdir_z = if (req.workdir.len > 0) try a.dupeSentinel(u8, req.workdir, 0) else null,
             .argv = argv,
             .envp = try env.toOwnedSliceSentinel(a, null),
@@ -243,8 +286,17 @@ const Plan = struct {
         if (written & userns_ids.gid_written == 0) container_bind.writeGidMapFor(self.ids.gid.host);
         // The command becomes pid 1 of its own namespace: when it exits, background
         // processes die with it, so nothing changes the upper dir during `release`.
-        if (unshare(CLONE_NEWNS | CLONE_NEWPID) != 0) fail(fds.status, .setup);
+        if (unshare(CLONE_NEWNS) != 0) fail(fds.status, .setup);
         _ = mount(null, "/", null, MS_REC | MS_PRIVATE, null);
+        if (self.use_ram) {
+            // The store is overlayfs, which cannot be an overlay upper and cannot hold
+            // whiteout devices. A tmpfs can. The parent reads it via /proc before we exit.
+            makePathZ(self.ram_z);
+            if (mount("tmpfs", self.ram_z, "tmpfs", 0, "mode=0755") != 0) fail(fds.status, .overlay);
+            makePathZ(self.ram_upper_z);
+            makePathZ(self.ram_work_z);
+        }
+        if (unshare(CLONE_NEWPID) != 0) fail(fds.status, .setup);
         if (mount("overlay", self.merged_z, "overlay", 0, self.overlay_opts.ptr) != 0) fail(fds.status, .setup);
         // A created mountpoint is fine: steps.mountpoints keeps it out of the layer.
         const fd = std.c.open(self.resolv_dst, .{ .ACCMODE = .WRONLY, .CREAT = true }, @as(std.c.mode_t, 0o644));
@@ -257,8 +309,15 @@ const Plan = struct {
         var wst: c_int = 0;
         while (std.c.waitpid(pid, &wst, 0) < 0) {}
         _ = std.os.linux.umount2(self.merged_z, std.os.linux.MNT.DETACH);
-        if (written != 0) release(self.upper, self.owners_path) catch fail(fds.status, .release);
-        std.c._exit(exitCode(wst));
+        const released = if (self.use_ram) self.ram_upper_z else self.upper;
+        if (written != 0) release(released, self.owners_path) catch fail(fds.status, .release);
+        const code = exitCode(wst);
+        if (!self.use_ram) std.c._exit(code);
+        var msg = [2]u8{ keep_mark, code };
+        if (std.c.write(fds.status, @ptrCast(&msg), msg.len) != @as(isize, @intCast(msg.len))) fail(fds.status, .release);
+        var ack_byte: u8 = 0;
+        _ = std.c.read(fds.ack, @ptrCast(&ack_byte), 1);
+        std.c._exit(code);
     }
 
     fn command(self: Plan, status_fd: std.posix.fd_t, ids: idmap.Mapping) noreturn {
