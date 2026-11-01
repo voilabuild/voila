@@ -52,6 +52,33 @@ fn check(rc: usize) Error!usize {
     };
 }
 
+const overlayfs_magic: i64 = 0x794c7630;
+
+const StatFs = extern struct {
+    f_type: i64,
+    f_bsize: i64,
+    f_blocks: u64,
+    f_bfree: u64,
+    f_bavail: u64,
+    f_files: u64,
+    f_ffree: u64,
+    f_fsid: [2]i32,
+    f_namelen: i64,
+    f_frsize: i64,
+    f_flags: i64,
+    f_spare: [4]i64,
+};
+
+/// True when `path` is on overlayfs. A user namespace cannot use that as an overlay upper dir.
+pub fn onOverlay(path: []const u8) bool {
+    var zb: Z = undefined;
+    const z = toZ(&zb, path) catch return false;
+    var st: StatFs = undefined;
+    const rc = linux.syscall2(.statfs, @intFromPtr(z.ptr), @intFromPtr(&st));
+    if (linux.errno(rc) != .SUCCESS) return false;
+    return st.f_type == overlayfs_magic;
+}
+
 pub fn lstat(path: []const u8) Error!Stat {
     var zb: Z = undefined;
     var sx: linux.Statx = undefined;
@@ -347,6 +374,10 @@ test "fs round trip: write, stat, list, readlink, remove" {
 
     try removeTree(a, dir);
     try std.testing.expectError(error.FileNotFound, lstat(dir));
+}
+
+test "onOverlay is false for proc" {
+    try std.testing.expect(!onOverlay("/proc"));
 }
 
 test "removeTree removes directories left at mode 000" {

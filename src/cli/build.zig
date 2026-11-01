@@ -124,6 +124,7 @@ fn reportError(df_path: []const u8, e: anyerror, diag: driver.Diagnostic) void {
     const what: []const u8 = switch (e) {
         error.RunFailed => "RUN command failed",
         error.ReleaseFailed => "RUN finished but its new files could not be handed back to the build user (see the RUN: line above)",
+        error.OverlayUpperUnsupported => "could not set up the RUN sandbox: the store is on overlayfs and a private tmpfs for the writable layer could not be mounted",
         error.OverlayFailed, error.UserNamespacesRequired => "could not set up the RUN sandbox (needs unprivileged user namespaces and overlayfs; re-run install.sh for the AppArmor profile)",
         error.UnknownUser => "USER names a user missing from the image's /etc/passwd",
         error.UnknownGroup => "USER names a group missing from the image's /etc/group",

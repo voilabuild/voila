@@ -83,13 +83,12 @@ fn signalReady(fd: std.posix.fd_t) void {
 fn enterRoot(spec: Spec) Error!void {
     const mount_z = allocZ(spec.mount_dir) catch return error.SetupFailed;
     var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const overlay: ?[:0]const u8 = if (spec.rw_dir.len == 0) null else blk: {
-        const rw_z = allocZ(spec.rw_dir) catch return error.SetupFailed;
-        break :blk container_root.mountOverlayRoot(spec.mount_dir, rw_z, &root_buf) catch null;
-    };
-    const root = overlay orelse blk: {
+    const root: [:0]const u8 = if (spec.rw_dir.len == 0) blk: {
         ns.mount(mount_z, mount_z, null, ns.MS.BIND | ns.MS.REC, null) catch return error.SetupFailed;
         break :blk mount_z;
+    } else blk: {
+        const rw_z = allocZ(spec.rw_dir) catch return error.SetupFailed;
+        break :blk container_root.mountOverlayRoot(spec.mount_dir, rw_z, &root_buf) catch return error.SetupFailed;
     };
     if (!container_bind.applyVolumeBinds(root, spec.opts.volumes)) return error.SetupFailed;
     const ops = container_root.plan(std.heap.page_allocator, root) catch return error.SetupFailed;

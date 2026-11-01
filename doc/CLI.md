@@ -68,7 +68,11 @@ like any imported image, so `voila run` and `voila push` work on it unchanged.
   when unset. Without the subid range, a non-root `USER` is not applied to
   `RUN` (it runs as root, as before) and `voila build` prints one warning.
 - Each `RUN` command is pid 1 of its own PID namespace; background processes
-  it leaves behind are killed when it exits.
+  it leaves behind are killed when it exits. When `VOILA_ROOT` is on overlayfs
+  (a container or sandbox whose root is itself an overlay), that filesystem
+  cannot be an overlay upper. A `RUN` keeps its writable layer on a private
+  tmpfs and still commits the result, including deletions. `voila run` uses a
+  private tmpfs for the life of that container.
 
 ## Running containers
 

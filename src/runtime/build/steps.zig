@@ -30,6 +30,11 @@ pub const RunResult = struct {
     ids: ?idmap.Mapping = null,
     /// `USER` was set but its ids are not mapped, so the command ran as root.
     user_not_applied: bool = false,
+    /// When non-zero, the upper dir is a tmpfs in this process's mount namespace
+    /// (`/proc/<pid>/root<scratch>/ram/upper`). Close `hold_ack` and wait for it
+    /// after the upper has been read.
+    hold_pid: i32 = 0,
+    hold_ack: i32 = -1,
 };
 
 pub const RunnerError = error{
@@ -37,6 +42,7 @@ pub const RunnerError = error{
     MountFailed,
     UserNamespacesRequired,
     OverlayFailed,
+    OverlayUpperUnsupported,
     ReleaseFailed,
     SpawnFailed,
     UnknownUser,
