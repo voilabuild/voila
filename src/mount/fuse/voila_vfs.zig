@@ -9,6 +9,7 @@ const voila_chunk_index = @import("store").voila_chunk_index;
 const voila_manifest_proto = @import("codec").voila_manifest_proto;
 const idmap = @import("core").idmap;
 const posix_util = @import("sys").posix_util;
+const FetchPool = @import("./chunk_fetch_pool.zig").FetchPool;
 
 pub const DirEnt = struct {
     name: []const u8,
@@ -19,6 +20,12 @@ pub const DirEnt = struct {
 /// Up to this many decoded chunks (1 MiB each at most) stay in memory; the kernel page
 /// cache holds the rest.
 const chunk_cache_max = 64;
+
+/// A cold file up to this size is prefetched whole once one of its chunks is read.
+const prefetch_file_max: u64 = 64 << 20;
+
+/// Chunks a single read waits for directly; more than this fall back to inline fetches.
+const read_chunks_max = 16;
 
 pub const VoilaVfs = struct {
     backend: union(enum) {
@@ -35,6 +42,14 @@ pub const VoilaVfs = struct {
     owner_map: ?idmap.Mapping = null,
     /// Where chunks missing from the local store come from; null serves local chunks only.
     fetcher: ?voila_chunk_load.Fetcher = null,
+    /// When set, reads wait for their chunks outside `mu` and cold files are prefetched.
+    pool: ?*FetchPool = null,
+    /// Inodes whose chunks were already queued for prefetch.
+    prefetched: std.AutoHashMap(u64, void),
+    /// Guards everything above when FUSE serves on several threads; `lock_io` null means
+    /// single-threaded use and no locking.
+    mu: std.Io.Mutex = .init,
+    lock_io: ?std.Io = null,
 
     pub fn load(allocator: std.mem.Allocator, index_json_path: []const u8) !VoilaVfs {
         const json_bytes = try posix_util.readFileAlloc(allocator, index_json_path, 256 * 1024 * 1024);
@@ -48,6 +63,7 @@ pub const VoilaVfs = struct {
             .backend = .{ .indexed = index },
             .readdir_by_ino = .init(allocator),
             .chunk_cache = .init(allocator),
+            .prefetched = .init(allocator),
             .allocator = allocator,
         };
         var dit = self.backend.indexed.dirs.iterator();
@@ -82,9 +98,29 @@ pub const VoilaVfs = struct {
             .backend = .{ .lazy_tree = tree },
             .readdir_by_ino = .init(allocator),
             .chunk_cache = .init(allocator),
+            .prefetched = .init(allocator),
             .allocator = allocator,
             .fetcher = tree.fetcher,
         };
+    }
+
+    pub fn lock(self: *VoilaVfs) void {
+        if (self.lock_io) |io| self.mu.lockUncancelable(io);
+    }
+
+    pub fn unlock(self: *VoilaVfs) void {
+        if (self.lock_io) |io| self.mu.unlock(io);
+    }
+
+    /// Runs registry fetches (data and lazily loaded tree chunks) on `io`.
+    pub fn setFetchIo(self: *VoilaVfs, io: std.Io) void {
+        if (self.fetcher) |*f| f.io = io;
+        switch (self.backend) {
+            .lazy_tree => |*t| if (t.fetcher) |*f| {
+                f.io = io;
+            },
+            .indexed => {},
+        }
     }
 
     pub fn deinit(self: *VoilaVfs) void {
@@ -95,6 +131,7 @@ pub const VoilaVfs = struct {
         }
         self.chunk_cache.deinit();
         self.chunk_order.deinit(self.allocator);
+        self.prefetched.deinit();
         var rit = self.readdir_by_ino.iterator();
         while (rit.next()) |e| self.allocator.free(e.value_ptr.*);
         self.readdir_by_ino.deinit();
@@ -262,6 +299,53 @@ pub const VoilaVfs = struct {
     }
 
     pub fn preloadAllChunks(_: *VoilaVfs, _: std.Io) !void {}
+
+    /// `readFuse` for concurrent callers: waits for the range's chunks without holding
+    /// `mu`, and queues the rest of a cold file for prefetch.
+    pub fn readFuseShared(self: *VoilaVfs, ino: u64, buf: []u8, off: u64) usize {
+        if (self.pool) |pool| self.prepareRead(pool, ino, buf.len, off);
+        self.lock();
+        defer self.unlock();
+        return self.readFuse(ino, buf, off);
+    }
+
+    fn prepareRead(self: *VoilaVfs, pool: *FetchPool, ino: u64, len: usize, off: u64) void {
+        var need: [read_chunks_max][64]u8 = undefined;
+        var n_need: usize = 0;
+        var rest: std.ArrayList([64]u8) = .empty;
+        defer rest.deinit(self.allocator);
+        {
+            self.lock();
+            defer self.unlock();
+            const tree = switch (self.backend) {
+                .lazy_tree => |*t| t,
+                .indexed => return,
+            };
+            tree.ensureInode(ino) catch return;
+            const file = tree.file_by_inode.get(ino) orelse return;
+            if (off >= file.size or len == 0) return;
+            const end = @min(off + len, file.size);
+            const whole = file.size <= prefetch_file_max and
+                !(self.prefetched.getOrPut(ino) catch return).found_existing;
+            for (file.blocks) |b| {
+                if (b.chunk_id.len != 32) continue;
+                const hex = std.fmt.bytesToHex(b.chunk_id[0..32].*, .lower);
+                if (b.offset < end and b.offset + b.logical_len > off and n_need < need.len) {
+                    need[n_need] = hex;
+                    n_need += 1;
+                } else if (whole) {
+                    rest.append(self.allocator, hex) catch {};
+                }
+            }
+        }
+        if (rest.items.len != 0) {
+            const slices = self.allocator.alloc([]const u8, rest.items.len) catch return;
+            defer self.allocator.free(slices);
+            for (rest.items, slices) |*h, *sl| sl.* = h;
+            pool.enqueue(slices);
+        }
+        for (need[0..n_need]) |*h| pool.ensure(h) catch {};
+    }
 
     pub fn readFuse(self: *VoilaVfs, ino: u64, buf: []u8, off: u64) usize {
         return switch (self.backend) {

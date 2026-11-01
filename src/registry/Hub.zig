@@ -1,5 +1,6 @@
 const std = @import("std");
 const voila_paths = @import("sys").voila_paths;
+const voila_http = @import("voila_http.zig");
 
 pub const Config = struct {
     base_url: []const u8,
@@ -15,7 +16,16 @@ pub const Hub = struct {
     cfg: ?Config = null,
     chunk_origin: ?[]const u8 = null,
     chunk_origin_loaded: bool = false,
+    /// Serializes the one-time chunk origin lookup across fetch threads.
+    origin_mu: std.Io.Mutex = .init,
+    /// Idle keep-alive sessions for chunk GETs, tagged with the `Io` they were made for.
+    idle_sessions: std.ArrayList(PooledSession) = .empty,
     stats: FetchStats = .{},
+
+    pub const PooledSession = struct {
+        io_key: ?*anyopaque,
+        session: *voila_http.Session,
+    };
 
     pub fn setIo(self: *Hub, io: std.Io, allocator: std.mem.Allocator) void {
         self.io = io;
@@ -80,9 +90,53 @@ pub const Hub = struct {
         if (self.cfg) |c| f(c);
     }
 
+    /// An idle keep-alive session for `io` (unless `fresh`), or a new one; null before
+    /// `setIo`. Hand it back with `releaseSession`.
+    pub fn acquireSession(self: *Hub, io: std.Io, fresh: bool) ?*voila_http.Session {
+        const allocator = self.allocator orelse return null;
+        if (fresh) return self.newSession(io, allocator);
+        self.lock();
+        var i: usize = self.idle_sessions.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.idle_sessions.items[i].io_key == io.userdata) {
+                const s = self.idle_sessions.swapRemove(i).session;
+                self.unlock();
+                return s;
+            }
+        }
+        self.unlock();
+        return self.newSession(io, allocator);
+    }
+
+    fn newSession(_: *Hub, io: std.Io, allocator: std.mem.Allocator) ?*voila_http.Session {
+        const s = allocator.create(voila_http.Session) catch return null;
+        s.* = .initKeepAlive(io, allocator);
+        return s;
+    }
+
+    /// Pools `s` when `reusable`; otherwise closes it.
+    pub fn releaseSession(self: *Hub, s: *voila_http.Session, reusable: bool) void {
+        const allocator = self.allocator orelse return;
+        if (reusable) {
+            self.lock();
+            defer self.unlock();
+            if (self.idle_sessions.append(allocator, .{ .io_key = s.client.io.userdata, .session = s })) |_| return else |_| {}
+        }
+        s.deinit();
+        allocator.destroy(s);
+    }
+
     pub fn deinit(self: *Hub, allocator: std.mem.Allocator) void {
         self.lock();
         defer self.unlock();
+        if (self.allocator) |a| {
+            for (self.idle_sessions.items) |p| {
+                p.session.deinit();
+                a.destroy(p.session);
+            }
+            self.idle_sessions.deinit(a);
+        }
         if (self.cfg) |*c| {
             allocator.free(c.base_url);
             allocator.free(c.token);

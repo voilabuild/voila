@@ -8,6 +8,21 @@ struct fuse *voila_fuse_new(struct fuse_args *args, const struct fuse_operations
     return fuse_new(args, op, op_size, user_data);
 }
 
+/* Defined in libfuse's fuse.c; the header only maps a macro onto it. */
+int fuse_loop_mt_312(struct fuse *f, struct fuse_loop_config *config);
+
+int voila_fuse_loop_mt(struct fuse *f, unsigned int max_threads) {
+    struct fuse_loop_config *cfg = fuse_loop_cfg_create();
+    if (!cfg) {
+        return -1;
+    }
+    fuse_loop_cfg_set_max_threads(cfg, max_threads);
+    fuse_loop_cfg_set_clone_fd(cfg, 0);
+    int rc = fuse_loop_mt_312(f, cfg);
+    fuse_loop_cfg_destroy(cfg);
+    return rc;
+}
+
 void voila_fuse_fill_stat(struct stat *st, uint64_t ino, uint32_t mode, uint32_t nlink,
                           uint32_t uid, uint32_t gid, int64_t size, int64_t blksize, int64_t blocks,
                           int64_t atime_sec, int64_t atime_nsec, int64_t mtime_sec, int64_t mtime_nsec,
