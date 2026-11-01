@@ -334,7 +334,7 @@ pub const VoilaVfs = struct {
                     need[n_need] = hex;
                     n_need += 1;
                 } else if (whole) {
-                    rest.append(self.allocator, hex) catch {};
+                    rest.append(self.allocator, hex) catch {}; // prefetch is optional; a skipped chunk is fetched on read
                 }
             }
         }
@@ -344,7 +344,7 @@ pub const VoilaVfs = struct {
             for (rest.items, slices) |*h, *sl| sl.* = h;
             pool.enqueue(slices);
         }
-        for (need[0..n_need]) |*h| pool.ensure(h) catch {};
+        for (need[0..n_need]) |*h| pool.ensure(h) catch {}; // readFuse refetches a still-missing chunk (short read if that fails too)
     }
 
     pub fn readFuse(self: *VoilaVfs, ino: u64, buf: []u8, off: u64) usize {

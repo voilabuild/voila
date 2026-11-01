@@ -206,7 +206,7 @@ pub fn serveSession(session: *Session) !void {
 }
 
 /// Serves on up to `max_threads` libfuse worker threads; the VFS must be thread-safe.
-pub fn serveSessionMt(session: *Session, max_threads: u32) !void {
+pub fn serveSessionMt(session: *Session, max_threads: u32) error{ NoFuse, FuseLoopFailed }!void {
     const f = session.fuse orelse return error.NoFuse;
     const rc = c.voila_fuse_loop_mt(f, max_threads);
     if (rc != 0) return error.FuseLoopFailed;

@@ -157,7 +157,7 @@ fn countingFetch(f: voila_chunk_load.Fetcher, allocator: std.mem.Allocator, voil
     _ = counter.fetchAdd(1, .monotonic);
     var raw: [16]u8 = undefined;
     @memset(&raw, chunk_hex[0]);
-    voila_store.putChunkRaw(allocator, voila_root, chunk_hex, &raw) catch {};
+    voila_store.putChunkRaw(allocator, voila_root, chunk_hex, &raw) catch {}; // fake chunk fails verification; the test counts fetches, not stores
     return allocator.dupe(u8, &raw) catch error.OutOfMemory;
 }
 
@@ -166,7 +166,7 @@ test "ensure and enqueue fetch each chunk once" {
     const a = std.testing.allocator;
     const root = try fs.makeTempDir(a, "voila-fetch-pool-test");
     defer a.free(root);
-    defer fs.removeTree(a, root) catch {};
+    defer fs.removeTree(a, root) catch {}; // leftover temp dir is fine
 
     var threaded: std.Io.Threaded = .init(a, .{});
     defer threaded.deinit();
@@ -185,7 +185,7 @@ test "ensure and enqueue fetch each chunk once" {
         slices[i] = h;
     }
     pool.enqueue(&slices);
-    for (slices) |s| pool.ensure(s) catch {};
+    for (slices) |s| pool.ensure(s) catch {}; // only the fetch count matters here
     pool.enqueue(&slices);
     // putChunkRaw rejects these fake chunks, so the count shows fetches, not store hits.
     try std.testing.expectEqual(@as(u32, 6), counter.load(.monotonic));
