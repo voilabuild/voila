@@ -52,6 +52,9 @@ pub fn print(err: anyerror) void {
         error.NeedFuse, error.UserNamespacesRequired, error.FuseServerFailed, error.OverlayFailed, error.MountFailed, error.MountNotReady => {
             std.debug.print("voila: could not set up the sandbox (needs /dev/fuse and user namespaces)\n", .{});
         },
+        error.OverlayUpperUnsupported => {
+            std.debug.print("voila: could not set up the sandbox: the store is on overlayfs and a private tmpfs for the writable layer could not be mounted\n", .{});
+        },
         error.InvalidApiKey => {
             std.debug.print("voila: invalid API key (run `voila login`)\n", .{});
         },
@@ -68,6 +71,7 @@ pub fn exitStatus(err: anyerror) u8 {
         error.UserNamespacesRequired,
         error.FuseServerFailed,
         error.OverlayFailed,
+        error.OverlayUpperUnsupported,
         error.MountFailed,
         error.MountNotReady,
         => 125,
