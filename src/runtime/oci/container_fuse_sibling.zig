@@ -3,6 +3,7 @@ const std = @import("std");
 const fuse_linux = @import("mount").fuse.fuse_linux;
 const fuse_vfs_mod = @import("mount").fuse.fuse_vfs;
 const voila_vfs_mod = @import("mount").fuse.voila_vfs;
+const FetchPool = @import("mount").fuse.chunk_fetch_pool.FetchPool;
 const voila_loader = @import("../voila_loader.zig");
 const voila_registry = @import("registry").voila_registry;
 const voila_registry_creds = @import("registry").voila_registry_creds;
@@ -11,6 +12,9 @@ const mount_exec = @import("mount").mount_exec;
 const posix_util = @import("sys").posix_util;
 const fusermount = @import("sys").fusermount;
 const idmap = @import("core").idmap;
+
+/// libfuse worker threads; each can wait on its own chunk fetch.
+const fuse_threads = 16;
 
 const ServeCtx = struct {
     session: fuse_linux.Session,
@@ -191,6 +195,21 @@ fn serveChild(
     const tree = voila_loader.loadTreeRoot(io, allocator, voila_root, image) catch return;
     var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(allocator, tree) };
     defer fuse_vfs.deinit();
+    // libfuse threads are not zio tasks, and the zio executor (this thread) is parked in
+    // the FUSE loop, so registry fetches and the VFS lock run on a thread-based Io.
+    // Unlimited async: past the limit `Io.async` runs inline, and each request's
+    // timeout is an async sleep that would then block its caller for the full timeout.
+    var threaded: std.Io.Threaded = .init(allocator, .{ .async_limit = .unlimited });
+    defer threaded.deinit();
+    const fetch_io = threaded.io();
+    fuse_vfs.voila.lock_io = fetch_io;
+    fuse_vfs.voila.setFetchIo(fetch_io);
+    var pool: ?FetchPool = if (fuse_vfs.voila.fetcher) |f| FetchPool.init(allocator, fetch_io, f, voila_root) else null;
+    if (pool) |*p| {
+        p.start();
+        fuse_vfs.voila.pool = p;
+    }
+    defer if (pool) |*p| p.deinit();
     if (opts.map_root) fuse_vfs.voila.owner_map = .{
         .uid = .{ .host = std.c.getuid(), .sub = opts.subuid },
         .gid = .{ .host = std.c.getgid(), .sub = opts.subgid },
@@ -208,7 +227,7 @@ fn serveChild(
     _ = std.c.close(ready_w);
     // EOF on the stop pipe (parent closed it or died) unmounts, which ends the serve loop.
     const watcher = std.Thread.spawn(.{}, watchStop, .{ stop_r, mount_dir, &ctx.session }) catch null;
-    fuse_linux.serveSession(&ctx.session) catch |e| {
+    fuse_linux.serveSessionMt(&ctx.session, fuse_threads) catch |e| {
         ctx.err = e;
     };
     unmountQuietly(mount_dir);

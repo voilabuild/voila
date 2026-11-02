@@ -3,6 +3,7 @@
 pub const Backend = @import("Backend.zig");
 pub const mount_exec = @import("mount_exec.zig");
 pub const fuse = struct {
+    pub const chunk_fetch_pool = @import("fuse/chunk_fetch_pool.zig");
     pub const fuse_abi = @import("fuse/fuse_abi.zig");
     pub const fuse_libfuse = @import("fuse/fuse_libfuse.zig");
     pub const fuse_linux = @import("fuse/fuse_linux.zig");
@@ -14,6 +15,7 @@ pub const fuse = struct {
 
 test {
     _ = @import("Backend.zig");
+    _ = @import("fuse/chunk_fetch_pool.zig");
     _ = @import("fuse/fuse_abi.zig");
     _ = @import("fuse/fuse_abi_test.zig");
     _ = @import("fuse/fuse_conf_test.zig");

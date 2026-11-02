@@ -7,9 +7,15 @@ const request_timeout: std.Io.Duration = .fromSeconds(30);
 /// Cloudflare hang from a new client per request (#123).
 pub const Session = struct {
     client: std.http.Client,
+    /// Reuse the connection between requests. Off by default: see #123.
+    keep_alive: bool = false,
 
     pub fn init(io: std.Io, allocator: std.mem.Allocator) Session {
         return .{ .client = .{ .allocator = allocator, .io = io } };
+    }
+
+    pub fn initKeepAlive(io: std.Io, allocator: std.mem.Allocator) Session {
+        return .{ .client = .{ .allocator = allocator, .io = io }, .keep_alive = true };
     }
 
     pub fn deinit(self: *Session) void {
@@ -84,7 +90,7 @@ pub const Session = struct {
         const opts: std.http.Client.FetchOptions = .{
             .location = .{ .url = url },
             .method = method,
-            .keep_alive = false,
+            .keep_alive = self.keep_alive,
             .headers = .{
                 .user_agent = .{ .override = "voila-zig-registry/1.0" },
                 .authorization = authorization,

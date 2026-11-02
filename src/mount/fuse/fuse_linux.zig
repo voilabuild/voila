@@ -72,3 +72,7 @@ pub fn mountSession(allocator: std.mem.Allocator, mountpoint: []const u8, vfs: *
 pub fn serveSession(session: *Session) !void {
     try fuse_libfuse.serveSession(session);
 }
+
+pub fn serveSessionMt(session: *Session, max_threads: u32) error{ NoFuse, FuseLoopFailed }!void {
+    try fuse_libfuse.serveSessionMt(session, max_threads);
+}

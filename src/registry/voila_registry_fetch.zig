@@ -14,6 +14,8 @@ fn trimRightSlash(s: []const u8) []const u8 {
 }
 
 fn ensureOrigin(h: *hub.Hub, io: std.Io, allocator: std.mem.Allocator, cfg: hub.Config) !void {
+    h.origin_mu.lockUncancelable(io);
+    defer h.origin_mu.unlock(io);
     if (h.chunk_origin_loaded) return;
     h.chunk_origin_loaded = true;
     const url = try std.fmt.allocPrint(allocator, "{s}/v1/registry/config", .{cfg.base_url});
@@ -56,7 +58,7 @@ pub fn fetchChunkRaw(
         try std.fmt.allocPrint(allocator, "{s}/v1/chunks/{s}", .{ cfg.base_url, chunk_hex });
     defer allocator.free(url);
 
-    const resp = voila_http.httpGetResponse(io, allocator, url, "") catch |e| {
+    const resp = getChunkResponse(reg_hub, io, allocator, url) catch |e| {
         log.err("could not reach the registry for chunk {s} ({s}): {s}", .{ chunk_hex, url, @errorName(e) });
         return error.RegistryFetch;
     };
@@ -87,6 +89,22 @@ pub fn fetchChunkRaw(
     voila_fetch_stats.recordChunk(chunk_hex, raw.len);
     if (owned_decompress) allocator.free(raw);
     return voila_store.loadChunkRaw(allocator, voila_root, chunk_hex, voila_store.AlgoRaw);
+}
+
+/// GET on a pooled keep-alive session. A pooled connection the server already closed
+/// fails, so one transport error retries on a fresh session.
+fn getChunkResponse(reg_hub: *hub.Hub, io: std.Io, allocator: std.mem.Allocator, url: []const u8) !voila_http.Response {
+    var attempt: u8 = 0;
+    while (true) : (attempt += 1) {
+        const s = reg_hub.acquireSession(io, attempt > 0) orelse return voila_http.httpGetResponse(io, allocator, url, "");
+        const resp = s.getResponse(allocator, url, "") catch |e| {
+            reg_hub.releaseSession(s, false);
+            if (attempt == 0 and e != error.Timeout) continue;
+            return e;
+        };
+        reg_hub.releaseSession(s, true);
+        return resp;
+    }
 }
 
 /// Store fallback that fetches missing chunks from the configured registry.

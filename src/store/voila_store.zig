@@ -19,6 +19,19 @@ pub fn chunkBlobPath(allocator: std.mem.Allocator, voila_root: []const u8, chunk
     });
 }
 
+/// True when the chunk's blob is in the local store.
+pub fn hasChunk(voila_root: []const u8, chunk_hex: []const u8) bool {
+    if (chunk_hex.len != 64) return false;
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path = std.fmt.bufPrint(&buf, "{s}/chunks/{s}/{s}/{s}", .{
+        voila_root,
+        chunk_hex[0..2],
+        chunk_hex[2..4],
+        chunk_hex,
+    }) catch return false;
+    return posix_util.access(path);
+}
+
 pub fn loadChunkRaw(
     allocator: std.mem.Allocator,
     voila_root: []const u8,
