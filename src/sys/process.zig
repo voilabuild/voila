@@ -53,6 +53,19 @@ fn runWith(argv: []const []const u8, quiet: bool) RunError!u8 {
     return 128 +| @as(u8, @truncate(@backingInt(linux.W.TERMSIG(st))));
 }
 
+/// Blocks until `pid` exits (retries on EINTR).
+pub fn waitForever(pid: i32) void {
+    var status: i32 = 0;
+    while (true) {
+        const w = linux.wait4(@intCast(pid), &status, 0, null);
+        switch (linux.errno(w)) {
+            .SUCCESS => return,
+            .INTR => continue,
+            else => return,
+        }
+    }
+}
+
 pub const CredError = error{ SetGroupsFailed, SetGidFailed, SetUidFailed };
 
 /// Drops to `uid`/`gid`; `groups` replaces the supplementary list unless setgroups is
