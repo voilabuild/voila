@@ -8,6 +8,7 @@ pub const run_flags = @import("run_flags.zig");
 pub const types = @import("types.zig");
 pub const voila_loader = @import("voila_loader.zig");
 pub const build = struct {
+    pub const add_archive = @import("build/add_archive.zig");
     pub const copy_from = @import("build/copy_from.zig");
     pub const copy_sources = @import("build/copy_sources.zig");
     pub const driver = @import("build/driver.zig");
@@ -37,6 +38,7 @@ pub const oci = struct {
 };
 
 test {
+    _ = @import("build/add_archive.zig");
     _ = @import("build/copy_from.zig");
     _ = @import("build/copy_sources.zig");
     _ = @import("build/driver.zig");
