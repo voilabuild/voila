@@ -70,7 +70,7 @@ pub fn print(err: anyerror) void {
         error.EnvFileUnreadable => {
             std.debug.print("voila: cannot read the --env-file\n", .{});
         },
-        error.FixtureNotFound => {},
+        error.FixtureNotFound, error.ImageInUse => {},
         error.InvalidApiKey => {
             std.debug.print("voila: invalid API key (run `voila login`)\n", .{});
         },

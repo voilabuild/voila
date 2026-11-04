@@ -11,6 +11,8 @@ const voila_image_tag = @import("registry").voila_image_tag;
 const voila_resolve = @import("registry").voila_resolve;
 const voila_registry = @import("registry").voila_registry;
 const voila_hub_import = @import("registry").voila_hub_import;
+const voila_gc = @import("registry").voila_gc;
+const container_store = @import("./oci/container_store.zig");
 
 const Local = struct {
     store_root: []const u8,
@@ -146,8 +148,34 @@ fn execImpl(ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: typ
 
 fn rmiImpl(ptr: *anyopaque, _: std.Io, allocator: std.mem.Allocator, spec: types.RmiSpec) !void {
     const self: *Local = @ptrCast(@alignCast(ptr));
+    if (try runningUser(allocator, self.store_root, spec.image)) |id| {
+        defer allocator.free(id);
+        std.debug.print("voila rmi: {s} is used by running container {s}; stop it first\n", .{ spec.image, id });
+        return error.ImageInUse;
+    }
     try voila_resolve.removeImage(allocator, self.store_root, spec.image);
     std.debug.print("Removed {s}\n", .{spec.image});
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    const now: u64 = @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+    const freed = voila_gc.collect(allocator, self.store_root, now, voila_gc.default_grace_ns) catch |e| {
+        if (e == error.UnknownImageRoots) return; // an image without a cached manifest: keep all chunks
+        return e;
+    };
+    if (freed.chunks > 0) std.debug.print("Freed {d} chunks ({d} MiB)\n", .{ freed.chunks, freed.bytes / (1024 * 1024) });
+}
+
+/// Id of a running container started from `image`, if any.
+fn runningUser(allocator: std.mem.Allocator, voila_root: []const u8, image: []const u8) !?[]const u8 {
+    const states = container_store.listStates(allocator, voila_root) catch return null;
+    defer {
+        for (states) |st| container_store.freeState(allocator, st);
+        allocator.free(states);
+    }
+    for (states) |st| {
+        if (std.mem.eql(u8, st.image, image) and container_lifecycle.isRunning(st)) return try allocator.dupe(u8, st.id);
+    }
+    return null;
 }
 
 fn imagesImpl(ptr: *anyopaque, _: std.Io, allocator: std.mem.Allocator) !void {
