@@ -17,6 +17,7 @@ const container_userns = @import("./container_userns.zig");
 const container_isolated_exec = @import("./container_isolated_exec.zig");
 const container_fuse_sibling = @import("./container_fuse_sibling.zig");
 const container_ports = @import("./container_ports.zig");
+const container_etc = @import("./container_etc.zig");
 const userns_ids = @import("./userns_ids.zig");
 const run_flags = @import("../run_flags.zig");
 
@@ -435,6 +436,12 @@ fn runMounted(
     if (!fuse_server.alive()) return error.FuseServerFailed;
 
     defer releaseRwDir(allocator, rw_dir);
+    const ctr_dir = std.fs.path.dirname(rw_dir) orelse rw_dir;
+    const etc_dir = try std.fmt.allocPrint(allocator, "{s}/etc", .{ctr_dir});
+    defer allocator.free(etc_dir);
+    const id = std.fs.path.basename(ctr_dir);
+    const hostname = id[0..@min(id.len, 12)];
+    try container_etc.write(allocator, etc_dir, hostname, container_ports.findPasta() != null);
     return container_isolated_exec.spawnAndWait(io, allocator, .{
         .mount_dir = mount_dir,
         .log_path = log_path,
@@ -445,6 +452,8 @@ fn runMounted(
         .use_tty = opts.tty or opts.interactive,
         .start_net = true,
         .ready_fd = ready_fd,
+        .etc_dir = etc_dir,
+        .hostname = hostname,
     }, 0) catch |e| switch (e) {
         error.ForwarderFailed => {
             std.debug.print("voila: port forwarder exited; see the container log\n", .{});
@@ -474,6 +483,7 @@ pub fn execInMount(
     cmd_argv: []const []const u8,
     use_tty: bool,
     opts: container_run_opts.RunOpts,
+    join_pid: i32,
 ) !u8 {
     return container_isolated_exec.spawnAndWait(io, allocator, .{
         .mount_dir = mount_dir,
@@ -483,7 +493,8 @@ pub fn execInMount(
         .opts = opts,
         .use_tty = use_tty,
         .start_net = false,
-    }, 120_000);
+        .join_pid = join_pid,
+    }, 0);
 }
 
 fn writeAllFd(fd: std.posix.fd_t, data: []const u8) void {

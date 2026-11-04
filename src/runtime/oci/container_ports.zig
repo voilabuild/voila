@@ -4,6 +4,7 @@ const linux = std.os.linux;
 const run_flags = @import("../run_flags.zig");
 const posix_util = @import("sys").posix_util;
 const ns = @import("sys").ns;
+const container_etc = @import("container_etc.zig");
 
 pub const Forwarder = struct {
     pid: i32,
@@ -69,19 +70,59 @@ fn startPasta(io: std.Io, pasta: []const u8, ns_pid: i32, ports: []const run_fla
     const pid_s = try std.fmt.allocPrint(std.heap.page_allocator, "{d}", .{ns_pid});
     defer std.heap.page_allocator.free(pid_s);
     const argv = [_][]const u8{
-        pasta, "-f", "-q", "--config-net", "-u", "none", "-T", "none", "-U", "none", "-t", spec, pid_s,
+        pasta, "-f",   "-q",  "--config-net", "--dns-forward", container_etc.pasta_dns,
+        "-u",  "none", "-T",  "none",         "-U",            "none",
+        "-t",  spec,   pid_s,
     };
     var fwd: Forwarder = .{ .pid = try spawnArgv(io, &argv) };
-    try io.sleep(std.Io.Duration.fromMilliseconds(50), .awake);
+    // --config-net adds the default route last; without one (host offline) give up after 1s.
+    var waited: u32 = 0;
+    while (waited < 1000 and fwd.alive() and !hasDefaultRoute(ns_pid)) : (waited += 5) {
+        try io.sleep(std.Io.Duration.fromMilliseconds(5), .awake);
+    }
     if (!fwd.alive()) {
-        // Pasta quits when the target pid does. A short command can finish
-        // during the 50ms wait; outbound is gone, but that is fine.
+        // Outbound is optional; published ports are not.
         if (ports.len == 0) return &.{};
         return error.ForwarderFailed;
     }
     const out = try std.heap.page_allocator.alloc(Forwarder, 1);
     out[0] = fwd;
     return out;
+}
+
+fn hasDefaultRoute(ns_pid: i32) bool {
+    const a = std.heap.page_allocator;
+    var path_buf: [64]u8 = undefined;
+    inline for (.{ "route", "ipv6_route" }) |file| {
+        const path = std.fmt.bufPrint(&path_buf, "/proc/{d}/net/" ++ file, .{ns_pid}) catch return false;
+        if (posix_util.readFileAlloc(a, path, 1 << 20)) |data| {
+            defer a.free(data);
+            if (routesHaveDefault(data, std.mem.eql(u8, file, "ipv6_route"))) return true;
+        } else |_| {}
+    }
+    return false;
+}
+
+/// True when a `/proc/net/route` (or `ipv6_route`) table has a default route.
+fn routesHaveDefault(table: []const u8, v6: bool) bool {
+    var lines = std.mem.splitScalar(u8, table, '\n');
+    while (lines.next()) |line| {
+        var cols = std.mem.tokenizeAny(u8, line, " \t");
+        if (v6) {
+            const dst = cols.next() orelse continue;
+            const len = cols.next() orelse continue;
+            if (std.mem.allEqual(u8, dst, '0') and std.mem.eql(u8, len, "00")) {
+                var last: []const u8 = "";
+                while (cols.next()) |c| last = c;
+                if (!std.mem.eql(u8, last, "lo")) return true;
+            }
+        } else {
+            _ = cols.next() orelse continue;
+            const dst = cols.next() orelse continue;
+            if (std.mem.eql(u8, dst, "00000000")) return true;
+        }
+    }
+    return false;
 }
 
 fn startProxy(io: std.Io, ns_pid: i32, ports: []const run_flags.PortMap) ![]Forwarder {
@@ -242,4 +283,14 @@ test "tcpSpec maps host to container and keeps same-port as one number" {
     });
     defer a.free(s);
     try std.testing.expectEqualStrings("8080:80,443", s);
+}
+
+test "routesHaveDefault finds v4 and v6 default routes" {
+    const v4 = "Iface\tDestination\tGateway\nwlo1\t00000000\t0101A8C0\ndocker0\t000011AC\t00000000\n";
+    try std.testing.expect(routesHaveDefault(v4, false));
+    try std.testing.expect(!routesHaveDefault("Iface\tDestination\nlo\t0000007F\n", false));
+    const v6 = "00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe800000000000000000000000000001 00000400 00000000 00000000 00000003 eth0\n";
+    try std.testing.expect(routesHaveDefault(v6, true));
+    const v6lo = "00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200 lo\n";
+    try std.testing.expect(!routesHaveDefault(v6lo, true));
 }

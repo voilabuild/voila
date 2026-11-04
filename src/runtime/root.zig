@@ -17,6 +17,7 @@ pub const build = struct {
 };
 pub const oci = struct {
     pub const container_bind = @import("oci/container_bind.zig");
+    pub const container_etc = @import("oci/container_etc.zig");
     pub const container_exec = @import("oci/container_exec.zig");
     pub const container_fuse_sibling = @import("oci/container_fuse_sibling.zig");
     pub const container_isolated_exec = @import("oci/container_isolated_exec.zig");
@@ -46,6 +47,7 @@ test {
     _ = @import("iface.zig");
     _ = @import("local.zig");
     _ = @import("oci/container_bind.zig");
+    _ = @import("oci/container_etc.zig");
     _ = @import("oci/container_exec.zig");
     _ = @import("oci/container_fuse_sibling.zig");
     _ = @import("oci/container_isolated_exec.zig");

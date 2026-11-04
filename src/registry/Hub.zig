@@ -65,12 +65,25 @@ pub const Hub = struct {
 
     pub fn loadFromEnv(self: *Hub, allocator: std.mem.Allocator) !void {
         const url_z = std.c.getenv("VOILA_REGISTRY") orelse return;
-        const url_slice: []const u8 = std.mem.span(url_z);
-        const normalized = try voila_paths.normalizeRegistryUrl(allocator, url_slice);
+        const token: ?[]const u8 = if (std.c.getenv("VOILA_REGISTRY_TOKEN")) |t| std.mem.span(t) else null;
+        const org: ?[]const u8 = if (std.c.getenv("VOILA_ORG")) |o| std.mem.span(o) else null;
+        try self.applyEnv(allocator, std.mem.span(url_z), token, org);
+    }
+
+    /// Sets the registry from env values. An unset token or org keeps the one already
+    /// loaded (from `voila login`) when it is for the same registry.
+    pub fn applyEnv(self: *Hub, allocator: std.mem.Allocator, url: []const u8, token: ?[]const u8, org: ?[]const u8) !void {
+        const normalized = try voila_paths.normalizeRegistryUrl(allocator, url);
         defer allocator.free(normalized);
-        const token_slice: []const u8 = if (std.c.getenv("VOILA_REGISTRY_TOKEN")) |t| std.mem.span(t) else "";
-        const org_slice: []const u8 = if (std.c.getenv("VOILA_ORG")) |o| std.mem.span(o) else "";
-        try self.configure(allocator, normalized, token_slice, org_slice);
+        const prev = self.getConfigCopy(allocator);
+        defer if (prev) |p| {
+            allocator.free(p.base_url);
+            allocator.free(p.token);
+            allocator.free(p.org);
+        };
+        const same = if (prev) |p| std.mem.eql(u8, p.base_url, std.mem.trimEnd(u8, normalized, "/")) else false;
+        const keep: Config = if (same) prev.? else .{ .base_url = "", .token = "", .org = "" };
+        try self.configure(allocator, normalized, token orelse keep.token, org orelse keep.org);
     }
 
     pub fn getConfigCopy(self: *Hub, allocator: std.mem.Allocator) ?Config {
@@ -276,3 +289,21 @@ pub const FetchStats = struct {
         self.writeStatsFileUnlocked();
     }
 };
+
+test "applyEnv keeps the login token for the same registry only" {
+    const a = std.testing.allocator;
+    var hub: Hub = .{};
+    defer hub.deinit(a);
+    try hub.configure(a, "https://reg.example/registry", "dreg_login", "acme");
+
+    try hub.applyEnv(a, "https://reg.example/registry/", null, null);
+    try std.testing.expectEqualStrings("dreg_login", hub.cfg.?.token);
+    try std.testing.expectEqualStrings("acme", hub.cfg.?.org);
+
+    try hub.applyEnv(a, "https://reg.example/registry", "dreg_env", null);
+    try std.testing.expectEqualStrings("dreg_env", hub.cfg.?.token);
+
+    try hub.applyEnv(a, "https://other.example", null, null);
+    try std.testing.expectEqualStrings("", hub.cfg.?.token);
+    try std.testing.expectEqualStrings("", hub.cfg.?.org);
+}

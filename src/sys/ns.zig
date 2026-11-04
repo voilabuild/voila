@@ -25,6 +25,7 @@ pub const Error = error{
     SocketFailed,
     PtyFailed,
     SetnsFailed,
+    SethostnameFailed,
 };
 
 fn failed(rc: usize) bool {
@@ -63,6 +64,60 @@ pub fn chdir(path: [*:0]const u8) Error!void {
 
 pub fn unshare(flags: usize) Error!void {
     if (failed(linux.unshare(flags))) return error.UnshareFailed;
+}
+
+/// Enters `pid`'s user, mount, IPC, UTS, net and PID namespaces and its root, like
+/// `nsenter -a`. Must run single-threaded; the PID namespace applies to later children.
+pub fn joinNamespaces(pid: linux.pid_t) Error!void {
+    const kinds = [_]struct { name: []const u8, flag: u32 }{
+        .{ .name = "user", .flag = linux.CLONE.NEWUSER },
+        .{ .name = "mnt", .flag = linux.CLONE.NEWNS },
+        .{ .name = "ipc", .flag = linux.CLONE.NEWIPC },
+        .{ .name = "uts", .flag = linux.CLONE.NEWUTS },
+        .{ .name = "net", .flag = linux.CLONE.NEWNET },
+        .{ .name = "pid", .flag = linux.CLONE.NEWPID },
+    };
+    // Namespaces the target shares with us (e.g. IPC, never unshared) are skipped:
+    // re-joining them is EINVAL or EPERM. Decide before the first setns changes /proc/self.
+    var fds: [kinds.len]linux.fd_t = @splat(-1);
+    defer for (fds) |fd| if (fd >= 0) close(fd);
+    var buf: [64]u8 = undefined;
+    for (kinds, &fds) |k, *fd| {
+        if (sameNs(pid, null, k.name)) continue;
+        const path = std.fmt.bufPrintSentinel(&buf, "/proc/{d}/ns/{s}", .{ pid, k.name }, 0) catch return error.OpenFailed;
+        fd.* = try openRead(path);
+    }
+    const root_path = std.fmt.bufPrintSentinel(&buf, "/proc/{d}/root", .{pid}, 0) catch return error.OpenFailed;
+    const root = try openPath(root_path);
+    defer close(root);
+    for (kinds, fds) |k, fd| if (fd >= 0) try setns(fd, k.flag);
+    if (failed(linux.fchdir(root))) return error.ChdirFailed;
+    try chroot(".");
+}
+
+pub fn samePidNamespace(a: linux.pid_t, b: linux.pid_t) bool {
+    return sameNs(a, b, "pid");
+}
+
+/// `b` null means this process. Unreadable links (another user's process) count as same.
+fn sameNs(a: linux.pid_t, b: ?linux.pid_t, kind: []const u8) bool {
+    var a_buf: [64]u8 = undefined;
+    var b_buf: [64]u8 = undefined;
+    var la: [64]u8 = undefined;
+    var lb: [64]u8 = undefined;
+    const pa = std.fmt.bufPrintSentinel(&a_buf, "/proc/{d}/ns/{s}", .{ a, kind }, 0) catch return true;
+    const pb = (if (b) |p|
+        std.fmt.bufPrintSentinel(&b_buf, "/proc/{d}/ns/{s}", .{ p, kind }, 0)
+    else
+        std.fmt.bufPrintSentinel(&b_buf, "/proc/self/ns/{s}", .{kind}, 0)) catch return true;
+    const na = linux.readlink(pa, &la, la.len);
+    const nb = linux.readlink(pb, &lb, lb.len);
+    if (failed(na) or failed(nb)) return true;
+    return std.mem.eql(u8, la[0..na], lb[0..nb]);
+}
+
+pub fn setHostname(name: []const u8) Error!void {
+    if (failed(linux.syscall2(.sethostname, @intFromPtr(name.ptr), name.len))) return error.SethostnameFailed;
 }
 
 pub fn setns(fd: linux.fd_t, nstype: u32) Error!void {
