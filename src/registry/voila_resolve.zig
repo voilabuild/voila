@@ -170,11 +170,17 @@ fn listImages(allocator: std.mem.Allocator, db: *sqlite.sqlite3) ![]ImageRecord 
         const man_len = sqlite.sqlite3_column_bytes(stmt, 2);
         try out.append(allocator, .{
             .ref = try allocator.dupe(u8, ref_ptr[0..@intCast(ref_len)]),
-            .image_digest = try allocator.dupe(u8, @as([*]const u8, @ptrCast(dig_ptr))[0..@intCast(dig_len)]),
-            .merged_root_manifest = try allocator.dupe(u8, @as([*]const u8, @ptrCast(man_ptr))[0..@intCast(man_len)]),
+            .image_digest = try allocator.dupe(u8, blob(dig_ptr, dig_len)),
+            .merged_root_manifest = try allocator.dupe(u8, blob(man_ptr, man_len)),
         });
     }
     return try out.toOwnedSlice(allocator);
+}
+
+/// sqlite returns a null pointer for an empty blob.
+fn blob(ptr: ?*const anyopaque, len: c_int) []const u8 {
+    const p = ptr orelse return "";
+    return @as([*]const u8, @ptrCast(p))[0..@intCast(len)];
 }
 
 pub fn removeImage(allocator: std.mem.Allocator, voila_root: []const u8, image_ref: []const u8) !void {

@@ -102,6 +102,8 @@ pub const Client = struct {
         }
         if (resp.status != 200) {
             resp.deinit(self.allocator);
+            // Docker Hub answers 401 even after auth for a repository that does not exist.
+            if (resp.status == 401 or resp.status == 403 or resp.status == 404) return error.ManifestNotFound;
             return error.HttpStatus;
         }
         const media_type = if (resp.content_type.len != 0)
@@ -477,6 +479,7 @@ fn parseWwwAuthenticate(challenge: []const u8, realm: *[]const u8, service: *[]c
 
 pub const Error = error{
     HttpStatus,
+    ManifestNotFound,
     BadManifest,
     BadIndex,
 };

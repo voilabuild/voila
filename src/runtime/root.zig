@@ -8,6 +8,7 @@ pub const run_flags = @import("run_flags.zig");
 pub const types = @import("types.zig");
 pub const voila_loader = @import("voila_loader.zig");
 pub const build = struct {
+    pub const add_archive = @import("build/add_archive.zig");
     pub const copy_from = @import("build/copy_from.zig");
     pub const copy_sources = @import("build/copy_sources.zig");
     pub const driver = @import("build/driver.zig");
@@ -17,6 +18,7 @@ pub const build = struct {
 };
 pub const oci = struct {
     pub const container_bind = @import("oci/container_bind.zig");
+    pub const container_etc = @import("oci/container_etc.zig");
     pub const container_exec = @import("oci/container_exec.zig");
     pub const container_fuse_sibling = @import("oci/container_fuse_sibling.zig");
     pub const container_isolated_exec = @import("oci/container_isolated_exec.zig");
@@ -36,6 +38,7 @@ pub const oci = struct {
 };
 
 test {
+    _ = @import("build/add_archive.zig");
     _ = @import("build/copy_from.zig");
     _ = @import("build/copy_sources.zig");
     _ = @import("build/driver.zig");
@@ -46,6 +49,7 @@ test {
     _ = @import("iface.zig");
     _ = @import("local.zig");
     _ = @import("oci/container_bind.zig");
+    _ = @import("oci/container_etc.zig");
     _ = @import("oci/container_exec.zig");
     _ = @import("oci/container_fuse_sibling.zig");
     _ = @import("oci/container_isolated_exec.zig");

@@ -5,4 +5,4 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-cache --python-preference only-system
 COPY registry.py ./
 ENV PORT=7423
-CMD ["sh", "-c", "exec .venv/bin/uvicorn registry:app --host 127.0.0.1 --port $PORT"]
+CMD ["sh", "-c", "exec .venv/bin/uvicorn registry:app --host 0.0.0.0 --port $PORT"]

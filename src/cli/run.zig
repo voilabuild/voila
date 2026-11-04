@@ -6,6 +6,7 @@ const voila_runtime = @import("runtime").open;
 const run_flags = @import("runtime").run_flags;
 const voila_image_run_config = @import("runtime").oci.voila_image_run_config;
 const registry_session = @import("registry").registry_session;
+const posix_util = @import("sys").posix_util;
 
 pub const Parsed = struct {
     runtime_cfg: voila_runtime.Config,
@@ -20,8 +21,18 @@ pub const Parsed = struct {
     ports: []run_flags.PortMap,
     tty: bool,
     interactive: bool,
+    /// `--entrypoint`: replaces the image ENTRYPOINT and drops its CMD, as in Docker.
+    entrypoint: ?[]const u8 = null,
+    /// `-u/--user`: overrides the image USER.
+    user: ?[]const u8 = null,
+    hostname: ?[]const u8 = null,
+    network: ?[]const u8 = null,
 
     pub fn deinit(self: Parsed, allocator: std.mem.Allocator) void {
+        if (self.hostname) |h| allocator.free(h);
+        if (self.network) |n| allocator.free(n);
+        if (self.entrypoint) |e| allocator.free(e);
+        if (self.user) |u| allocator.free(u);
         allocator.free(self.runtime_cfg.store_root);
         allocator.free(self.image);
         allocator.free(self.name);
@@ -60,6 +71,14 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator,
     var workdir: ?[]const u8 = null;
     var tty = false;
     var interactive = false;
+    var entrypoint: ?[]const u8 = null;
+    var user: ?[]const u8 = null;
+    var hostname: ?[]const u8 = null;
+    var network: ?[]const u8 = null;
+    errdefer if (hostname) |h| allocator.free(h);
+    errdefer if (network) |n| allocator.free(n);
+    errdefer if (entrypoint) |e| allocator.free(e);
+    errdefer if (user) |u| allocator.free(u);
     while (args.next()) |arg| {
         if (after_sep) {
             try cmd_list.append(allocator, try allocator.dupe(u8, arg));
@@ -98,6 +117,39 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator,
                 .key = try allocator.dupe(u8, pair.key),
                 .value = try allocator.dupe(u8, pair.value),
             });
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--env-file")) {
+            const path = args.next() orelse return error.BadRunArgs;
+            try appendEnvFile(allocator, &env_list, path);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--hostname")) {
+            const h = args.next() orelse return error.BadRunArgs;
+            if (hostname) |old| allocator.free(old);
+            hostname = try allocator.dupe(u8, h);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--network") or std.mem.eql(u8, arg, "--net")) {
+            const n = args.next() orelse return error.BadRunArgs;
+            if (!std.mem.eql(u8, n, "none") and !std.mem.eql(u8, n, "bridge") and !std.mem.eql(u8, n, "default")) {
+                diag.flag = n;
+                return error.UnsupportedNetwork;
+            }
+            if (network) |old| allocator.free(old);
+            network = try allocator.dupe(u8, if (std.mem.eql(u8, n, "none")) "none" else "");
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--entrypoint")) {
+            const e = args.next() orelse return error.BadRunArgs;
+            if (entrypoint) |old| allocator.free(old);
+            entrypoint = try allocator.dupe(u8, e);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-u") or std.mem.eql(u8, arg, "--user")) {
+            const u = args.next() orelse return error.BadRunArgs;
+            if (user) |old| allocator.free(old);
+            user = try allocator.dupe(u8, u);
             continue;
         }
         if (std.mem.eql(u8, arg, "-w") or std.mem.eql(u8, arg, "--workdir")) {
@@ -173,7 +225,46 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator,
         .ports = try port_list.toOwnedSlice(allocator),
         .tty = tty,
         .interactive = interactive,
+        .entrypoint = entrypoint,
+        .user = user,
+        .hostname = hostname,
+        .network = network,
     };
+}
+
+/// Docker `--env-file`: `KEY=VALUE` lines; blank lines and `#` comments are skipped.
+fn appendEnvFile(allocator: std.mem.Allocator, list: *std.ArrayList(run_flags.EnvPair), path: []const u8) !void {
+    const data = posix_util.readFileAlloc(allocator, path, 1 << 20) catch return error.EnvFileUnreadable;
+    defer allocator.free(data);
+    try parseEnvFile(allocator, list, data);
+}
+
+fn parseEnvFile(allocator: std.mem.Allocator, list: *std.ArrayList(run_flags.EnvPair), data: []const u8) !void {
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        const pair = run_flags.parseEnvArg(line) catch continue; // a bare KEY has no value to pass
+        try list.append(allocator, .{
+            .key = try allocator.dupe(u8, pair.key),
+            .value = try allocator.dupe(u8, pair.value),
+        });
+    }
+}
+
+/// ENTRYPOINT + (args or CMD), or `--entrypoint` + args.
+fn commandArgv(io: std.Io, allocator: std.mem.Allocator, parsed: Parsed) ![]const []const u8 {
+    if (parsed.entrypoint) |ep| {
+        var out: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (out.items) |a| allocator.free(a);
+            out.deinit(allocator);
+        }
+        try out.append(allocator, try allocator.dupe(u8, ep));
+        for (parsed.cmd) |a| try out.append(allocator, try allocator.dupe(u8, a));
+        return out.toOwnedSlice(allocator);
+    }
+    return voila_image_run_config.defaultArgv(io, allocator, parsed.runtime_cfg.store_root, parsed.image, parsed.cmd);
 }
 
 pub fn execute(ctx: command.Ctx) !void {
@@ -184,22 +275,25 @@ pub fn execute(ctx: command.Ctx) !void {
             std.debug.print("voila run: unknown flag {s}\n", .{diag.flag});
             std.process.exit(2);
         }
+        if (e == error.UnsupportedNetwork) {
+            std.debug.print("voila run: --network {s} is not supported yet (use the default or none)\n", .{diag.flag});
+            std.process.exit(2);
+        }
         return e;
     };
     defer parsed.deinit(gpa);
+    if (parsed.network != null and parsed.network.?.len > 0 and parsed.ports.len > 0) {
+        std.debug.print("voila run: -p cannot be used with --network none\n", .{});
+        std.process.exit(2);
+    }
     try registry_session.prepare(ctx.io, gpa, parsed.runtime_cfg.store_root);
     var worker = try command.openRuntime(gpa, parsed.runtime_cfg);
     defer worker.deinit(gpa);
-    var argv = parsed.cmd;
-    var default_argv: ?[]const []const u8 = null;
-    if (argv.len == 0) {
-        default_argv = try voila_image_run_config.defaultArgv(ctx.io, gpa, parsed.runtime_cfg.store_root, parsed.image, &.{});
-        argv = default_argv.?;
+    const argv = try commandArgv(ctx.io, gpa, parsed);
+    defer {
+        for (argv) |s| gpa.free(s);
+        gpa.free(argv);
     }
-    defer if (default_argv) |a| {
-        for (a) |s| gpa.free(s);
-        gpa.free(a);
-    };
     const image_env = try voila_image_run_config.imageEnv(ctx.io, gpa, parsed.runtime_cfg.store_root, parsed.image);
     defer {
         for (image_env) |e| {
@@ -208,7 +302,11 @@ pub fn execute(ctx: command.Ctx) !void {
         }
         gpa.free(image_env);
     }
-    const env = try std.mem.concat(gpa, run_flags.EnvPair, &.{ image_env, parsed.env });
+    const term: []const run_flags.EnvPair = if (parsed.tty and !hasEnv(image_env, "TERM") and !hasEnv(parsed.env, "TERM"))
+        &.{.{ .key = "TERM", .value = "xterm" }}
+    else
+        &.{};
+    const env = try std.mem.concat(gpa, run_flags.EnvPair, &.{ image_env, term, parsed.env });
     defer gpa.free(env);
     var workdir = parsed.workdir;
     var workdir_from_image: ?[]const u8 = null;
@@ -217,8 +315,9 @@ pub fn execute(ctx: command.Ctx) !void {
         workdir = workdir_from_image.?;
     }
     defer if (workdir_from_image) |w| gpa.free(w);
-    const user = try voila_image_run_config.imageUser(ctx.io, gpa, parsed.runtime_cfg.store_root, parsed.image);
-    defer gpa.free(user);
+    const image_user = try voila_image_run_config.imageUser(ctx.io, gpa, parsed.runtime_cfg.store_root, parsed.image);
+    defer gpa.free(image_user);
+    const user = parsed.user orelse image_user;
     const code = try worker.run(ctx.io, gpa, .{
         .image = parsed.image,
         .argv = argv,
@@ -232,8 +331,44 @@ pub fn execute(ctx: command.Ctx) !void {
         .tty = parsed.tty,
         .interactive = parsed.interactive,
         .user = user,
+        .hostname = parsed.hostname orelse "",
+        .network = parsed.network orelse "",
     });
     std.process.exit(code);
+}
+
+fn hasEnv(env: []const run_flags.EnvPair, key: []const u8) bool {
+    for (env) |e| if (std.mem.eql(u8, e.key, key)) return true;
+    return false;
+}
+
+test "run parses --entrypoint, -u and keeps args for the entrypoint" {
+    const alloc = std.testing.allocator;
+    const argv: []const [*:0]const u8 = &.{ "-root", "/voila-test-root", "--entrypoint", "/bin/echo", "-u", "1000:1000", "alpine:3", "hi" };
+    var it = std.process.Args.Iterator.init(.{ .vector = argv });
+    var diag: Diag = .{};
+    const parsed = try parseArgs(alloc, &it, &diag);
+    defer parsed.deinit(alloc);
+    try std.testing.expectEqualStrings("/bin/echo", parsed.entrypoint.?);
+    try std.testing.expectEqualStrings("1000:1000", parsed.user.?);
+    try std.testing.expectEqualStrings("hi", parsed.cmd[0]);
+}
+
+test "parseEnvFile skips comments, blanks and bare keys" {
+    const alloc = std.testing.allocator;
+    var list: std.ArrayList(run_flags.EnvPair) = .empty;
+    defer {
+        for (list.items) |e| {
+            alloc.free(e.key);
+            alloc.free(e.value);
+        }
+        list.deinit(alloc);
+    }
+    try parseEnvFile(alloc, &list, "# c\n\nA=1\r\nBARE\nB=x=y\n");
+    try std.testing.expectEqual(@as(usize, 2), list.items.len);
+    try std.testing.expectEqualStrings("A", list.items[0].key);
+    try std.testing.expectEqualStrings("1", list.items[0].value);
+    try std.testing.expectEqualStrings("x=y", list.items[1].value);
 }
 
 test "run drops -- right after image ref" {

@@ -17,6 +17,7 @@ const container_userns = @import("./container_userns.zig");
 const container_isolated_exec = @import("./container_isolated_exec.zig");
 const container_fuse_sibling = @import("./container_fuse_sibling.zig");
 const container_ports = @import("./container_ports.zig");
+const container_etc = @import("./container_etc.zig");
 const userns_ids = @import("./userns_ids.zig");
 const run_flags = @import("../run_flags.zig");
 
@@ -47,6 +48,7 @@ fn failMessage(e: anyerror) []const u8 {
         error.SqlitePrepare, error.NoImageMatch => "image not found locally; run `voila import <ref>`",
         error.NeedFuse => "needs /dev/fuse",
         error.UserNamespacesRequired => "needs unprivileged user namespaces",
+        error.FuseServerFailed => "the image filesystem server exited; the container was stopped",
         else => @errorName(e),
     };
 }
@@ -97,6 +99,8 @@ pub fn runOptsFromSpec(allocator: std.mem.Allocator, spec: types.RunSpec) !conta
         .env = try env.toOwnedSlice(allocator),
         .workdir = try allocator.dupe(u8, spec.workdir),
         .user = try allocator.dupe(u8, spec.user),
+        .hostname = try allocator.dupe(u8, spec.hostname),
+        .network = try allocator.dupe(u8, spec.network),
         .volumes = try volumes.toOwnedSlice(allocator),
         .ports = ports,
         .tty = spec.tty,
@@ -428,13 +432,20 @@ fn runMounted(
         .subgid = ids.gid.sub,
     });
     defer fuse_server.deinit();
-    if (container_ports.findPasta() == null) {
+    if (container_ports.findPasta() == null and opts.network.len == 0) {
         std.debug.print("voila: pasta not found; the container has no outbound network (install the passt package)\n", .{});
     }
     try mount_exec.waitMountRootReady(mount_dir, io);
     if (!fuse_server.alive()) return error.FuseServerFailed;
 
     defer releaseRwDir(allocator, rw_dir);
+    const ctr_dir = std.fs.path.dirname(rw_dir) orelse rw_dir;
+    const etc_dir = try std.fmt.allocPrint(allocator, "{s}/etc", .{ctr_dir});
+    defer allocator.free(etc_dir);
+    const id = std.fs.path.basename(ctr_dir);
+    const hostname = if (opts.hostname.len > 0) opts.hostname else id[0..@min(id.len, 12)];
+    const net_none = std.mem.eql(u8, opts.network, "none");
+    try container_etc.write(allocator, etc_dir, hostname, !net_none and container_ports.findPasta() != null);
     return container_isolated_exec.spawnAndWait(io, allocator, .{
         .mount_dir = mount_dir,
         .log_path = log_path,
@@ -443,8 +454,11 @@ fn runMounted(
         .opts = opts,
         .rw_dir = rw_dir,
         .use_tty = opts.tty or opts.interactive,
-        .start_net = true,
+        .start_net = !net_none,
         .ready_fd = ready_fd,
+        .etc_dir = etc_dir,
+        .hostname = hostname,
+        .fuse_pid = fuse_server.pid,
     }, 0) catch |e| switch (e) {
         error.ForwarderFailed => {
             std.debug.print("voila: port forwarder exited; see the container log\n", .{});
@@ -474,6 +488,7 @@ pub fn execInMount(
     cmd_argv: []const []const u8,
     use_tty: bool,
     opts: container_run_opts.RunOpts,
+    join_pid: i32,
 ) !u8 {
     return container_isolated_exec.spawnAndWait(io, allocator, .{
         .mount_dir = mount_dir,
@@ -483,7 +498,8 @@ pub fn execInMount(
         .opts = opts,
         .use_tty = use_tty,
         .start_net = false,
-    }, 120_000);
+        .join_pid = join_pid,
+    }, 0);
 }
 
 fn writeAllFd(fd: std.posix.fd_t, data: []const u8) void {

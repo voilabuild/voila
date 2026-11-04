@@ -36,6 +36,14 @@ pub const Session = struct {
         return response.toOwnedSlice();
     }
 
+    /// Like `postJson`, but returns any status with its body for the caller to map.
+    pub fn postJsonStatus(self: *Session, allocator: std.mem.Allocator, url: []const u8, bearer_token: []const u8, body: []const u8) !Response {
+        var response: std.Io.Writer.Allocating = .init(allocator);
+        defer response.deinit();
+        const result = try self.fetch(url, .POST, bearer_token, "application/json", null, body, &response.writer);
+        return .{ .status = @backingInt(result.status), .body = try response.toOwnedSlice() };
+    }
+
     pub fn put(
         self: *Session,
         url: []const u8,

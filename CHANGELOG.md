@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented here.
 
+## Unreleased
+
+Fixes from the alpha.3 readiness pass (#163).
+
+### Highlights
+
+- Cold lazy runs: keep-alive chunk fetches, whole-file prefetch on 8 threads and a multi-threaded FUSE server (#147)
+- `voila run`: DNS (`/etc/resolv.conf` via pasta), `/etc/hosts`, a per-container hostname, and the command waits until the network is up (#150, #151)
+- Arguments after the image go to the `ENTRYPOINT`, as in Docker; new `--entrypoint`, `-u`, `--env-file`, `-h/--hostname`, `--network none`; `TERM` with `-t` (#152, #162)
+- `voila exec` joins the running container (its files, processes, network and hostname) (#157)
+- `voila tag`; push of an org-less ref goes to `$VOILA_ORG` (#159)
+- `voila rmi` frees disk space and refuses images a running container uses (#155)
+- `ADD` unpacks local tar, tar.gz and tar.zst archives (#160)
+- Fixed: the `voila login` token was ignored when `VOILA_REGISTRY` was set (#149); `-p` without pasta hung (#153); a dead FUSE server left the container `running` (#154)
+- Clearer errors for push (not authorized / needs an org), missing or private images, and `voila login` (#158, #161)
+- Releases are published only after their binaries are attached; `install.sh` explains a missing asset (#156)
+
 ## v0.1.0-alpha.2 — 2026-10-31
 
 Second alpha: containers get their own network, the CLI reports real exit codes and readable errors, and push uploads chunks 16 at a time.

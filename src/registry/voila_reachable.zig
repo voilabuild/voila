@@ -25,6 +25,7 @@ fn walkManifestChunk(
     id: [32]u8,
     reachable: *std.StringHashMap(void),
     manifest_queue: *std.ArrayList([32]u8),
+    lenient: bool,
 ) !void {
     var hex_buf: [64]u8 = undefined;
     hex_util.encodeHexLower(&hex_buf, &id);
@@ -38,10 +39,16 @@ fn walkManifestChunk(
     const raw = if (io) |i|
         voila_chunk_load.loadChunkRaw(voila_registry_fetch.fetcher(i), allocator, voila_root, hex_owned, algo) catch return error.MissingChunk
     else
-        voila_store.loadChunkRaw(allocator, voila_root, hex_owned, algo) catch return error.MissingChunk;
+        voila_store.loadChunkRaw(allocator, voila_root, hex_owned, algo) catch {
+            if (lenient) return;
+            return error.MissingChunk;
+        };
     defer allocator.free(raw);
 
-    var m = voila_manifest_proto.decodeManifest(allocator, raw) catch return error.BadManifest;
+    var m = voila_manifest_proto.decodeManifest(allocator, raw) catch {
+        if (lenient) return;
+        return error.BadManifest;
+    };
     defer m.deinit();
 
     var fit = m.files.iterator();
@@ -117,7 +124,7 @@ pub fn reachableHexesIo(
     }
 
     while (manifest_queue.pop()) |id| {
-        try walkManifestChunk(io, allocator, voila_root, id, &reachable, &manifest_queue);
+        try walkManifestChunk(io, allocator, voila_root, id, &reachable, &manifest_queue, false);
     }
 
     // The returned slice takes ownership of the keys.
@@ -126,6 +133,37 @@ pub fn reachableHexesIo(
     var n: usize = 0;
     while (it.next()) |k| : (n += 1) out[n] = k.*;
     return out;
+}
+
+/// Adds to `set` every local chunk reachable from `roots` (manifest chunks). Chunks
+/// that are not local (lazy pulls) or not manifests are recorded and not descended.
+pub fn markLocal(allocator: std.mem.Allocator, voila_root: []const u8, roots: []const [32]u8, set: *std.StringHashMap(void)) !void {
+    var queue: std.ArrayList([32]u8) = .empty;
+    defer queue.deinit(allocator);
+    try queue.appendSlice(allocator, roots);
+    while (queue.pop()) |id| try walkManifestChunk(null, allocator, voila_root, id, set, &queue, true);
+}
+
+/// Manifest roots and the config chunk named by a registry manifest JSON.
+pub fn manifestRoots(allocator: std.mem.Allocator, manifest_json: []const u8, roots: *std.ArrayList([32]u8), set: *std.StringHashMap(void)) !void {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, manifest_json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.BadJson;
+    const obj = parsed.value.object;
+    if (obj.get("config_chunk")) |v| if (v == .string) try addHex(set, allocator, v.string);
+    if (obj.get("merged_root_manifest_chunk")) |v| if (v == .string and v.string.len == 64) {
+        var id: [32]u8 = undefined;
+        try hexToId(v.string, &id);
+        try roots.append(allocator, id);
+    };
+    if (obj.get("provenance_layers")) |layers| if (layers == .array) for (layers.array.items) |layer| {
+        if (layer != .object) continue;
+        const rv = layer.object.get("root_manifest_chunk") orelse continue;
+        if (rv != .string or rv.string.len != 64) continue;
+        var id: [32]u8 = undefined;
+        try hexToId(rv.string, &id);
+        try roots.append(allocator, id);
+    };
 }
 
 pub const Error = error{

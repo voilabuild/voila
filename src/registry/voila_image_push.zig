@@ -61,8 +61,8 @@ pub fn pushImage(
     defer allocator.free(escaped_put);
     const put_url = try std.fmt.allocPrint(allocator, "{s}/v1/images/{s}", .{ cfg.base_url, escaped_put });
     defer allocator.free(put_url);
-    const put_code = http.put(put_url, cfg.token, manifest_body, "application/json", null) catch return error.ManifestPut;
-    if (put_code != 200 and put_code != 201) return error.ManifestPut;
+    const put_code = http.put(put_url, cfg.token, manifest_body, "application/json", null) catch return error.RegistryUnreachable;
+    if (put_code != 200 and put_code != 201) return manifestError(put_code, man.image_ref);
 
     const already = ids.len - missing.len;
     std.debug.print(
@@ -86,12 +86,27 @@ fn missingChunks(
         defer allocator.free(body);
         const url = try std.fmt.allocPrint(allocator, "{s}/v1/chunks/missing", .{cfg.base_url});
         defer allocator.free(url);
-        const resp = http.postJson(allocator, url, cfg.token, body) catch return error.MissingNegotiation;
-        defer allocator.free(resp);
-        try parseMissingResponse(allocator, resp, &missing);
+        const resp = http.postJsonStatus(allocator, url, cfg.token, body) catch return error.RegistryUnreachable;
+        defer allocator.free(resp.body);
+        if (resp.status == 401 or resp.status == 403) return error.NotAuthorized;
+        if (resp.status < 200 or resp.status >= 300) return error.MissingNegotiation;
+        try parseMissingResponse(allocator, resp.body, &missing);
         i = end;
     }
     return missing.toOwnedSlice(allocator);
+}
+
+/// A 404 for a ref without an org is the router, not a missing image.
+fn manifestError(code: u16, image_ref: []const u8) Error {
+    if (code == 401 or code == 403) return error.NotAuthorized;
+    if (code == 404 and std.mem.indexOfScalar(u8, refName(image_ref), '/') == null) return error.NeedOrg;
+    return error.ManifestPut;
+}
+
+fn refName(ref: []const u8) []const u8 {
+    const at = std.mem.indexOfScalar(u8, ref, '@') orelse ref.len;
+    const colon = std.mem.lastIndexOfScalar(u8, ref[0..at], ':') orelse at;
+    return ref[0..colon];
 }
 
 fn encodeMissingRequest(allocator: std.mem.Allocator, ids: []const []const u8) ![]u8 {
@@ -121,6 +136,9 @@ fn parseMissingResponse(allocator: std.mem.Allocator, json: []const u8, out: *st
 pub const Error = error{
     ChunkPut,
     ManifestPut,
+    NotAuthorized,
+    NeedOrg,
+    RegistryUnreachable,
     MissingNegotiation,
     MissingChunk,
 };

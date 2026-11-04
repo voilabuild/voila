@@ -183,6 +183,22 @@ pub fn writeFile(path: []const u8, bytes: []const u8, perm: u32) Error!void {
     try f.writeAll(bytes);
 }
 
+/// Like `writeFile`, but never follows a final symlink (replaces it instead).
+pub fn writeFileNoFollow(path: []const u8, bytes: []const u8, perm: u32) Error!void {
+    if (lstat(path)) |st| {
+        if (st.kind == .symlink) {
+            var zb: Z = undefined;
+            _ = try check(linux.unlinkat(linux.AT.FDCWD, try toZ(&zb, path), 0));
+        }
+    } else |_| {}
+    var zb: Z = undefined;
+    const flags: linux.O = .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true, .NOFOLLOW = true };
+    const fd: linux.fd_t = @intCast(try check(linux.openat(linux.AT.FDCWD, try toZ(&zb, path), flags, perm)));
+    const f: File = .{ .fd = fd };
+    defer f.close();
+    try f.writeAll(bytes);
+}
+
 pub fn mkdir(path: []const u8, perm: u32) Error!void {
     var zb: Z = undefined;
     _ = try check(linux.mkdirat(linux.AT.FDCWD, try toZ(&zb, path), perm));

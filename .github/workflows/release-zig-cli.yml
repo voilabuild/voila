@@ -90,10 +90,13 @@ jobs:
           cat dist/checksums_*.txt > dist/voila-checksums.txt
           ls -la dist/
 
-      - name: Create GitHub Release
+      # Draft first: install.sh resolves published releases, so a release must not be
+      # visible before its binaries are attached (#156).
+      - name: Create GitHub Release (draft)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
+          draft: true
           prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
           generate_release_notes: true
           files: |
@@ -101,3 +104,15 @@ jobs:
             dist/voila_*_linux_arm64
             dist/voila-checksums.txt
           fail_on_unmatched_files: true
+
+      - name: Check assets, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          assets="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          for want in "voila_${TAG}_linux_amd64" "voila_${TAG}_linux_arm64" voila-checksums.txt; do
+            grep -qx "$want" <<<"$assets" || { echo "missing release asset: $want"; exit 1; }
+          done
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false

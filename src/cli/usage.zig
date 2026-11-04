@@ -9,8 +9,9 @@ pub fn printUsage() void {
         \\  voila logout
         \\  voila import|pull|push [--root <dir>] <image-ref>
         \\  voila build -t <ref> [-f Dockerfile] [--build-arg K=V] [--target stage] [--no-cache] [--push] [--root <dir>] <context>
-        \\  voila run [--root <dir>] [-d] [-it] [--name NAME] [--rm] [-e K=V] [-v host:ctr] [-p host:ctr] [-w dir] <image-ref> [--] [cmd...]
+        \\  voila run [--root <dir>] [-d] [-it] [--name NAME] [--rm] [-e K=V] [--env-file F] [-u user] [--entrypoint cmd] [-h host] [--network none] [-v host:ctr] [-p host:ctr] [-w dir] <image-ref> [--] [cmd...]
         \\  voila exec <id> [--] <cmd...>
+        \\  voila tag [--root <dir>] <image-ref> <new-ref>
         \\  voila ps|logs|images|rmi|stop|kill|rm [--root <dir>] ...
         \\  voila --version
         \\
@@ -27,12 +28,13 @@ pub fn printCommand(name: commands.Name) void {
         .pull => "voila pull [--root <dir>] <image-ref>",
         .push => "voila push [--root <dir>] <image-ref>",
         .build => "voila build -t <ref> [-f Dockerfile] [--build-arg K=V] [--target stage] [--no-cache] [--push] [--root <dir>] <context>",
-        .run => "voila run [--root <dir>] [-d] [-it] [--name NAME] [--rm] [-e K=V] [-v host:ctr] [-p host:ctr] [-w dir] <image-ref> [--] [cmd...]",
+        .run => "voila run [--root <dir>] [-d] [-it] [--name NAME] [--rm] [-e K=V] [--env-file F] [-u user] [--entrypoint cmd] [-h host] [--network none] [-v host:ctr] [-p host:ctr] [-w dir] <image-ref> [--] [cmd...]",
         .exec => "voila exec [--root <dir>] <id> [--] <cmd...>",
         .ps => "voila ps [--root <dir>]",
         .logs => "voila logs [--root <dir>] [-f|--follow] <id>",
         .images => "voila images [--root <dir>]",
         .rmi => "voila rmi [--root <dir>] <image-ref> [image-ref...]",
+        .tag => "voila tag [--root <dir>] <image-ref> <new-ref>",
         .stop => "voila stop [--root <dir>] <id> [id...]",
         .kill => "voila kill [--root <dir>] [-s signal] <id> [id...]",
         .rm => "voila rm [--root <dir>] <id> [id...]",

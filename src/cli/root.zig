@@ -13,6 +13,7 @@ pub const logs = @import("logs.zig");
 pub const prove = @import("prove.zig");
 pub const pull = @import("pull.zig");
 pub const rmi = @import("rmi.zig");
+pub const tag = @import("tag.zig");
 pub const run = @import("run.zig");
 pub const runtime_only = @import("runtime_only.zig");
 pub const usage = @import("usage.zig");

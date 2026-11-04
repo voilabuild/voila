@@ -25,6 +25,7 @@ const build_cache = @import("store").build_cache;
 const image_store = @import("image_store.zig");
 const copy_sources = @import("copy_sources.zig");
 const copy_from = @import("copy_from.zig");
+const add_archive = @import("add_archive.zig");
 pub const steps = @import("steps.zig");
 
 pub const RunRequest = steps.RunRequest;
@@ -335,11 +336,11 @@ const Builder = struct {
             },
             .copy => |c| {
                 self.steps += 1;
-                return if (c.from.len > 0) self.copyFrom(c) else self.copy(c);
+                return if (c.from.len > 0) self.copyFrom(c) else self.copyOrAdd(c, false);
             },
             .add => |c| {
                 self.steps += 1;
-                return if (c.from.len > 0) error.Unsupported else self.copy(c);
+                return if (c.from.len > 0) error.Unsupported else self.copyOrAdd(c, true);
             },
         }
         return false;
@@ -406,18 +407,33 @@ const Builder = struct {
         return false;
     }
 
-    fn copy(self: *Builder, c: dockerfile.Copy) !bool {
+    /// `add`: local archives are unpacked into the destination directory.
+    fn copyOrAdd(self: *Builder, c: dockerfile.Copy, add: bool) !bool {
         var srcs: std.ArrayList([]const u8) = .empty;
         for (c.srcs) |s| try srcs.append(self.a, try self.expand(s));
         const dest_raw = try self.expand(c.dest);
         const owner = try self.resolveOwner(try self.expand(c.chown));
         const sources = try copy_sources.resolve(self.a, self.opts.context_dir, srcs.items, self.ignore);
         const dest = try steps.joinPath(self.a, try self.config.getString("WorkingDir"), dest_raw);
-        const into_dir = steps.destIsDirectory(dest_raw) or sources.len > 1 or
+        const archives = try self.a.alloc(bool, sources.len);
+        var any_archive = false;
+        for (sources, archives) |s, *is_archive| {
+            is_archive.* = add and !s.is_dir and switch (add_archive.sniffFile(s.abs)) {
+                .tar => true,
+                .none => false,
+                .unsupported => {
+                    std.debug.print("ADD {s}: bzip2 and xz archives are not supported yet; use gzip, zstd or plain tar\n", .{s.rel});
+                    return error.Unsupported;
+                },
+            };
+            any_archive = any_archive or is_archive.*;
+        }
+        const into_dir = any_archive or steps.destIsDirectory(dest_raw) or sources.len > 1 or
             (sources.len == 1 and sources[0].is_dir) or glob.hasWildcard(srcs.items[0]);
 
         const chmod_key = if (c.chmod) |m| try std.fmt.allocPrint(self.a, "{o}", .{m}) else "-";
-        const norm = try std.fmt.allocPrint(self.a, "COPY {d}:{d} {s} {s} {s}", .{ owner.uid, owner.gid, chmod_key, dest, if (into_dir) "dir" else "file" });
+        const verb = if (any_archive) "ADD" else "COPY";
+        const norm = try std.fmt.allocPrint(self.a, "{s} {d}:{d} {s} {s} {s}", .{ verb, owner.uid, owner.gid, chmod_key, dest, if (into_dir) "dir" else "file" });
         const key = cache_key.compute(.{
             .parent_root = self.root,
             .instruction = norm,
@@ -428,7 +444,19 @@ const Builder = struct {
         var w = try dir_walk.Walker.init(self.a, self.opts.voila_root, .{ .mode = .copy, .owner = owner, .chmod = c.chmod });
         defer w.deinit();
         const dest_rel = std.mem.trimStart(u8, dest, "/");
-        for (sources) |s| {
+        var unpacked: std.ArrayList([]const u8) = .empty;
+        defer for (unpacked.items) |d| fs.removeTree(self.a, d) catch {}; // leftover under <root>/tmp is harmless
+        for (sources, archives) |s, is_archive| {
+            if (is_archive) {
+                const tmp_parent = try std.fmt.allocPrint(self.a, "{s}/tmp", .{self.opts.voila_root});
+                try fs.makePath(tmp_parent);
+                const dir = try fs.makeTempDirIn(self.a, tmp_parent, "add-");
+                try unpacked.append(self.a, dir);
+                try add_archive.extract(self.a, s.abs, dir);
+                w.opts.skip = null;
+                try w.add(dir, dest_rel);
+                continue;
+            }
             var ig: copy_sources.IgnoreSkip = .{ .ignore = self.ignore, .prefix = s.rel };
             w.opts.skip = ig.skip();
             const target = if (s.is_dir or !into_dir) dest_rel else try steps.joinRel(self.a, dest_rel, std.fs.path.basename(s.rel));

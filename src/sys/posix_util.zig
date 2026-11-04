@@ -21,6 +21,15 @@ fn toZ(allocator: std.mem.Allocator, path: []const u8) ![:0]const u8 {
     return out;
 }
 
+/// access(2) with X_OK.
+pub fn executable(path: []const u8) bool {
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    if (path.len >= buf.len) return false;
+    @memcpy(buf[0..path.len], path);
+    buf[path.len] = 0;
+    return !syscallFailed(std.os.linux.access(buf[0..path.len :0], 1));
+}
+
 pub fn access(path: []const u8) bool {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     if (path.len >= buf.len) return false;

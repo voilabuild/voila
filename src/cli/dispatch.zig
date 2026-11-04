@@ -20,6 +20,7 @@ const pull = @import("pull.zig");
 const push = @import("push.zig");
 const rm = @import("rm.zig");
 const rmi = @import("rmi.zig");
+const tag = @import("tag.zig");
 const run_cmd = @import("run.zig");
 const serve = @import("serve.zig");
 const serve_index = @import("serve_index.zig");
@@ -49,6 +50,7 @@ pub fn run(sub: commands.Name, ctx: command.Ctx) !void {
         .push => try push.execute(ctx),
         .import => try import_cmd.execute(ctx),
         .rmi => try rmi.execute(ctx),
+        .tag => try tag.execute(ctx),
         .images => try images.execute(ctx),
         .kill => try kill.execute(ctx),
         .stop => try stop.execute(ctx),

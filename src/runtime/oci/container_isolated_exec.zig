@@ -9,6 +9,7 @@ const run_flags = @import("../run_flags.zig");
 const container_pty = @import("container_pty.zig");
 const map_handshake = @import("container_map_handshake.zig");
 const container_ports = @import("container_ports.zig");
+const container_etc = @import("container_etc.zig");
 const container_user = @import("container_user.zig");
 
 const default_path = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -32,6 +33,15 @@ pub const Spec = struct {
     start_net: bool = true,
     /// Detached `voila run -d` waits on this fd until the sandbox (and `-p`) is up.
     ready_fd: std.posix.fd_t = -1,
+    /// Host dir with generated resolv.conf, hosts and hostname to bind over /etc.
+    etc_dir: []const u8 = "",
+    /// Set in a new UTS namespace when non-empty.
+    hostname: []const u8 = "",
+    /// `voila exec`: join this running container init's namespaces and root.
+    join_pid: i32 = 0,
+    /// Parent only: the image's FUSE server (our child). If it dies the root is gone,
+    /// so the container is killed rather than left running on a dead mount (#154).
+    fuse_pid: i32 = 0,
 };
 
 pub fn run(spec: Spec) Error!u8 {
@@ -39,8 +49,10 @@ pub fn run(spec: Spec) Error!u8 {
     const parent = std.os.linux.getppid();
     ns.setParentDeathSignal(.KILL) catch return error.SetupFailed;
     if (std.os.linux.getppid() != parent) return error.SetupFailed;
+    if (spec.join_pid > 0) return runJoined(spec);
     if (spec.map_up_fd >= 0 and spec.map_down_fd >= 0) {
         if (!map_handshake.childEnter(spec.map_up_fd, spec.map_down_fd)) return error.UserNamespacesRequired;
+        if (!map_handshake.childAwaitNet(spec.map_up_fd, spec.map_down_fd)) return error.SetupFailed;
         _ = std.c.close(spec.map_up_fd);
         _ = std.c.close(spec.map_down_fd);
     } else if (!container_bind.enterUserNamespaceOnly()) return error.UserNamespacesRequired;
@@ -49,6 +61,10 @@ pub fn run(spec: Spec) Error!u8 {
     }
     ns.bringUpLoopback() catch return error.SetupFailed;
     ns.unshare(ns.CLONE.NEWNS) catch return error.UserNamespacesRequired;
+    if (spec.hostname.len > 0) {
+        ns.unshare(ns.CLONE.NEWUTS) catch return error.SetupFailed;
+        ns.setHostname(spec.hostname) catch return error.SetupFailed;
+    }
     // Refused when / is not a mount point; pivotInto then falls back to chroot.
     ns.mount(null, "/", null, ns.MS.REC | ns.MS.PRIVATE, null) catch {};
     // A host path: open it before the root changes.
@@ -56,6 +72,27 @@ pub fn run(spec: Spec) Error!u8 {
     const keep = [_]std.posix.fd_t{ log_fd, spec.console_fd };
     if (container_root.enterPidNamespace(&keep) catch return error.SetupFailed) |code| return code;
     try enterRoot(spec);
+    if (container_root.forkCommand(&keep) catch return error.SetupFailed) |code| return code;
+    if (spec.opts.workdir.len > 0) {
+        const wd_z = allocZ(spec.opts.workdir) catch return error.SetupFailed;
+        _ = std.c.chdir(wd_z);
+    }
+    if (spec.console_fd >= 0) {
+        try attachConsole(spec.console_fd);
+    } else if (log_fd >= 0) {
+        _ = std.c.dup2(log_fd, std.c.STDOUT_FILENO);
+        _ = std.c.dup2(log_fd, std.c.STDERR_FILENO);
+        _ = std.c.close(log_fd);
+    }
+    return execCommand(spec);
+}
+
+/// `voila exec`: the command runs in the container's namespaces, so it sees the
+/// container's writes, processes, network and hostname.
+fn runJoined(spec: Spec) Error!u8 {
+    const log_fd: std.posix.fd_t = if (spec.console_fd >= 0 or spec.log_path.len == 0) -1 else openLogAppend(spec.log_path);
+    ns.joinNamespaces(spec.join_pid) catch return error.SetupFailed;
+    const keep = [_]std.posix.fd_t{ log_fd, spec.console_fd };
     if (container_root.forkCommand(&keep) catch return error.SetupFailed) |code| return code;
     if (spec.opts.workdir.len > 0) {
         const wd_z = allocZ(spec.opts.workdir) catch return error.SetupFailed;
@@ -91,10 +128,28 @@ fn enterRoot(spec: Spec) Error!void {
         ns.mount(mount_z, mount_z, null, ns.MS.BIND | ns.MS.REC, null) catch return error.SetupFailed;
         break :blk mount_z;
     };
+    if (spec.etc_dir.len > 0) bindEtcFiles(root, spec.etc_dir);
     if (!container_bind.applyVolumeBinds(root, spec.opts.volumes)) return error.SetupFailed;
     const ops = container_root.plan(std.heap.page_allocator, root) catch return error.SetupFailed;
     container_root.apply(ops);
     container_root.pivotInto(root) catch return error.SetupFailed;
+}
+
+/// Binds each generated file over the image's copy. A read-only root without `/etc/<f>`
+/// has no mountpoint for it and is left as is.
+fn bindEtcFiles(root: [:0]const u8, etc_dir: []const u8) void {
+    for (container_etc.files) |f| {
+        var src_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        var dst_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const src = std.fmt.bufPrintSentinel(&src_buf, "{s}/{s}", .{ etc_dir, f }, 0) catch continue;
+        const dst = std.fmt.bufPrintSentinel(&dst_buf, "{s}/etc/{s}", .{ root, f }, 0) catch continue;
+        // A dangling symlink (e.g. to systemd-resolved's stub) cannot be a mountpoint.
+        if (!posix_util.access(dst)) {
+            _ = std.c.unlink(dst);
+            ns.touch(dst, 0o644) catch continue; // read-only root: keep the image's file
+        }
+        ns.mount(src, dst, null, ns.MS.BIND, null) catch {}; // the image's own file stays
+    }
 }
 
 /// Take the terminal from the container's own devpts so ttyname() resolves inside, send
@@ -212,6 +267,18 @@ pub fn spawnAndWait(io: std.Io, allocator: std.mem.Allocator, spec: Spec, timeou
         try argv.append(allocator, "--user");
         try argv.append(allocator, spec.opts.user);
     }
+    if (spec.etc_dir.len > 0) {
+        try argv.append(allocator, "--etc-dir");
+        try argv.append(allocator, spec.etc_dir);
+    }
+    if (spec.hostname.len > 0) {
+        try argv.append(allocator, "--hostname");
+        try argv.append(allocator, spec.hostname);
+    }
+    if (spec.join_pid > 0) {
+        try argv.append(allocator, "--join-pid");
+        try argv.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{spec.join_pid}));
+    }
     if (console) |c| {
         try argv.append(allocator, "--console-fd");
         try argv.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{c[1]}));
@@ -224,10 +291,13 @@ pub fn spawnAndWait(io: std.Io, allocator: std.mem.Allocator, spec: Spec, timeou
         _ = std.c.close(up[1]);
         return error.ForkFailed;
     }
-    try argv.append(allocator, "--map-up-fd");
-    try argv.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{up[1]}));
-    try argv.append(allocator, "--map-down-fd");
-    try argv.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{down[0]}));
+    const joined = spec.join_pid > 0;
+    if (!joined) {
+        try argv.append(allocator, "--map-up-fd");
+        try argv.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{up[1]}));
+        try argv.append(allocator, "--map-down-fd");
+        try argv.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{down[0]}));
+    }
     try argv.append(allocator, "--");
     for (spec.cmd_argv) |a| try argv.append(allocator, try allocator.dupe(u8, a));
 
@@ -250,7 +320,7 @@ pub fn spawnAndWait(io: std.Io, allocator: std.mem.Allocator, spec: Spec, timeou
     if (pid < 0) return error.ForkFailed;
     if (pid == 0) {
         const child_console: std.posix.fd_t = if (console) |c| c[1] else -1;
-        const keep = [_]std.posix.fd_t{ child_console, up[1], down[0] };
+        const keep = if (joined) [_]std.posix.fd_t{ child_console, -1, -1 } else [_]std.posix.fd_t{ child_console, up[1], down[0] };
         closeInheritedFds(&keep);
         for (keep) |fd| if (fd >= 0) clearCloexec(fd);
         _ = std.c.execve(zargs.items[0].ptr, @ptrCast(cargv.ptr), std.c.environ);
@@ -262,11 +332,16 @@ pub fn spawnAndWait(io: std.Io, allocator: std.mem.Allocator, spec: Spec, timeou
         _ = std.c.close(up[0]);
         _ = std.c.close(down[1]);
     }
-    const applied = map_handshake.parentApply(allocator, pid, up[0], down[1]);
-    if (!applied.ids.isRange()) {
-        std.debug.print("voila: warning: single-uid namespace (install uidmap and a subuid range to map image users)\n", .{});
+    var maps_done = false;
+    if (!joined) {
+        const applied = map_handshake.parentApply(allocator, pid, up[0], down[1]);
+        if (!applied.ids.isRange()) {
+            std.debug.print("voila: warning: single-uid namespace (install uidmap and a subuid range to map image users)\n", .{});
+        }
+        // The child holds until pasta has configured its netns (#151).
+        maps_done = map_handshake.parentAwaitMaps(up[0]);
     }
-    const net: []container_ports.Forwarder = if (spec.start_net)
+    const net: []container_ports.Forwarder = if (spec.start_net and maps_done)
         container_ports.start(io, pid, spec.opts.ports) catch |e| {
             _ = std.c.kill(pid, std.c.SIG.KILL);
             var st: i32 = 0;
@@ -276,6 +351,7 @@ pub fn spawnAndWait(io: std.Io, allocator: std.mem.Allocator, spec: Spec, timeou
     else
         &.{};
     defer container_ports.stopAll(net);
+    if (!joined) map_handshake.parentReleaseNet(down[1]);
     signalReady(spec.ready_fd);
     var status: i32 = 0;
     const early = std.c.waitpid(pid, &status, std.c.W.NOHANG);
@@ -303,6 +379,14 @@ pub fn spawnAndWait(io: std.Io, allocator: std.mem.Allocator, spec: Spec, timeou
         const w = std.c.waitpid(pid, &status, std.c.W.NOHANG);
         if (w == pid) break;
         if (w < 0 and std.c.errno(-1) != .CHILD) return error.ForkFailed;
+        if (spec.fuse_pid > 0) {
+            var fst: i32 = 0;
+            if (std.c.waitpid(spec.fuse_pid, &fst, std.c.W.NOHANG) == spec.fuse_pid) {
+                _ = std.c.kill(pid, std.c.SIG.KILL);
+                while (std.c.waitpid(pid, &status, 0) < 0 and std.c.errno(-1) == .INTR) {}
+                return error.FuseServerFailed;
+            }
+        }
         if (deadline_ms) |deadline| {
             if (monotonicMs() > deadline) {
                 _ = std.c.kill(pid, std.c.SIG.KILL);
@@ -329,6 +413,9 @@ pub fn parseCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
     var map_down_fd: std.posix.fd_t = -1;
     var rw_dir: []const u8 = "";
     var user: []const u8 = "";
+    var etc_dir: []const u8 = "";
+    var hostname: []const u8 = "";
+    var join_pid: i32 = 0;
     var after_sep = false;
     while (args.next()) |arg| {
         if (after_sep) {
@@ -383,6 +470,18 @@ pub fn parseCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
             rw_dir = try allocator.dupe(u8, args.next() orelse return error.BadArgs);
             continue;
         }
+        if (std.mem.eql(u8, arg, "--etc-dir")) {
+            etc_dir = try allocator.dupe(u8, args.next() orelse return error.BadArgs);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--join-pid")) {
+            join_pid = std.fmt.parseInt(i32, args.next() orelse return error.BadArgs, 10) catch return error.BadArgs;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--hostname")) {
+            hostname = try allocator.dupe(u8, args.next() orelse return error.BadArgs);
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--user")) {
             user = try allocator.dupe(u8, args.next() orelse return error.BadArgs);
             continue;
@@ -422,6 +521,9 @@ pub fn parseCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
         .console_fd = console_fd,
         .map_up_fd = map_up_fd,
         .map_down_fd = map_down_fd,
+        .etc_dir = etc_dir,
+        .hostname = hostname,
+        .join_pid = join_pid,
     };
 }
 
@@ -473,6 +575,7 @@ pub const Error = error{
     ForkFailed,
     ExecTimeout,
     ForwarderFailed,
+    FuseServerFailed,
 };
 
 test "errorExitCode separates setup and exec failures" {

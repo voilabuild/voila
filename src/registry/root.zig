@@ -13,6 +13,8 @@ pub const voila_image_import = @import("voila_image_import.zig");
 pub const voila_image_pull = @import("voila_image_pull.zig");
 pub const voila_chunk_upload = @import("voila_chunk_upload.zig");
 pub const voila_image_push = @import("voila_image_push.zig");
+pub const voila_image_tag = @import("voila_image_tag.zig");
+pub const voila_gc = @import("voila_gc.zig");
 pub const voila_login_creds = @import("voila_login_creds.zig");
 pub const voila_manifest_cache = @import("voila_manifest_cache.zig");
 pub const voila_ocireg = @import("voila_ocireg.zig");
@@ -39,6 +41,8 @@ test {
     _ = @import("voila_image_pull.zig");
     _ = @import("voila_chunk_upload.zig");
     _ = @import("voila_image_push.zig");
+    _ = @import("voila_image_tag.zig");
+    _ = @import("voila_gc.zig");
     _ = @import("voila_login_creds.zig");
     _ = @import("voila_manifest_cache.zig");
     _ = @import("voila_ocireg.zig");

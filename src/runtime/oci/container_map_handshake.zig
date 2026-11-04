@@ -37,3 +37,22 @@ pub fn childEnter(up: std.posix.fd_t, down: std.posix.fd_t) bool {
     if (written & userns_ids.gid_written == 0) container_bind.writeGidMapFor(host_gid);
     return true;
 }
+
+/// Child, after `childEnter`: tells the parent its maps are written, then blocks until
+/// the parent has attached the network (pasta), so the command never starts offline.
+pub fn childAwaitNet(up: std.posix.fd_t, down: std.posix.fd_t) bool {
+    if (std.c.write(up, "n", 1) != 1) return false;
+    var b: u8 = 0;
+    return std.c.read(down, @ptrCast(&b), 1) == 1;
+}
+
+/// Parent: waits for the child's maps (see `childAwaitNet`). False if the child died.
+pub fn parentAwaitMaps(up: std.posix.fd_t) bool {
+    var b: u8 = 0;
+    return std.c.read(up, @ptrCast(&b), 1) == 1;
+}
+
+/// Parent: lets the child continue once the network is attached.
+pub fn parentReleaseNet(down: std.posix.fd_t) void {
+    _ = std.c.write(down, "n", 1);
+}

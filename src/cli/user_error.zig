@@ -10,6 +10,9 @@ pub fn print(err: anyerror) void {
         error.SqliteOpen => {
             std.debug.print("voila: cannot open the image store (check VOILA_ROOT)\n", .{});
         },
+        error.ManifestNotFound => {
+            std.debug.print("voila: image not found on the source registry (check the name and tag; private images need credentials)\n", .{});
+        },
         error.FetchFailed, error.HttpStatus => {
             std.debug.print("voila: registry request failed (chunk missing or not authorized)\n", .{});
         },
@@ -52,6 +55,25 @@ pub fn print(err: anyerror) void {
         error.NeedFuse, error.UserNamespacesRequired, error.FuseServerFailed, error.OverlayFailed, error.MountFailed, error.MountNotReady => {
             std.debug.print("voila: could not set up the sandbox (needs /dev/fuse and user namespaces)\n", .{});
         },
+        error.NotAuthorized => {
+            std.debug.print("voila: not authorized by the registry (check VOILA_REGISTRY_TOKEN or run `voila login`)\n", .{});
+        },
+        error.NeedOrg => {
+            std.debug.print("voila: registry images are named <org>/<name>:<tag> (set VOILA_ORG or `voila tag` it first)\n", .{});
+        },
+        error.ManifestPut, error.MissingNegotiation, error.ChunkPut => {
+            std.debug.print("voila: the registry rejected the push\n", .{});
+        },
+        error.RegistryUnreachable => {
+            std.debug.print("voila: could not reach the registry (check VOILA_REGISTRY and your network)\n", .{});
+        },
+        error.NoDefaultCommand => {
+            std.debug.print("voila: the image has no ENTRYPOINT or CMD; give a command after the image\n", .{});
+        },
+        error.EnvFileUnreadable => {
+            std.debug.print("voila: cannot read the --env-file\n", .{});
+        },
+        error.FixtureNotFound, error.ImageInUse => {},
         error.InvalidApiKey => {
             std.debug.print("voila: invalid API key (run `voila login`)\n", .{});
         },
