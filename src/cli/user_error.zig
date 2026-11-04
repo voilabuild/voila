@@ -10,6 +10,9 @@ pub fn print(err: anyerror) void {
         error.SqliteOpen => {
             std.debug.print("voila: cannot open the image store (check VOILA_ROOT)\n", .{});
         },
+        error.ManifestNotFound => {
+            std.debug.print("voila: image not found on the source registry (check the name and tag; private images need credentials)\n", .{});
+        },
         error.FetchFailed, error.HttpStatus => {
             std.debug.print("voila: registry request failed (chunk missing or not authorized)\n", .{});
         },

@@ -82,7 +82,7 @@ fn pullImpl(ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: typ
         allocator.free(cfg.org);
     }
     const man = voila_image_pull.pullManifest(io, allocator, self.store_root, cfg, spec.image) catch |e| {
-        if (voila_hub_import.formatMissingImageHelp(allocator, spec.image, cfg.org)) |msg| {
+        if (voila_hub_import.formatMissingImageHelp(allocator, spec.image, cfg.token.len > 0)) |msg| {
             defer allocator.free(msg);
             std.debug.print("{s}\n", .{msg});
         } else |_| {}
