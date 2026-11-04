@@ -7,6 +7,7 @@ const container_lifecycle = @import("./oci/container_lifecycle.zig");
 const registry_session = @import("registry").registry_session;
 const voila_image_pull = @import("registry").voila_image_pull;
 const voila_image_push = @import("registry").voila_image_push;
+const voila_image_tag = @import("registry").voila_image_tag;
 const voila_resolve = @import("registry").voila_resolve;
 const voila_registry = @import("registry").voila_registry;
 const voila_hub_import = @import("registry").voila_hub_import;
@@ -102,7 +103,35 @@ fn pushImpl(ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: typ
         allocator.free(cfg.token);
         allocator.free(cfg.org);
     }
-    try voila_image_push.pushImage(io, allocator, self.store_root, cfg, spec.image);
+    const target = try pushTarget(allocator, spec.image, cfg.org);
+    defer allocator.free(target);
+    if (!std.mem.eql(u8, target, spec.image)) {
+        try voila_image_tag.tagImage(allocator, self.store_root, spec.image, target);
+        std.debug.print("tagged {s} as {s}\n", .{ spec.image, target });
+    }
+    try voila_image_push.pushImage(io, allocator, self.store_root, cfg, target);
+}
+
+/// `VOILA_ORG` namespaces a push of a ref without an org (`alpine:3.20` -> `acme/alpine:3.20`).
+fn pushTarget(allocator: std.mem.Allocator, ref: []const u8, org: []const u8) ![]u8 {
+    const name_end = std.mem.indexOfAny(u8, ref, ":@") orelse ref.len;
+    if (org.len == 0 or std.mem.indexOfScalar(u8, ref[0..name_end], '/') != null) return allocator.dupe(u8, ref);
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ org, ref });
+}
+
+test "pushTarget prefixes VOILA_ORG only for org-less refs" {
+    const a = std.testing.allocator;
+    const cases = [_][3][]const u8{
+        .{ "alpine:3.20", "acme", "acme/alpine:3.20" },
+        .{ "saucisson/x:1", "acme", "saucisson/x:1" },
+        .{ "alpine:3.20", "", "alpine:3.20" },
+        .{ "alpine@sha256:ab", "acme", "acme/alpine@sha256:ab" },
+    };
+    for (cases) |c| {
+        const got = try pushTarget(a, c[0], c[1]);
+        defer a.free(got);
+        try std.testing.expectEqualStrings(c[2], got);
+    }
 }
 
 fn execImpl(ptr: *anyopaque, io: std.Io, allocator: std.mem.Allocator, spec: types.ExecSpec) !u8 {

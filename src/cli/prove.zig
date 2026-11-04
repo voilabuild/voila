@@ -254,5 +254,8 @@ fn ensureFixture(init: std.process.Init, dir: []const u8) !void {
     defer init.gpa.free(out_abs);
     const tree = try std.fmt.allocPrint(init.gpa, "{s}/tree.txt", .{out_abs});
     defer init.gpa.free(tree);
-    if (!posix_util.access(tree)) return error.FixtureNotFound;
+    if (!posix_util.access(tree)) {
+        std.debug.print("voila prove: no fixture at {s} (developer self-test: `voila prove <fixture-dir>`)\n", .{tree});
+        return error.FixtureNotFound;
+    }
 }

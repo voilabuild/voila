@@ -20,6 +20,7 @@ pub const Name = enum {
     push,
     import,
     rmi,
+    tag,
     images,
     kill,
     stop,
@@ -47,6 +48,7 @@ pub fn parse(name: []const u8) ?Name {
     if (std.mem.eql(u8, name, "push")) return .push;
     if (std.mem.eql(u8, name, "import")) return .import;
     if (std.mem.eql(u8, name, "rmi")) return .rmi;
+    if (std.mem.eql(u8, name, "tag")) return .tag;
     if (std.mem.eql(u8, name, "images")) return .images;
     if (std.mem.eql(u8, name, "kill")) return .kill;
     if (std.mem.eql(u8, name, "stop")) return .stop;
