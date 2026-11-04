@@ -11,7 +11,7 @@ pub const Forwarder = struct {
 
     pub fn stop(self: *Forwarder) void {
         if (self.pid > 0) {
-            _ = std.c.kill(self.pid, std.c.SIG.TERM);
+            _ = std.c.kill(self.pid, std.c.SIG.KILL);
             var status: i32 = 0;
             _ = std.c.waitpid(self.pid, &status, 0);
             self.pid = 0;
@@ -44,7 +44,7 @@ pub fn stopAll(forwarders: []Forwarder) void {
 pub fn findPasta() ?[]const u8 {
     const paths = [_][]const u8{ "/usr/bin/pasta", "/usr/sbin/pasta", "/bin/pasta" };
     for (paths) |p| {
-        if (posix_util.access(p)) return p;
+        if (posix_util.executable(p)) return p;
     }
     return null;
 }
@@ -149,6 +149,13 @@ fn spawnProxy(port: run_flags.PortMap, ns_pid: i32) !i32 {
         _ = linux.close(listen);
         return pid;
     }
+    // The worker's no-op SIGTERM handler (SA_RESTART) is inherited across fork and would
+    // make stop() wait forever (#153). Default actions, and die with the worker.
+    for ([_]std.c.SIG{ .HUP, .INT, .QUIT, .TERM }) |sig| {
+        var act: std.c.Sigaction = .{ .handler = .{ .handler = std.c.SIG.DFL }, .mask = std.mem.zeroes(std.c.sigset_t), .flags = 0 };
+        _ = std.c.sigaction(sig, &act, null);
+    }
+    ns.setParentDeathSignal(.KILL) catch std.c._exit(1);
     enterNetns(ns_pid) catch std.c._exit(1);
     proxyAcceptLoop(listen, port.container);
     std.c._exit(0);
