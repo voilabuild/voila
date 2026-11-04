@@ -76,13 +76,17 @@ pulled image, the grafted chunk ids may not be local; push relies on the
 registry already having them.
 
 **Rootless sandbox** (`voila run`, build `RUN`; `runtime/oci/container_root.zig`):
-a user, mount, PID and network namespace. PID 1 is a small voila init that runs the
+a user, mount, PID, network and (for `run`) UTS namespace. PID 1 is a small voila init that runs the
 command as PID 2, forwards signals to it, reaps orphans and exits with the
 command's status (128 + signal when it is killed). `voila run` makes the
 read-only FUSE root writable with an overlayfs whose upper and work dirs live
-on disk in `<root>/containers/<id>/rw` (removed with the container); `voila
-exec` and kernels that refuse the overlay get a read-only bind of the FUSE
-root. The root gets a fresh `proc`, a tmpfs `/dev` with the host's `null`,
+on disk in `<root>/containers/<id>/rw` (removed with the container); kernels
+that refuse the overlay get a read-only bind of the FUSE root. `voila exec`
+does not build a sandbox: it finds the container's init (the first process
+below the worker in another PID namespace) and `setns`es into its user,
+mount, UTS, net and PID namespaces and its root, like `nsenter`. Generated
+`/etc/resolv.conf`, `/etc/hosts` and `/etc/hostname` from
+`<root>/containers/<id>/etc` are bind-mounted over the image's. The root gets a fresh `proc`, a tmpfs `/dev` with the host's `null`,
 `zero`, `full`, `random`, `urandom` and `tty` bound in, a new `devpts`
 instance (the `-it` terminal is allocated there and its master is passed back
 over a unix socket) and a tmpfs `/dev/shm`. A fresh `sysfs` is mounted
@@ -90,7 +94,9 @@ read-only; if that is refused (no network namespace) the host's `/sys` is
 bound read-only instead (`mount_setattr`, Linux 5.12+). Loopback is brought
 up in the container netns so ports do not appear on the host. Outbound
 traffic is `pasta` from the `passt` package when present (`--config-net`,
-automatic port copy disabled). `-p` is implemented as pasta TCP mappings, or
+automatic port copy disabled, DNS forwarded from `169.254.1.1`). The child
+waits on the uid-map handshake pipe until the parent sees pasta's default
+route in `/proc/<pid>/net/route`, so the command never starts offline. `-p` is implemented as pasta TCP mappings, or
 a `setns` TCP proxy if pasta is missing. The process then `pivot_root`s into
 the root and detaches the old one, so the host filesystem is no longer
 mounted in the namespace; plain `chroot` is used only if `pivot_root` is
@@ -137,6 +143,10 @@ tests cover them.
 - **Linux only**: `voila run` and build `RUN` need `/dev/fuse` and
   unprivileged user namespaces (on Ubuntu 24.04+, the AppArmor profile from
   `install.sh`, which only covers the installed binary's path).
+- **Chunk GC**: `rmi` marks chunks reachable from the remaining images
+  (their manifest JSON) and the build cache, and deletes the rest with their
+  `index.db` rows. There is no lock against a concurrent import or build; a
+  10-minute mtime grace window covers chunks whose image is not recorded yet.
 - **Registry auth is bearer-only, no TLS**: run behind a TLS-terminating
   reverse proxy for now.
 - **Eager import**: `voila import` downloads and converts the whole image

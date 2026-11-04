@@ -15,18 +15,19 @@ Every command accepts `--root <dir>` (also `-root`; default: `$VOILA_ROOT`).
 
 | Command | What it does |
 |---|---|
-| `voila login [registry-url]` | Save the registry URL and API key to `~/.config/voila/credentials` (0600), creating `~/.config/voila` if needed |
+| `voila login [registry-url]` | Check the API key, then save the registry URL, key and org to `~/.config/voila/credentials` (0600). An empty org answer keeps the org saved for that registry |
 | `voila logout` | Remove saved registry credentials |
 | `voila import <ref>` | Pull an image from an OCI registry (Docker Hub, ghcr.io, …) and store it as chunks. No Docker daemon needed |
 | `voila pull <ref>` | Fetch an image's manifest from the voila registry; chunks stream on first read |
-| `voila push <ref>` | Upload an image's missing chunks (up to 16 at a time) and its manifest to the voila registry |
+| `voila push <ref>` | Upload an image's missing chunks (up to 16 at a time) and its manifest to the voila registry. A ref without an org is pushed as `$VOILA_ORG/<ref>` (or the login org) |
+| `voila tag <ref> <new-ref>` | Give a local image another name, like `docker tag` (e.g. `voila tag alpine:3.20 acme/alpine:3.20`) |
 | `voila build -t <ref> [-f Dockerfile] [--build-arg K=V]... [--target stage] [--no-cache] [--push] <context>` | Build an image from a Dockerfile (see [Building images](#building-images)) |
-| `voila run [-d] [-it] [--name N] [--rm] [-e K=V] [-v host:ctr] [-p host:ctr] [-w dir] <ref> [--] [cmd...]` | Run a container (see [Running containers](#running-containers)) |
-| `voila exec <id> [--] <cmd...>` | Run an extra process in a running container |
+| `voila run [-d] [-it] [--name N] [--rm] [-e K=V] [--env-file F] [-u user] [--entrypoint cmd] [-h host] [--network none] [-v host:ctr] [-p host:ctr] [-w dir] <ref> [--] [args...]` | Run a container (see [Running containers](#running-containers)) |
+| `voila exec <id> [--] <cmd...>` | Run an extra process inside a running container: it joins the container's namespaces, so it sees its files, processes, network and hostname |
 | `voila ps` | List containers (`exited (N)` includes the command's exit code) |
 | `voila logs [-f/--follow] <id>` | Print (and optionally follow) a container's output |
 | `voila stop <id> [id…]` / `voila kill [-s N] <id> [id…]` / `voila rm <id> [id…]` | Stop, signal or remove one or more containers |
-| `voila images` / `voila rmi <ref> [ref…]` | List or remove local images. `rmi` of a missing ref prints `voila rmi: no such image …` and exits 1 |
+| `voila images` / `voila rmi <ref> [ref…]` | List or remove local images. `rmi` then deletes chunks no remaining image or build-cache entry uses (chunks written in the last 10 minutes are kept) and prints what it freed. It refuses an image a running container uses. `rmi` of a missing ref prints `voila rmi: no such image …` and exits 1 |
 | `voila --version` | Print `voila <version> (<commit>)` |
 
 ## Building images
@@ -45,8 +46,12 @@ like any imported image, so `voila run` and `voila push` work on it unchanged.
   first `FROM`, `COPY --from=<stage name|index|image>` (with `--chown` /
   `--chmod`). Only stages the target depends on are built; `--target <stage>`
   tags that stage. Progress lines show the stage: `[builder 2/4] RUN ...`.
-- Not supported yet: `RUN --mount`, `ADD --from`, `ADD` of URLs or tar
-  auto-extraction, heredocs, `ONBUILD`, symbolic `--chmod` modes.
+- `ADD` of a local tar archive (plain, gzip or zstd, detected by content)
+  unpacks it into the destination directory. Entries that would leave the
+  destination are skipped, and files get the `ADD` step's owner, not the
+  archive's. bzip2 and xz archives fail with a message.
+- Not supported yet: `RUN --mount`, `ADD --from`, `ADD` of URLs, bzip2/xz
+  archives, heredocs, `ONBUILD`, symbolic `--chmod` modes.
 - Every `RUN`, `COPY` and `ADD` step is cached under `<root>/build-cache/`,
   keyed by the parent image, the instruction, its environment and (for
   `COPY`) the content of its sources, or for `COPY --from` the source
@@ -106,6 +111,26 @@ host. With `uidmap` and a subuid range, the run sandbox maps the same range
 `build` uses; without them it falls back to a single-uid namespace and prints
 a warning.
 
+### Command, user and network
+
+- Arguments after the image replace the image `CMD` and are passed to its
+  `ENTRYPOINT`, as in Docker. `--entrypoint cmd` replaces the `ENTRYPOINT`
+  and drops the `CMD`.
+- `-u user[:group]` overrides the image `USER`. `--env-file F` reads
+  `KEY=VALUE` lines (blank lines and `#` comments are skipped). With `-t`,
+  `TERM=xterm` is set unless the image or `-e` sets it.
+- Each container has its own hostname (the short container id, or
+  `-h/--hostname`), and voila bind-mounts generated `/etc/hostname`,
+  `/etc/hosts` and `/etc/resolv.conf` over the image's. With pasta,
+  `resolv.conf` points at pasta's DNS forwarder (`169.254.1.1`), which uses
+  the host's resolver; search domains and options are copied from the host.
+- The command starts only after pasta has configured the network (or after
+  1 s when the host has no default route).
+- `--network none` gives the container loopback only and cannot be combined
+  with `-p`. Other `--network` modes are not supported yet.
+- If a container's FUSE server dies, the container is stopped and marked
+  `exited (125)` instead of staying `running` on a dead mount.
+
 ## Environment variables
 
 - `VOILA_ROOT`: data root. Default: `/var/lib/voila` when it exists,
@@ -115,17 +140,24 @@ a warning.
   full base (e.g. `https://host/registry`); the client appends `/v1/...`.
   Precedence: `$VOILA_REGISTRY`, then `~/.config/voila/credentials`.
 - `VOILA_REGISTRY_TOKEN`: registry API key. Precedence:
-  `$VOILA_REGISTRY_TOKEN`, then the login file. Chunk GETs are
+  `$VOILA_REGISTRY_TOKEN`, then the login file (when its registry matches
+  `$VOILA_REGISTRY`). Chunk GETs are
   unauthenticated; the token is used for manifests and uploads.
-- `VOILA_ORG`: your registry org. Default namespace for an explicit
-  `voila push` or `voila build --push`. `import` and `FROM` resolution
+- `VOILA_ORG`: your registry org (default: the org saved by `voila login`).
+  A `voila push` or `voila build --push` of a ref without an org goes to
+  `$VOILA_ORG/<ref>`; push tags it locally first. `import` and `FROM` resolution
   keep the Hub ref and do not upload anything.
 - `VOILA_RUNTIME`: `local` (default) or `remote`. `remote` is not
   implemented yet.
 
-Registry errors are reported per HTTP status. A `404` on pull prints `image
-"<ref>" not found on <registry>`: private images return 404 to non-owners, so
-404 cannot tell "missing" from "no access". A `401`/`403` prints `not
-authorized ... (check VOILA_REGISTRY_TOKEN or run voila login)`. Other CLI
+Registry errors are reported per HTTP status. Images are private to their
+org by default and a private image returns 404 to non-members, so a `404` on
+pull says the image is missing *or* private (and suggests `voila login` when
+you are not logged in); `voila import` is suggested for Docker Hub images. A
+`401`/`403` prints `not authorized by the registry (check
+VOILA_REGISTRY_TOKEN or run voila login)`. A push of a ref without an org
+explains that registry images are named `<org>/<name>:<tag>`. On Docker Hub,
+a missing repository or tag prints `image not found on the source
+registry`. Other CLI
 errors print a short message instead of a Zig error name; unknown errors ask
 you to report them with `voila --version`.
