@@ -211,21 +211,18 @@ trap 'rm -rf "$WORK"' EXIT
 BINARY="voila_${VERSION}_linux_${ARCH}"
 LEGACY_BINARY="zig-fuse_${VERSION}_linux_${ARCH}"
 
+# Returns non-zero instead of exiting so the caller can try the legacy name.
 fetch_asset() {
-	local name="$1" out="$2"
-	local simple="https://github.com/${REPO}/releases/download/${VERSION}/${name}"
-	if curl_auth -fsSL -o "$out" "$simple" 2>/dev/null; then
-		return 0
-	fi
-	die "download failed: $simple"
+	curl_auth -fsSL -o "$2" "https://github.com/${REPO}/releases/download/${VERSION}/$1" 2>/dev/null
 }
 
 log "downloading $BINARY"
-if ! fetch_asset "$BINARY" "$WORK/$BINARY" 2>/dev/null; then
-	log "falling back to legacy asset name $LEGACY_BINARY"
-	fetch_asset "$LEGACY_BINARY" "$WORK/voila"
-else
+if fetch_asset "$BINARY" "$WORK/$BINARY"; then
 	cp "$WORK/$BINARY" "$WORK/voila"
+elif fetch_asset "$LEGACY_BINARY" "$WORK/voila"; then
+	log "using legacy asset name $LEGACY_BINARY"
+else
+	die "release $VERSION has no $BINARY asset (a release that was just published may still be uploading; retry in a few minutes or pass --version <tag>): https://github.com/${REPO}/releases/tag/${VERSION}"
 fi
 
 if curl_auth -fsSL -o "$WORK/voila-checksums.txt" \
