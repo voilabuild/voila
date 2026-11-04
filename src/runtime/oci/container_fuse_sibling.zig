@@ -36,7 +36,9 @@ pub const Handle = struct {
             var status: i32 = 0;
             var exited = false;
             for (0..300) |_| {
-                if (std.c.waitpid(self.pid, &status, std.c.W.NOHANG) == self.pid) {
+                // < 0: already reaped (e.g. by the run loop after the server died).
+                const r = std.c.waitpid(self.pid, &status, std.c.W.NOHANG);
+                if (r == self.pid or r < 0) {
                     exited = true;
                     break;
                 }

@@ -48,6 +48,7 @@ fn failMessage(e: anyerror) []const u8 {
         error.SqlitePrepare, error.NoImageMatch => "image not found locally; run `voila import <ref>`",
         error.NeedFuse => "needs /dev/fuse",
         error.UserNamespacesRequired => "needs unprivileged user namespaces",
+        error.FuseServerFailed => "the image filesystem server exited; the container was stopped",
         else => @errorName(e),
     };
 }
@@ -454,6 +455,7 @@ fn runMounted(
         .ready_fd = ready_fd,
         .etc_dir = etc_dir,
         .hostname = hostname,
+        .fuse_pid = fuse_server.pid,
     }, 0) catch |e| switch (e) {
         error.ForwarderFailed => {
             std.debug.print("voila: port forwarder exited; see the container log\n", .{});

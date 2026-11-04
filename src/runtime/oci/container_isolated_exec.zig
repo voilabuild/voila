@@ -39,6 +39,9 @@ pub const Spec = struct {
     hostname: []const u8 = "",
     /// `voila exec`: join this running container init's namespaces and root.
     join_pid: i32 = 0,
+    /// Parent only: the image's FUSE server (our child). If it dies the root is gone,
+    /// so the container is killed rather than left running on a dead mount (#154).
+    fuse_pid: i32 = 0,
 };
 
 pub fn run(spec: Spec) Error!u8 {
@@ -376,6 +379,14 @@ pub fn spawnAndWait(io: std.Io, allocator: std.mem.Allocator, spec: Spec, timeou
         const w = std.c.waitpid(pid, &status, std.c.W.NOHANG);
         if (w == pid) break;
         if (w < 0 and std.c.errno(-1) != .CHILD) return error.ForkFailed;
+        if (spec.fuse_pid > 0) {
+            var fst: i32 = 0;
+            if (std.c.waitpid(spec.fuse_pid, &fst, std.c.W.NOHANG) == spec.fuse_pid) {
+                _ = std.c.kill(pid, std.c.SIG.KILL);
+                while (std.c.waitpid(pid, &status, 0) < 0 and std.c.errno(-1) == .INTR) {}
+                return error.FuseServerFailed;
+            }
+        }
         if (deadline_ms) |deadline| {
             if (monotonicMs() > deadline) {
                 _ = std.c.kill(pid, std.c.SIG.KILL);
@@ -564,6 +575,7 @@ pub const Error = error{
     ForkFailed,
     ExecTimeout,
     ForwarderFailed,
+    FuseServerFailed,
 };
 
 test "errorExitCode separates setup and exec failures" {
