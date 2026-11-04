@@ -109,6 +109,31 @@ pub fn resolveArgv0VfsPath(allocator: std.mem.Allocator, vfs: *fuse_vfs_mod.Fuse
     return error.ExecNotFound;
 }
 
+/// Live-mount path for `voila exec`: sees container writes and volume mounts.
+pub fn resolveArgv0OnMount(allocator: std.mem.Allocator, mount_dir: []const u8, argv0: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, argv0, '/') != null) {
+        const vfs_path = if (std.mem.startsWith(u8, argv0, "/"))
+            try allocator.dupe(u8, argv0)
+        else
+            try std.fmt.allocPrint(allocator, "/{s}", .{argv0});
+        const host = try hostPathForVfsExec(allocator, mount_dir, vfs_path);
+        defer allocator.free(host);
+        if (!posix_util.access(host)) {
+            allocator.free(vfs_path);
+            return error.ExecNotFound;
+        }
+        return vfs_path;
+    }
+    for (default_path_dirs) |dir| {
+        const vfs_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, argv0 });
+        const host = try hostPathForVfsExec(allocator, mount_dir, vfs_path);
+        defer allocator.free(host);
+        if (posix_util.access(host)) return vfs_path;
+        allocator.free(vfs_path);
+    }
+    return error.ExecNotFound;
+}
+
 pub fn hostPathForVfsExec(allocator: std.mem.Allocator, mount_dir: []const u8, vfs_exec: []const u8) ![]const u8 {
     return std.fmt.allocPrint(allocator, "{s}{s}", .{ mount_dir, vfs_exec });
 }

@@ -4,9 +4,6 @@ const container_lifecycle = @import("./container_lifecycle.zig");
 const container_run = @import("./container_run.zig");
 const container_run_opts = @import("./container_run_opts.zig");
 const mount_exec = @import("mount").mount_exec;
-const fuse_vfs_mod = @import("mount").fuse.fuse_vfs;
-const voila_loader = @import("../voila_loader.zig");
-const voila_vfs_mod = @import("mount").fuse.voila_vfs;
 const ns = @import("sys").ns;
 const posix_util = @import("sys").posix_util;
 
@@ -26,12 +23,8 @@ pub fn exec(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, sp
     if (!container_lifecycle.mountStillListed(st.mount_dir)) return error.NotRunning;
     const opts = try container_run_opts.readRunOpts(allocator, voila_root, id);
     defer opts.deinit(allocator);
-    const root_ref = try voila_loader.resolveRootRef(io, allocator, voila_root, st.image);
-    defer allocator.free(root_ref);
-    const tree = try voila_loader.loadTreeRoot(io, allocator, voila_root, root_ref);
-    var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(allocator, tree) };
-    defer fuse_vfs.deinit();
-    const vfs_exec = try mount_exec.resolveArgv0VfsPath(allocator, &fuse_vfs, spec.argv[0]);
+    // Resolve against the live mount so programs installed at runtime (or via volumes) work.
+    const vfs_exec = try mount_exec.resolveArgv0OnMount(allocator, st.mount_dir, spec.argv[0]);
     defer allocator.free(vfs_exec);
     const use_tty = spec.tty or spec.interactive or opts.tty or opts.interactive;
     return container_run.execInMount(

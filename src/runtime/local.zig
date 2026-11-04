@@ -172,8 +172,24 @@ fn runningUser(allocator: std.mem.Allocator, voila_root: []const u8, image: []co
         for (states) |st| container_store.freeState(allocator, st);
         allocator.free(states);
     }
+    const want = voila_resolve.resolveImage(allocator, voila_root, image) catch null;
+    defer if (want) |r| {
+        allocator.free(r.ref);
+        allocator.free(r.image_digest);
+        allocator.free(r.merged_root_manifest);
+    };
     for (states) |st| {
-        if (std.mem.eql(u8, st.image, image) and container_lifecycle.isRunning(st)) return try allocator.dupe(u8, st.id);
+        if (!container_lifecycle.isRunning(st)) continue;
+        if (std.mem.eql(u8, st.image, image)) return try allocator.dupe(u8, st.id);
+        if (want) |w| {
+            const got = voila_resolve.resolveImage(allocator, voila_root, st.image) catch continue;
+            defer {
+                allocator.free(got.ref);
+                allocator.free(got.image_digest);
+                allocator.free(got.merged_root_manifest);
+            }
+            if (std.mem.eql(u8, got.image_digest, w.image_digest)) return try allocator.dupe(u8, st.id);
+        }
     }
     return null;
 }

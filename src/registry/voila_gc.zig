@@ -2,6 +2,7 @@
 const std = @import("std");
 const sqlite = @import("sqlite_c");
 const fs = @import("sys").fs;
+const posix_util = @import("sys").posix_util;
 const voila_resolve = @import("./voila_resolve.zig");
 const voila_manifest_cache = @import("./voila_manifest_cache.zig");
 const voila_reachable = @import("./voila_reachable.zig");
@@ -11,7 +12,14 @@ pub const default_grace_ns: u64 = 10 * std.time.ns_per_min;
 
 pub const Result = struct { chunks: u64 = 0, bytes: u64 = 0 };
 
-pub const Error = error{UnknownImageRoots};
+pub const Error = error{
+    UnknownImageRoots,
+    SqliteOpen,
+    SqlitePrepare,
+    SqliteBind,
+    SqliteStep,
+    SqliteExec,
+};
 
 pub fn collect(allocator: std.mem.Allocator, voila_root: []const u8, now_ns: u64, grace_ns: u64) !Result {
     var marked: std.StringHashMap(void) = .init(allocator);
@@ -27,7 +35,8 @@ pub fn collect(allocator: std.mem.Allocator, voila_root: []const u8, now_ns: u64
 fn mark(allocator: std.mem.Allocator, voila_root: []const u8, marked: *std.StringHashMap(void)) !void {
     var roots: std.ArrayList([32]u8) = .empty;
     defer roots.deinit(allocator);
-    const images = voila_resolve.listImagesInStore(allocator, voila_root) catch &.{};
+    // A listing failure must not look like an empty store: that would sweep every old chunk.
+    const images = try voila_resolve.listImagesInStore(allocator, voila_root);
     defer {
         for (images) |r| {
             allocator.free(r.ref);
@@ -76,10 +85,15 @@ fn buildCacheRoots(allocator: std.mem.Allocator, voila_root: []const u8, roots: 
     }
 }
 
+const Candidate = struct { id: [32]u8, path: []u8, size: u64 };
+
 fn sweep(allocator: std.mem.Allocator, voila_root: []const u8, marked: *const std.StringHashMap(void), now_ns: u64, grace_ns: u64) !Result {
     var res: Result = .{};
-    var removed: std.ArrayList([32]u8) = .empty;
-    defer removed.deinit(allocator);
+    var candidates: std.ArrayList(Candidate) = .empty;
+    defer {
+        for (candidates.items) |c| allocator.free(c.path);
+        candidates.deinit(allocator);
+    }
     const top = try std.fmt.allocPrint(allocator, "{s}/chunks", .{voila_root});
     defer allocator.free(top);
     const l1 = fs.listDir(allocator, top) catch return res;
@@ -99,44 +113,56 @@ fn sweep(allocator: std.mem.Allocator, voila_root: []const u8, marked: *const st
                 var id: [32]u8 = undefined;
                 _ = std.fmt.hexToBytes(&id, hex) catch continue; // not a chunk blob (e.g. a temp file)
                 const path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ d2, hex });
-                defer allocator.free(path);
-                const st = fs.lstat(path) catch continue;
-                if (st.kind != .file or st.mtime_ns + grace_ns > now_ns) continue;
-                const path_z = try allocator.dupeSentinel(u8, path, 0);
-                defer allocator.free(path_z);
-                if (std.c.unlink(path_z) != 0) continue;
-                res.chunks += 1;
-                res.bytes += st.size;
-                try removed.append(allocator, id);
+                errdefer allocator.free(path);
+                const st = fs.lstat(path) catch {
+                    allocator.free(path);
+                    continue;
+                };
+                if (st.kind != .file or st.mtime_ns + grace_ns > now_ns) {
+                    allocator.free(path);
+                    continue;
+                }
+                try candidates.append(allocator, .{ .id = id, .path = path, .size = st.size });
             }
         }
     }
-    dropIndexRows(allocator, voila_root, removed.items);
+    // Drop index rows before unlinking so a failed DB write cannot leave stale compression metadata.
+    var ids: std.ArrayList([32]u8) = .empty;
+    defer ids.deinit(allocator);
+    try ids.ensureTotalCapacity(allocator, candidates.items.len);
+    for (candidates.items) |c| ids.appendAssumeCapacity(c.id);
+    try dropIndexRows(allocator, voila_root, ids.items);
+    for (candidates.items) |c| {
+        posix_util.unlink(c.path);
+        res.chunks += 1;
+        res.bytes += c.size;
+    }
     return res;
 }
 
 /// A stale row would make a re-fetched chunk decode with the old compression.
-fn dropIndexRows(allocator: std.mem.Allocator, voila_root: []const u8, ids: []const [32]u8) void {
+fn dropIndexRows(allocator: std.mem.Allocator, voila_root: []const u8, ids: []const [32]u8) !void {
     if (ids.len == 0) return;
-    const db_path = std.fmt.allocPrintSentinel(allocator, "{s}/index.db", .{voila_root}, 0) catch return;
+    const db_path = try std.fmt.allocPrintSentinel(allocator, "{s}/index.db", .{voila_root}, 0);
     defer allocator.free(db_path);
     var db: ?*sqlite.sqlite3 = null;
     if (sqlite.sqlite3_open(db_path, &db) != sqlite.SQLITE_OK) {
         if (db) |d| _ = sqlite.sqlite3_close(d);
-        return;
+        return error.SqliteOpen;
     }
     defer _ = sqlite.sqlite3_close(db);
     _ = sqlite.sqlite3_busy_timeout(db, 5000);
     var stmt: ?*sqlite.sqlite3_stmt = null;
-    if (sqlite.sqlite3_prepare_v2(db, "DELETE FROM chunks WHERE id = ?", -1, &stmt, null) != sqlite.SQLITE_OK) return;
+    if (sqlite.sqlite3_prepare_v2(db, "DELETE FROM chunks WHERE id = ?", -1, &stmt, null) != sqlite.SQLITE_OK) return error.SqlitePrepare;
     defer _ = sqlite.sqlite3_finalize(stmt);
-    _ = sqlite.sqlite3_exec(db, "BEGIN", null, null, null);
+    if (sqlite.sqlite3_exec(db, "BEGIN", null, null, null) != sqlite.SQLITE_OK) return error.SqliteExec;
     for (ids) |*id| {
-        _ = sqlite.sqlite3_reset(stmt);
-        _ = sqlite.sqlite3_bind_blob(stmt, 1, id, 32, sqlite.SQLITE_STATIC);
-        _ = sqlite.sqlite3_step(stmt);
+        if (sqlite.sqlite3_reset(stmt) != sqlite.SQLITE_OK) return error.SqliteExec;
+        if (sqlite.sqlite3_bind_blob(stmt, 1, id, 32, sqlite.SQLITE_STATIC) != sqlite.SQLITE_OK) return error.SqliteBind;
+        const step = sqlite.sqlite3_step(stmt);
+        if (step != sqlite.SQLITE_DONE) return error.SqliteStep;
     }
-    _ = sqlite.sqlite3_exec(db, "COMMIT", null, null, null);
+    if (sqlite.sqlite3_exec(db, "COMMIT", null, null, null) != sqlite.SQLITE_OK) return error.SqliteExec;
 }
 
 test "collect keeps chunks of remaining images and drops the rest" {
