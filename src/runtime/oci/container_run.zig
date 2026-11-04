@@ -99,6 +99,8 @@ pub fn runOptsFromSpec(allocator: std.mem.Allocator, spec: types.RunSpec) !conta
         .env = try env.toOwnedSlice(allocator),
         .workdir = try allocator.dupe(u8, spec.workdir),
         .user = try allocator.dupe(u8, spec.user),
+        .hostname = try allocator.dupe(u8, spec.hostname),
+        .network = try allocator.dupe(u8, spec.network),
         .volumes = try volumes.toOwnedSlice(allocator),
         .ports = ports,
         .tty = spec.tty,
@@ -430,7 +432,7 @@ fn runMounted(
         .subgid = ids.gid.sub,
     });
     defer fuse_server.deinit();
-    if (container_ports.findPasta() == null) {
+    if (container_ports.findPasta() == null and opts.network.len == 0) {
         std.debug.print("voila: pasta not found; the container has no outbound network (install the passt package)\n", .{});
     }
     try mount_exec.waitMountRootReady(mount_dir, io);
@@ -441,8 +443,9 @@ fn runMounted(
     const etc_dir = try std.fmt.allocPrint(allocator, "{s}/etc", .{ctr_dir});
     defer allocator.free(etc_dir);
     const id = std.fs.path.basename(ctr_dir);
-    const hostname = id[0..@min(id.len, 12)];
-    try container_etc.write(allocator, etc_dir, hostname, container_ports.findPasta() != null);
+    const hostname = if (opts.hostname.len > 0) opts.hostname else id[0..@min(id.len, 12)];
+    const net_none = std.mem.eql(u8, opts.network, "none");
+    try container_etc.write(allocator, etc_dir, hostname, !net_none and container_ports.findPasta() != null);
     return container_isolated_exec.spawnAndWait(io, allocator, .{
         .mount_dir = mount_dir,
         .log_path = log_path,
@@ -451,7 +454,7 @@ fn runMounted(
         .opts = opts,
         .rw_dir = rw_dir,
         .use_tty = opts.tty or opts.interactive,
-        .start_net = true,
+        .start_net = !net_none,
         .ready_fd = ready_fd,
         .etc_dir = etc_dir,
         .hostname = hostname,

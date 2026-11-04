@@ -15,6 +15,10 @@ pub const RunSpec = struct {
     tty: bool = false,
     interactive: bool = false,
     user: []const u8 = "",
+    /// Empty: the short container id.
+    hostname: []const u8 = "",
+    /// Empty: own netns with pasta. "none": loopback only.
+    network: []const u8 = "",
 };
 
 pub const ExecSpec = struct {

@@ -10,8 +10,12 @@ pub const RunOpts = struct {
     tty: bool,
     interactive: bool,
     user: []const u8 = "",
+    hostname: []const u8 = "",
+    network: []const u8 = "",
 
     pub fn deinit(self: RunOpts, allocator: std.mem.Allocator) void {
+        allocator.free(self.hostname);
+        allocator.free(self.network);
         for (self.env) |e| {
             allocator.free(e.key);
             allocator.free(e.value);
@@ -46,6 +50,10 @@ pub fn writeRunOpts(allocator: std.mem.Allocator, voila_root: []const u8, id: []
     try buf.appendSlice(allocator, if (opts.interactive) "true" else "false");
     try buf.appendSlice(allocator, ",\"user\":");
     try appendJsonString(allocator, &buf, opts.user);
+    try buf.appendSlice(allocator, ",\"hostname\":");
+    try appendJsonString(allocator, &buf, opts.hostname);
+    try buf.appendSlice(allocator, ",\"network\":");
+    try appendJsonString(allocator, &buf, opts.network);
     try buf.appendSlice(allocator, ",\"env\":[");
     for (opts.env, 0..) |e, i| {
         if (i > 0) try buf.append(allocator, ',');
@@ -92,6 +100,8 @@ pub fn readRunOpts(allocator: std.mem.Allocator, voila_root: []const u8, id: []c
     const o = parsed.value.object;
     const workdir = try dupStrField(allocator, o, "workdir");
     const user = try dupStrField(allocator, o, "user");
+    const hostname = try dupStrField(allocator, o, "hostname");
+    const network = try dupStrField(allocator, o, "network");
     const tty = boolField(o, "tty");
     const interactive = boolField(o, "interactive");
     var env_list: std.ArrayList(run_flags.EnvPair) = .empty;
@@ -138,6 +148,8 @@ pub fn readRunOpts(allocator: std.mem.Allocator, voila_root: []const u8, id: []c
         .env = try env_list.toOwnedSlice(allocator),
         .workdir = workdir,
         .user = user,
+        .hostname = hostname,
+        .network = network,
         .volumes = try vol_list.toOwnedSlice(allocator),
         .ports = try port_list.toOwnedSlice(allocator),
         .tty = tty,
@@ -150,6 +162,8 @@ fn emptyOpts(allocator: std.mem.Allocator) RunOpts {
         .env = &.{},
         .workdir = allocator.dupe(u8, "") catch "",
         .user = allocator.dupe(u8, "") catch "",
+        .hostname = allocator.dupe(u8, "") catch "",
+        .network = allocator.dupe(u8, "") catch "",
         .volumes = &.{},
         .ports = &.{},
         .tty = false,

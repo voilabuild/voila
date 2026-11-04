@@ -25,8 +25,12 @@ pub const Parsed = struct {
     entrypoint: ?[]const u8 = null,
     /// `-u/--user`: overrides the image USER.
     user: ?[]const u8 = null,
+    hostname: ?[]const u8 = null,
+    network: ?[]const u8 = null,
 
     pub fn deinit(self: Parsed, allocator: std.mem.Allocator) void {
+        if (self.hostname) |h| allocator.free(h);
+        if (self.network) |n| allocator.free(n);
         if (self.entrypoint) |e| allocator.free(e);
         if (self.user) |u| allocator.free(u);
         allocator.free(self.runtime_cfg.store_root);
@@ -69,6 +73,10 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator,
     var interactive = false;
     var entrypoint: ?[]const u8 = null;
     var user: ?[]const u8 = null;
+    var hostname: ?[]const u8 = null;
+    var network: ?[]const u8 = null;
+    errdefer if (hostname) |h| allocator.free(h);
+    errdefer if (network) |n| allocator.free(n);
     errdefer if (entrypoint) |e| allocator.free(e);
     errdefer if (user) |u| allocator.free(u);
     while (args.next()) |arg| {
@@ -114,6 +122,22 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator,
         if (std.mem.eql(u8, arg, "--env-file")) {
             const path = args.next() orelse return error.BadRunArgs;
             try appendEnvFile(allocator, &env_list, path);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--hostname")) {
+            const h = args.next() orelse return error.BadRunArgs;
+            if (hostname) |old| allocator.free(old);
+            hostname = try allocator.dupe(u8, h);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--network") or std.mem.eql(u8, arg, "--net")) {
+            const n = args.next() orelse return error.BadRunArgs;
+            if (!std.mem.eql(u8, n, "none") and !std.mem.eql(u8, n, "bridge") and !std.mem.eql(u8, n, "default")) {
+                diag.flag = n;
+                return error.UnsupportedNetwork;
+            }
+            if (network) |old| allocator.free(old);
+            network = try allocator.dupe(u8, if (std.mem.eql(u8, n, "none")) "none" else "");
             continue;
         }
         if (std.mem.eql(u8, arg, "--entrypoint")) {
@@ -203,6 +227,8 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator,
         .interactive = interactive,
         .entrypoint = entrypoint,
         .user = user,
+        .hostname = hostname,
+        .network = network,
     };
 }
 
@@ -249,9 +275,17 @@ pub fn execute(ctx: command.Ctx) !void {
             std.debug.print("voila run: unknown flag {s}\n", .{diag.flag});
             std.process.exit(2);
         }
+        if (e == error.UnsupportedNetwork) {
+            std.debug.print("voila run: --network {s} is not supported yet (use the default or none)\n", .{diag.flag});
+            std.process.exit(2);
+        }
         return e;
     };
     defer parsed.deinit(gpa);
+    if (parsed.network != null and parsed.network.?.len > 0 and parsed.ports.len > 0) {
+        std.debug.print("voila run: -p cannot be used with --network none\n", .{});
+        std.process.exit(2);
+    }
     try registry_session.prepare(ctx.io, gpa, parsed.runtime_cfg.store_root);
     var worker = try command.openRuntime(gpa, parsed.runtime_cfg);
     defer worker.deinit(gpa);
@@ -297,6 +331,8 @@ pub fn execute(ctx: command.Ctx) !void {
         .tty = parsed.tty,
         .interactive = parsed.interactive,
         .user = user,
+        .hostname = parsed.hostname orelse "",
+        .network = parsed.network orelse "",
     });
     std.process.exit(code);
 }
