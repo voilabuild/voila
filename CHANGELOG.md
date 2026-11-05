@@ -8,7 +8,7 @@ Fixes from validating alpha.4 against a Docker-user scenario (#166).
 
 ### Highlights
 
-- `voila run` with networking no longer waits ~1 s at exit: Ubuntu's pasta AppArmor profile refuses voila's signal, and the run now returns without waiting for pasta (warm `run --rm alpine true`: 1.06 s → 0.05 s)
+- `voila run` without `-p` no longer waits ~1 s at exit: Ubuntu's pasta AppArmor profile refuses voila's signal, and the run now returns without waiting for pasta (warm `run --rm alpine true`: 1.06 s → 0.05 s). With `-p` it still waits for pasta (at most 1.5 s), so the host port is free when the run returns
 - `-i` without `-t` keeps stdin a plain pipe: `echo x | voila run -i img cat` and `run -i img sh < script` reach EOF. From a terminal, `-i` still reads it
 - `voila run -h <name>` sets the hostname, as in Docker
 - `ps`, `images` and `--version` print to stdout, so they can be piped
