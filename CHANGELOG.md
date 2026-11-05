@@ -2,9 +2,9 @@
 
 All notable changes to this project are documented here.
 
-## Unreleased
+## v0.1.0-alpha.4 — 2026-11-05
 
-Fixes from the alpha.3 readiness pass (#163).
+Fixes from the alpha.3 readiness pass (#163): containers get DNS and a hostname, `exec` joins the running container, `rmi` frees space, and cold lazy runs are 1.5–3.5× faster.
 
 ### Highlights
 
@@ -18,6 +18,13 @@ Fixes from the alpha.3 readiness pass (#163).
 - Fixed: the `voila login` token was ignored when `VOILA_REGISTRY` was set (#149); `-p` without pasta hung (#153); a dead FUSE server left the container `running` (#154)
 - Clearer errors for push (not authorized / needs an org), missing or private images, and `voila login` (#158, #161)
 - Releases are published only after their binaries are attached; `install.sh` explains a missing asset (#156)
+- `RUN` and `voila run` stay writable when the store is on overlayfs (#146)
+
+### Install this build
+
+```bash
+curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sh -s -- --version v0.1.0-alpha.4 --yes
+```
 
 ## v0.1.0-alpha.2 — 2026-10-31
 
