@@ -34,7 +34,7 @@ def test_run_hello(voila: Voila) -> None:
 def test_version_and_help(voila: Voila) -> None:
     ver = voila.run("--version")
     assert ver.rc == 0
-    assert ver.err.startswith("voila ") or ver.out.startswith("voila ")
+    assert ver.out.startswith("voila "), ver.err
     help_ = voila.run("run", "--help")
     assert help_.rc == 0
     text = help_.err + help_.out

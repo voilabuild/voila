@@ -214,6 +214,36 @@ pub fn kill(pid: linux.pid_t, sig: SIG) void {
     _ = linux.kill(pid, sig);
 }
 
+/// Like `kill`, but says whether the signal was delivered (false on EPERM, or EACCES from an LSM).
+pub fn signal(pid: linux.pid_t, sig: SIG) bool {
+    return !failed(linux.kill(pid, sig));
+}
+
+/// Reaps `pid` if it has exited, without blocking. True once it is gone (or not our child).
+pub fn reapNoHang(pid: linux.pid_t) bool {
+    var status: i32 = 0;
+    while (true) {
+        const rc = linux.wait4(pid, &status, linux.W.NOHANG, null);
+        switch (linux.errno(rc)) {
+            .SUCCESS => return rc != 0,
+            .INTR => continue,
+            else => return true,
+        }
+    }
+}
+
+/// Blocks until child `pid` exits.
+pub fn waitPid(pid: linux.pid_t) void {
+    var status: i32 = 0;
+    while (linux.errno(linux.wait4(pid, &status, 0, null)) == .INTR) {}
+}
+
+/// True when `fd` is a terminal.
+pub fn isTerminal(fd: linux.fd_t) bool {
+    var t: linux.termios = undefined;
+    return !failed(linux.tcgetattr(fd, &t));
+}
+
 /// fork(2) through libc so its process state stays consistent; 0 in the child.
 pub fn fork() Error!linux.pid_t {
     const pid = std.c.fork();

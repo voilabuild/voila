@@ -179,7 +179,7 @@ fn runForeground(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u
     const opts = try runOptsFromSpec(allocator, spec);
     defer opts.deinit(allocator);
     try container_run_opts.writeRunOpts(allocator, voila_root, id, opts);
-    const code = try spawnContainerWorkerAndWait(io, allocator, voila_root, id, log_path, spec.tty or spec.interactive, &st);
+    const code = try spawnContainerWorkerAndWait(io, allocator, voila_root, id, log_path, .{ .pty = spec.tty, .terminal = spec.tty or spec.interactive }, &st);
     var st_exit = try container_store.readState(allocator, voila_root, id);
     defer container_store.freeState(allocator, st_exit);
     markExited(allocator, &st_exit, code);
@@ -189,13 +189,22 @@ fn runForeground(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u
     return code;
 }
 
+/// How a foreground run attaches to the caller's terminal.
+const Attach = struct {
+    /// The container gets a pty (`-t`); otherwise its output is followed from the log.
+    pty: bool,
+    /// The worker owns the terminal's foreground group (`-i` or `-t`), so reading a
+    /// terminal stdin does not stop it with SIGTTIN.
+    terminal: bool,
+};
+
 fn spawnContainerWorkerAndWait(
     io: std.Io,
     allocator: std.mem.Allocator,
     voila_root: []const u8,
     id: []const u8,
     log_path: []const u8,
-    use_tty: bool,
+    attach: Attach,
     st: *container_store.State,
 ) !u8 {
     const exe = try posix_util.selfExePath(allocator);
@@ -222,7 +231,7 @@ fn spawnContainerWorkerAndWait(
     var took_terminal = false;
     if (worker.id) |wp| {
         // The worker has its own process group; it must own the terminal to read it.
-        if (use_tty and ns.setForeground(std.c.STDIN_FILENO, @intCast(wp))) {
+        if (attach.terminal and ns.setForeground(std.c.STDIN_FILENO, @intCast(wp))) {
             took_terminal = true;
             _ = std.c.kill(-@as(std.c.pid_t, @intCast(wp)), std.c.SIG.CONT);
         }
@@ -231,7 +240,11 @@ fn spawnContainerWorkerAndWait(
         try container_store.writeState(allocator, voila_root, st.*);
     }
     const wp: std.c.pid_t = @intCast(worker.id orelse return error.SpawnFailed);
-    var log_follow: ?LogFollow = if (!use_tty) LogFollow.init(log_path) else null;
+    // After handing the terminal to the worker this process is in a background group; with
+    // `stty tostop` its log writes would stop it with SIGTTOU. Blocked before the follow
+    // thread starts, so the thread inherits the mask; the `old_mask` defer restores it.
+    if (took_terminal) _ = try ns.blockSignals(&ns.sigset(&.{.TTOU}));
+    var log_follow: ?LogFollow = if (!attach.pty) LogFollow.init(log_path) else null;
     if (log_follow) |*lf| lf.start();
     const code = try waitForwarding(wp, &wait_set);
     if (log_follow) |*lf| lf.finish();
@@ -453,7 +466,8 @@ fn runMounted(
         .cmd_argv = cmd_argv,
         .opts = opts,
         .rw_dir = rw_dir,
-        .use_tty = opts.tty or opts.interactive,
+        // Only -t gets a pty; -i alone keeps stdin a plain pipe so EOF reaches the command.
+        .use_tty = opts.tty,
         .start_net = !net_none,
         .ready_fd = ready_fd,
         .etc_dir = etc_dir,

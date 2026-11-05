@@ -4,7 +4,7 @@ const context = @import("context.zig");
 
 pub fn execute(ctx: command.Ctx) !void {
     const gpa = ctx.gpa();
-    const parsed = try context.parseArgs(gpa, ctx.args);
+    const parsed = try context.parseArgsAccepting(gpa, ctx.args, .{ .force = true });
     defer parsed.deinit(gpa);
     var worker = try command.openRuntime(gpa, parsed.runtime_cfg);
     defer worker.deinit(gpa);

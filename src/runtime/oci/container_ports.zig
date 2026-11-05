@@ -6,15 +6,29 @@ const posix_util = @import("sys").posix_util;
 const ns = @import("sys").ns;
 const container_etc = @import("container_etc.zig");
 
+/// How long `Forwarder.stop` waits for a forwarder it may not signal to release host ports.
+const stop_port_wait_ms = 1500;
+
 pub const Forwarder = struct {
     pid: i32,
+    /// Holds published host ports, so `stop` waits for them to be released.
+    holds_ports: bool = false,
+    /// Sends the stop signal; tests swap in one that is refused, as AppArmor does for pasta.
+    signal: *const fn (std.os.linux.pid_t, ns.SIG) bool = ns.signal,
 
     pub fn stop(self: *Forwarder) void {
-        if (self.pid > 0) {
-            _ = std.c.kill(self.pid, std.c.SIG.KILL);
-            var status: i32 = 0;
-            _ = std.c.waitpid(self.pid, &status, 0);
-            self.pid = 0;
+        if (self.pid <= 0) return;
+        defer self.pid = 0;
+        if (self.signal(self.pid, .KILL)) {
+            ns.waitPid(self.pid);
+            return;
+        }
+        // Ubuntu's pasta AppArmor profile refuses signals from voila. pasta exits by itself
+        // once the container's netns is gone (0.4-1 s); only wait when it holds host ports.
+        var waited: u32 = 0;
+        while (self.holds_ports and waited < stop_port_wait_ms) : (waited += 5) {
+            if (ns.reapNoHang(self.pid)) return;
+            posix_util.sleepMs(5);
         }
     }
 
@@ -74,7 +88,7 @@ fn startPasta(io: std.Io, pasta: []const u8, ns_pid: i32, ports: []const run_fla
         "-u",  "none", "-T",  "none",         "-U",            "none",
         "-t",  spec,   pid_s,
     };
-    var fwd: Forwarder = .{ .pid = try spawnArgv(io, &argv) };
+    var fwd: Forwarder = .{ .pid = try spawnArgv(io, &argv), .holds_ports = ports.len > 0 };
     // --config-net adds the default route last; without one (host offline) give up after 1s.
     var waited: u32 = 0;
     while (waited < 1000 and fwd.alive() and !hasDefaultRoute(ns_pid)) : (waited += 5) {
@@ -300,4 +314,37 @@ test "routesHaveDefault finds v4 and v6 default routes" {
     try std.testing.expect(routesHaveDefault(v6, true));
     const v6lo = "00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200 lo\n";
     try std.testing.expect(!routesHaveDefault(v6lo, true));
+}
+
+fn refuseSignal(_: std.os.linux.pid_t, _: ns.SIG) bool {
+    return false;
+}
+
+fn forkSleeper(ms: u64) !i32 {
+    const pid = try ns.fork();
+    if (pid == 0) {
+        posix_util.sleepMs(ms);
+        std.c._exit(0);
+    }
+    return pid;
+}
+
+fn stopMs(f: *Forwarder) i64 {
+    const t0 = std.Io.Clock.awake.now(std.testing.io);
+    f.stop();
+    return t0.durationTo(std.Io.Clock.awake.now(std.testing.io)).toMilliseconds();
+}
+
+test "stop does not block on a forwarder that refuses the signal" {
+    var f: Forwarder = .{ .pid = try forkSleeper(400), .signal = refuseSignal };
+    const pid = f.pid;
+    try std.testing.expect(stopMs(&f) < 200);
+    try std.testing.expectEqual(@as(i32, 0), f.pid);
+    ns.waitPid(pid);
+}
+
+test "stop waits for a refusing forwarder that holds host ports" {
+    var f: Forwarder = .{ .pid = try forkSleeper(300), .signal = refuseSignal, .holds_ports = true };
+    const ms = stopMs(&f);
+    try std.testing.expect(ms >= 250 and ms < stop_port_wait_ms);
 }

@@ -112,6 +112,18 @@ pub fn runArgvWithEnv(
 }
 
 /// Sleep for `ms` milliseconds; restarts on `EINTR`.
+/// Formats one line of command output (tables, ids, versions) to stdout, so it can be piped.
+pub fn printOut(comptime fmt: []const u8, args: anytype) void {
+    var buf: [4096]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, fmt, args) catch return; // a single table row never exceeds 4 KiB
+    var off: usize = 0;
+    while (off < s.len) {
+        const n = std.c.write(std.c.STDOUT_FILENO, s[off..].ptr, s.len - off);
+        if (n <= 0) return;
+        off += @intCast(n);
+    }
+}
+
 pub fn sleepMs(ms: u64) void {
     var ts: std.c.timespec = .{
         .sec = @intCast(ms / 1000),
