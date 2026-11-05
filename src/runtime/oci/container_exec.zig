@@ -27,7 +27,7 @@ pub fn exec(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, sp
     const vfs_exec = try mount_exec.resolveArgv0OnMount(allocator, st.mount_dir, spec.argv[0]);
     defer allocator.free(vfs_exec);
     // A pty only when asked for one and stdin is a terminal: piped input must reach EOF.
-    const use_tty = (spec.tty or opts.tty) and std.c.isatty(std.c.STDIN_FILENO) == 1;
+    const use_tty = (spec.tty or opts.tty) and ns.isTerminal(0);
     return container_run.execInMount(
         io,
         allocator,

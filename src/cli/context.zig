@@ -18,11 +18,14 @@ pub const Accept = struct {
     force: bool = false,
 };
 
-pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !Parsed {
+pub const ParseError = error{ OutOfMemory, NeedVoilaRoot, BadRunArgs, UnknownFlag, NeedContextId, NoHome };
+
+pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) ParseError!Parsed {
     return parseArgsAccepting(allocator, args, .{});
 }
 
-pub fn parseArgsAccepting(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, accept: Accept) !Parsed {
+/// Container ids, after runtime flags. `--` ends flags, so a name starting with `-` still works.
+pub fn parseArgsAccepting(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, accept: Accept) ParseError!Parsed {
     var root: ?[]const u8 = null;
     var kind = voila_runtime.kindFromEnv();
     var ids: std.ArrayList([]const u8) = .empty;
@@ -31,10 +34,17 @@ pub fn parseArgsAccepting(allocator: std.mem.Allocator, args: *std.process.Args.
         ids.deinit(allocator);
         if (root) |r| allocator.free(r);
     }
+    var operands_only = false;
     while (args.next()) |arg| {
-        if (try flags.tryRuntimeFlag(allocator, arg, args, &root, &kind)) continue;
-        if (accept.force and (std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--force"))) continue;
-        if (arg.len > 1 and arg[0] == '-') return error.UnknownFlag;
+        if (!operands_only) {
+            if (std.mem.eql(u8, arg, "--")) {
+                operands_only = true;
+                continue;
+            }
+            if (try flags.tryRuntimeFlag(allocator, arg, args, &root, &kind)) continue;
+        }
+        if (!operands_only and accept.force and (std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--force"))) continue;
+        if (!operands_only and arg.len > 1 and arg[0] == '-') return error.UnknownFlag;
         try ids.append(allocator, try allocator.dupe(u8, arg));
     }
     if (ids.items.len == 0) return error.NeedContextId;
