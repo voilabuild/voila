@@ -240,6 +240,10 @@ fn spawnContainerWorkerAndWait(
         try container_store.writeState(allocator, voila_root, st.*);
     }
     const wp: std.c.pid_t = @intCast(worker.id orelse return error.SpawnFailed);
+    // After handing the terminal to the worker this process is in a background group; with
+    // `stty tostop` its log writes would stop it with SIGTTOU. Blocked before the follow
+    // thread starts, so the thread inherits the mask; the `old_mask` defer restores it.
+    if (took_terminal) _ = try ns.blockSignals(&ns.sigset(&.{.TTOU}));
     var log_follow: ?LogFollow = if (!attach.pty) LogFollow.init(log_path) else null;
     if (log_follow) |*lf| lf.start();
     const code = try waitForwarding(wp, &wait_set);

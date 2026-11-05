@@ -32,36 +32,68 @@ def _own_terminal(slave: int) -> None:
     fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
 
 
-def test_interactive_terminal_stdin_is_read_not_stopped(voila: Voila) -> None:
-    """`run -i` (no -t) from a terminal: the container reads it instead of getting SIGTTIN."""
+def _terminal_run(voila: Voila, cmd: list[str], typed: bytes, tostop: bool = False) -> tuple[int | None, bytes]:
+    """Runs `voila run --rm -i` with a pty as its controlling terminal, stdin and stdout.
+
+    Returns the exit code (None if it had not exited after 30 s) and everything the
+    terminal showed.
+    """
     voila.run("import", BASE)
     master, slave = pty.openpty()
+    if tostop:
+        attrs = termios.tcgetattr(slave)
+        attrs[3] |= termios.TOSTOP
+        termios.tcsetattr(slave, termios.TCSANOW, attrs)
     p = subprocess.Popen(
-        [VOILA_BIN, "run", "--rm", "-i", BASE, "--", "head", "-n1"],
+        [VOILA_BIN, "run", "--rm", "-i", BASE, "--", *cmd],
         env=voila.env,
         stdin=slave,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=slave,
+        stderr=subprocess.DEVNULL,
         preexec_fn=lambda: _own_terminal(slave),
     )
     os.close(slave)
+    shown = b""
     try:
         time.sleep(1.5)
-        os.write(master, b"from-terminal\n")
-        out, _ = p.communicate(timeout=30)
+        if typed:
+            os.write(master, typed)
+        deadline = time.monotonic() + 30
+        while p.poll() is None and time.monotonic() < deadline:
+            if select.select([master], [], [], 0.1)[0]:
+                try:
+                    shown += os.read(master, 4096)
+                except OSError:
+                    break
+        rc = p.poll()
+        while select.select([master], [], [], 0)[0]:
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            shown += chunk
     finally:
         if p.poll() is None:
             p.kill()
             p.wait()
-        while select.select([master], [], [], 0)[0]:
-            try:
-                if not os.read(master, 4096):
-                    break
-            except OSError:
-                break
         os.close(master)
-    assert p.returncode == 0
+    return rc, shown
+
+
+def test_interactive_terminal_stdin_is_read_not_stopped(voila: Voila) -> None:
+    """`run -i` (no -t) from a terminal: the container reads it instead of getting SIGTTIN."""
+    rc, out = _terminal_run(voila, ["head", "-n1"], b"from-terminal\n")
+    assert rc == 0
     assert b"from-terminal" in out
+
+
+def test_interactive_output_with_tostop_does_not_stop_the_run(voila: Voila) -> None:
+    """With `stty tostop`, `voila run -i` writes the container's output without SIGTTOU."""
+    rc, out = _terminal_run(voila, ["echo", "hello"], b"", tostop=True)
+    assert rc == 0
+    assert b"hello" in out
 
 
 def test_run_short_h_sets_hostname(voila: Voila) -> None:
