@@ -26,7 +26,7 @@ def wait_until(cond: Callable[[], bool], timeout: float = 20) -> bool:
 
 def containers(v: Voila) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
-    for line in v.run("ps").err.splitlines()[1:]:
+    for line in v.run("ps").out.splitlines()[1:]:
         parts = line.split()
         if len(parts) < 5:
             continue

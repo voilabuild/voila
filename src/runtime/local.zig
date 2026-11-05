@@ -10,6 +10,7 @@ const voila_image_push = @import("registry").voila_image_push;
 const voila_image_tag = @import("registry").voila_image_tag;
 const voila_resolve = @import("registry").voila_resolve;
 const voila_registry = @import("registry").voila_registry;
+const posix_util = @import("sys").posix_util;
 const voila_hub_import = @import("registry").voila_hub_import;
 const voila_gc = @import("registry").voila_gc;
 const container_store = @import("./oci/container_store.zig");
@@ -205,8 +206,8 @@ fn imagesImpl(ptr: *anyopaque, _: std.Io, allocator: std.mem.Allocator) !void {
         }
         allocator.free(rows);
     }
-    std.debug.print("REPOSITORY\n", .{});
-    for (rows) |r| std.debug.print("{s}\n", .{r.ref});
+    posix_util.printOut("REPOSITORY\n", .{});
+    for (rows) |r| posix_util.printOut("{s}\n", .{r.ref});
 }
 
 fn deinitImpl(ptr: *anyopaque, allocator: std.mem.Allocator) void {

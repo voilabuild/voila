@@ -13,7 +13,16 @@ pub const Parsed = struct {
     }
 };
 
+pub const Accept = struct {
+    /// `rm -f/--force`: accepted for Docker compatibility; `rm` already stops a running container.
+    force: bool = false,
+};
+
 pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !Parsed {
+    return parseArgsAccepting(allocator, args, .{});
+}
+
+pub fn parseArgsAccepting(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, accept: Accept) !Parsed {
     var root: ?[]const u8 = null;
     var kind = voila_runtime.kindFromEnv();
     var ids: std.ArrayList([]const u8) = .empty;
@@ -24,6 +33,8 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator)
     }
     while (args.next()) |arg| {
         if (try flags.tryRuntimeFlag(allocator, arg, args, &root, &kind)) continue;
+        if (accept.force and (std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--force"))) continue;
+        if (arg.len > 1 and arg[0] == '-') return error.UnknownFlag;
         try ids.append(allocator, try allocator.dupe(u8, arg));
     }
     if (ids.items.len == 0) return error.NeedContextId;

@@ -26,7 +26,7 @@ Every command accepts `--root <dir>` (also `-root`; default: `$VOILA_ROOT`).
 | `voila exec <id> [--] <cmd...>` | Run an extra process inside a running container: it joins the container's namespaces, so it sees its files, processes, network and hostname |
 | `voila ps` | List containers (`exited (N)` includes the command's exit code) |
 | `voila logs [-f/--follow] <id>` | Print (and optionally follow) a container's output |
-| `voila stop <id> [id…]` / `voila kill [-s N] <id> [id…]` / `voila rm <id> [id…]` | Stop, signal or remove one or more containers |
+| `voila stop <id> [id…]` / `voila kill [-s N] <id> [id…]` / `voila rm [-f] <id> [id…]` | Stop, signal or remove one or more containers (`rm` stops a running one first; `-f` is accepted for Docker compatibility) |
 | `voila images` / `voila rmi <ref> [ref…]` | List or remove local images. `rmi` then deletes chunks no remaining image or build-cache entry uses (chunks written in the last 10 minutes are kept) and prints what it freed. It refuses an image a running container uses. `rmi` of a missing ref prints `voila rmi: no such image …` and exits 1 |
 | `voila --version` | Print `voila <version> (<commit>)` |
 

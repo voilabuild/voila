@@ -26,7 +26,8 @@ pub fn exec(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u8, sp
     // Resolve against the live mount so programs installed at runtime (or via volumes) work.
     const vfs_exec = try mount_exec.resolveArgv0OnMount(allocator, st.mount_dir, spec.argv[0]);
     defer allocator.free(vfs_exec);
-    const use_tty = spec.tty or spec.interactive or opts.tty or opts.interactive;
+    // A pty only when asked for one and stdin is a terminal: piped input must reach EOF.
+    const use_tty = (spec.tty or opts.tty) and std.c.isatty(std.c.STDIN_FILENO) == 1;
     return container_run.execInMount(
         io,
         allocator,

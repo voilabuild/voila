@@ -57,8 +57,14 @@ fn restWantsHelp(init: std.process.Init, sub: cli.commands.Name) bool {
     var it = std.process.Args.Iterator.init(init.minimal.args);
     _ = it.next();
     _ = it.next();
+    return wantsHelp(sub, &it);
+}
+
+/// `--help` before the first operand. `-h` too, except for `run`, where it is `--hostname` (as in Docker).
+fn wantsHelp(sub: cli.commands.Name, it: anytype) bool {
     while (it.next()) |a| {
-        if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h")) return true;
+        if (std.mem.eql(u8, a, "--help")) return true;
+        if (std.mem.eql(u8, a, "-h") and sub != .run) return true;
         if (std.mem.eql(u8, a, "--") or (a.len > 0 and a[0] != '-')) return false;
         if (flagTakesValue(sub, a)) _ = it.next();
     }
@@ -68,7 +74,10 @@ fn restWantsHelp(init: std.process.Init, sub: cli.commands.Name) bool {
 fn flagTakesValue(sub: cli.commands.Name, a: []const u8) bool {
     if (eqlAny(a, &.{ "-root", "--root", "-backend", "--backend" })) return true;
     return switch (sub) {
-        .run => eqlAny(a, &.{ "--name", "-e", "--env", "-v", "--volume", "-p", "--publish", "-w", "--workdir" }),
+        .run => eqlAny(a, &.{
+            "--name",     "-e", "--env",  "-v",           "--volume", "-p",         "--publish", "-w",    "--workdir",
+            "--env-file", "-u", "--user", "--entrypoint", "-h",       "--hostname", "--network", "--net",
+        }),
         .build => eqlAny(a, &.{ "-t", "--tag", "-f", "--file", "--target", "--build-arg" }),
         .kill => eqlAny(a, &.{ "-s", "--signal" }),
         .container_worker => eqlAny(a, &.{ "-id", "--ready-fd" }),
@@ -81,4 +90,28 @@ fn eqlAny(a: []const u8, names: []const []const u8) bool {
         if (std.mem.eql(u8, a, n)) return true;
     }
     return false;
+}
+
+const SliceIter = struct {
+    items: []const []const u8,
+    i: usize = 0,
+    fn next(self: *SliceIter) ?[]const u8 {
+        if (self.i == self.items.len) return null;
+        defer self.i += 1;
+        return self.items[self.i];
+    }
+};
+
+fn helpFor(sub: cli.commands.Name, args: []const []const u8) bool {
+    var it: SliceIter = .{ .items = args };
+    return wantsHelp(sub, &it);
+}
+
+test "run -h is the hostname, not help" {
+    try std.testing.expect(!helpFor(.run, &.{ "-h", "box1", "alpine", "hostname" }));
+    try std.testing.expect(!helpFor(.run, &.{ "--rm", "-h", "--help", "alpine" }));
+    try std.testing.expect(helpFor(.run, &.{ "--rm", "--help" }));
+    try std.testing.expect(!helpFor(.run, &.{ "alpine", "--help" }));
+    try std.testing.expect(!helpFor(.run, &.{ "--entrypoint", "--help", "alpine" }));
+    try std.testing.expect(helpFor(.build, &.{"-h"}));
 }

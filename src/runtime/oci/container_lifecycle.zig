@@ -10,13 +10,13 @@ pub fn ps(allocator: std.mem.Allocator, voila_root: []const u8) !void {
         for (states) |st| container_store.freeState(allocator, st);
         allocator.free(states);
     }
-    std.debug.print("ID           NAME                 IMAGE                          STATUS         PID\n", .{});
+    posix_util.printOut("ID           NAME                 IMAGE                          STATUS         PID\n", .{});
     for (states) |st| {
         const name = if (st.name.len != 0) st.name else "-";
         var status_buf: [20]u8 = undefined;
         const status = statusCol(st, &status_buf);
         if (st.pid > 0) {
-            std.debug.print("{s:<12} {s:<20} {s:<30} {s:<14} {d}\n", .{
+            posix_util.printOut("{s:<12} {s:<20} {s:<30} {s:<14} {d}\n", .{
                 trimId(st.id),
                 trimCol(name, 20),
                 trimCol(st.image, 30),
@@ -24,7 +24,7 @@ pub fn ps(allocator: std.mem.Allocator, voila_root: []const u8) !void {
                 st.pid,
             });
         } else {
-            std.debug.print("{s:<12} {s:<20} {s:<30} {s:<14} -\n", .{
+            posix_util.printOut("{s:<12} {s:<20} {s:<30} {s:<14} -\n", .{
                 trimId(st.id),
                 trimCol(name, 20),
                 trimCol(st.image, 30),

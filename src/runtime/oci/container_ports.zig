@@ -8,13 +8,23 @@ const container_etc = @import("container_etc.zig");
 
 pub const Forwarder = struct {
     pid: i32,
+    /// Holds published host ports, so `stop` waits for them to be released.
+    holds_ports: bool = false,
 
     pub fn stop(self: *Forwarder) void {
-        if (self.pid > 0) {
-            _ = std.c.kill(self.pid, std.c.SIG.KILL);
-            var status: i32 = 0;
+        if (self.pid <= 0) return;
+        defer self.pid = 0;
+        var status: i32 = 0;
+        if (std.c.kill(self.pid, std.c.SIG.KILL) == 0) {
             _ = std.c.waitpid(self.pid, &status, 0);
-            self.pid = 0;
+            return;
+        }
+        // Ubuntu's pasta AppArmor profile refuses signals from voila. pasta exits by itself
+        // once the container's netns is gone (0.4-1 s); only wait when it holds host ports.
+        var waited: u32 = 0;
+        while (self.holds_ports and waited < 1500) : (waited += 5) {
+            if (std.c.waitpid(self.pid, &status, std.c.W.NOHANG) != 0) return;
+            posix_util.sleepMs(5);
         }
     }
 
@@ -74,7 +84,7 @@ fn startPasta(io: std.Io, pasta: []const u8, ns_pid: i32, ports: []const run_fla
         "-u",  "none", "-T",  "none",         "-U",            "none",
         "-t",  spec,   pid_s,
     };
-    var fwd: Forwarder = .{ .pid = try spawnArgv(io, &argv) };
+    var fwd: Forwarder = .{ .pid = try spawnArgv(io, &argv), .holds_ports = ports.len > 0 };
     // --config-net adds the default route last; without one (host offline) give up after 1s.
     var waited: u32 = 0;
     while (waited < 1000 and fwd.alive() and !hasDefaultRoute(ns_pid)) : (waited += 5) {

@@ -179,7 +179,7 @@ fn runForeground(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u
     const opts = try runOptsFromSpec(allocator, spec);
     defer opts.deinit(allocator);
     try container_run_opts.writeRunOpts(allocator, voila_root, id, opts);
-    const code = try spawnContainerWorkerAndWait(io, allocator, voila_root, id, log_path, spec.tty or spec.interactive, &st);
+    const code = try spawnContainerWorkerAndWait(io, allocator, voila_root, id, log_path, spec.tty, &st);
     var st_exit = try container_store.readState(allocator, voila_root, id);
     defer container_store.freeState(allocator, st_exit);
     markExited(allocator, &st_exit, code);
@@ -453,7 +453,8 @@ fn runMounted(
         .cmd_argv = cmd_argv,
         .opts = opts,
         .rw_dir = rw_dir,
-        .use_tty = opts.tty or opts.interactive,
+        // Only -t gets a pty; -i alone keeps stdin a plain pipe so EOF reaches the command.
+        .use_tty = opts.tty,
         .start_net = !net_none,
         .ready_fd = ready_fd,
         .etc_dir = etc_dir,
