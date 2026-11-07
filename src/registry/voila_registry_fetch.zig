@@ -118,15 +118,30 @@ pub fn exportChunkEndpoint(reg_hub: *hub.Hub, allocator: std.mem.Allocator) void
     posix_util.setenv(allocator, chunk_endpoint_env, reg_hub.chunk_origin orelse "") catch {};
 }
 
-/// Opens `n` connections to the chunk endpoint in the background and pools them for
-/// `io`, so the first reads do not each wait for a handshake. Best-effort: a failed or
-/// late warm-up only means a read opens its own connection, as before.
-pub fn warmChunkConnections(reg_hub: *hub.Hub, io: std.Io, n: usize) void {
-    for (0..n) |_| {
-        const t = std.Thread.spawn(.{}, warmOne, .{ reg_hub, io }) catch return;
-        t.detach();
+/// Background connections to the chunk endpoint, opened so the first reads do not each
+/// wait for a handshake. Best-effort: a failed or late warm-up only means a read opens
+/// its own connection, as before. `join` before `io` or the hub's sessions go away.
+pub const Warmup = struct {
+    threads: [max_warm]?std.Thread = @splat(null),
+
+    pub const max_warm = 8;
+
+    /// Starts only when this run already talks to the registry: the parent exported the
+    /// chunk endpoint. A run whose image is local opens no connections.
+    pub fn start(reg_hub: *hub.Hub, io: std.Io, n: usize) Warmup {
+        var w: Warmup = .{};
+        if (posix_util.getenv(chunk_endpoint_env) == null) return w;
+        for (w.threads[0..@min(n, max_warm)]) |*t| t.* = std.Thread.spawn(.{}, warmOne, .{ reg_hub, io }) catch null;
+        return w;
     }
-}
+
+    pub fn join(self: *Warmup) void {
+        for (&self.threads) |*t| if (t.*) |th| {
+            th.join();
+            t.* = null;
+        };
+    }
+};
 
 fn warmOne(reg_hub: *hub.Hub, io: std.Io) void {
     const span = trace.begin("warm connection");

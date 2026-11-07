@@ -218,9 +218,11 @@ fn serveChild(
     if (pool) |*p| {
         p.start();
         fuse_vfs.voila.pool = p;
-        // Handshakes overlap the mount and the container's namespace setup.
-        voila_registry_fetch.warmChunkConnections(voila_registry_hub.defaultHub(), fetch_io, warm_connections);
     }
+    // Handshakes overlap the mount and the container's namespace setup. Joined before
+    // the pool and `threaded` are torn down: the threads use both.
+    var warmup: voila_registry_fetch.Warmup = if (pool != null) .start(voila_registry_hub.defaultHub(), fetch_io, warm_connections) else .{};
+    defer warmup.join();
     defer if (pool) |*p| p.deinit();
     if (opts.map_root) fuse_vfs.voila.owner_map = .{
         .uid = .{ .host = std.c.getuid(), .sub = opts.subuid },
@@ -243,6 +245,9 @@ fn serveChild(
     _ = std.c.close(ready_w);
     // EOF on the stop pipe (parent closed it or died) unmounts, which ends the serve loop.
     const watcher = std.Thread.spawn(.{}, watchStop, .{ stop_r, mount_dir, &ctx.session }) catch null;
+    // Joined before the pool and the VFS go away; the walk finishes long before serving ends.
+    const manifests = std.Thread.spawn(.{}, voila_vfs_mod.VoilaVfs.prefetchManifests, .{&fuse_vfs.voila}) catch null;
+    defer if (manifests) |t| t.join();
     const t_serve = trace.begin("serving");
     fuse_linux.serveSessionMt(&ctx.session, fuse_threads) catch |e| {
         ctx.err = e;

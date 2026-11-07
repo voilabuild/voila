@@ -18,6 +18,7 @@ class State:
     chunk_gets: Counter[str] = field(default_factory=Counter[str])
     chunk_puts: Counter[str] = field(default_factory=Counter[str])
     put_delay_ms: float = 0
+    config_delay_ms: float = 0
     inflight: int = 0
     max_inflight: int = 0
 
@@ -35,7 +36,9 @@ app = FastAPI()
 
 
 @app.get("/registry/v1/registry/config")
-def config() -> dict[str, str]:
+async def config() -> dict[str, str]:
+    if state.config_delay_ms > 0:
+        await asyncio.sleep(state.config_delay_ms / 1000)
     return {}
 
 

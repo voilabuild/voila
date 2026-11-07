@@ -306,6 +306,76 @@ pub const VoilaVfs = struct {
 
     pub fn preloadAllChunks(_: *VoilaVfs, _: std.Io) !void {}
 
+    /// Loads every sub-manifest in the background, so directory lookups find their
+    /// metadata local instead of each waiting for a fetch. Downloads run in parallel on
+    /// the fetch pool without `mu`; only decoding a chunk that is already local takes it.
+    pub fn prefetchManifests(self: *VoilaVfs) void {
+        const pool = self.pool orelse return;
+        const span = trace.begin("prefetch manifests");
+        var total: usize = 0;
+        var rounds: usize = 0;
+        defer span.endArgs("\"chunks\":{d},\"rounds\":{d}", .{ total, rounds });
+        // Each chunk is tried once, so a failed fetch or decode cannot loop.
+        var tried = std.StringHashMap(void).init(self.allocator);
+        defer {
+            var it = tried.keyIterator();
+            while (it.next()) |k| self.allocator.free(k.*);
+            tried.deinit();
+        }
+        while (true) : (rounds += 1) {
+            var ids: std.ArrayList([]const u8) = .empty; // chunk ids
+            var hexes: std.ArrayList([]const u8) = .empty; // owned by `tried`
+            defer {
+                for (ids.items) |id| self.allocator.free(id);
+                ids.deinit(self.allocator);
+                hexes.deinit(self.allocator);
+            }
+            {
+                self.lock();
+                defer self.unlock();
+                const tree = switch (self.backend) {
+                    .lazy_tree => |*t| t,
+                    .indexed => return,
+                };
+                var it = tree.external_subtrees.valueIterator();
+                while (it.next()) |cid| {
+                    const hex = hex_util.chunkIdToHex(self.allocator, cid.*) catch continue;
+                    if (tried.contains(hex) or tree.manifest_hex_loaded.contains(hex)) {
+                        self.allocator.free(hex);
+                        continue;
+                    }
+                    tried.put(hex, {}) catch {
+                        self.allocator.free(hex);
+                        continue;
+                    };
+                    const id = self.allocator.dupe(u8, cid.*) catch continue;
+                    ids.append(self.allocator, id) catch {
+                        self.allocator.free(id);
+                        continue;
+                    };
+                    hexes.append(self.allocator, hex) catch {
+                        self.allocator.free(ids.pop().?);
+                        continue;
+                    };
+                }
+            }
+            if (ids.items.len == 0) return;
+            total += ids.items.len;
+            pool.enqueue(hexes.items);
+            for (hexes.items) |h| pool.ensure(h) catch {}; // a missing chunk is skipped below and loads on access, as before
+            self.lock();
+            defer self.unlock();
+            const tree = switch (self.backend) {
+                .lazy_tree => |*t| t,
+                .indexed => return,
+            };
+            for (ids.items, hexes.items) |id, h| {
+                if (!voila_store.hasChunk(self.voilaRoot(), h)) continue;
+                tree.loadManifestChunk(id) catch {}; // a bad sub-manifest fails again, with its error, when a lookup needs it
+            }
+        }
+    }
+
     /// `readFuse` for concurrent callers: waits for the range's chunks without holding
     /// `mu`, and queues the rest of a cold file for prefetch.
     pub fn readFuseShared(self: *VoilaVfs, ino: u64, buf: []u8, off: u64) usize {

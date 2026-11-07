@@ -152,7 +152,7 @@ pub const Tree = struct {
         };
     }
 
-    fn loadManifestChunk(self: *Tree, chunk_id: []const u8) !void {
+    pub fn loadManifestChunk(self: *Tree, chunk_id: []const u8) !void {
         const hex = try hex_util.chunkIdToHex(self.allocator, chunk_id);
         defer self.allocator.free(hex);
         if (self.manifest_hex_loaded.contains(hex)) return;
