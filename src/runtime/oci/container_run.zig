@@ -1,4 +1,5 @@
 const std = @import("std");
+const trace = @import("sys").trace;
 const fuse_linux = @import("mount").fuse.fuse_linux;
 const fuse_vfs_mod = @import("mount").fuse.fuse_vfs;
 const voila_vfs_mod = @import("mount").fuse.voila_vfs;
@@ -180,6 +181,8 @@ fn runForeground(io: std.Io, allocator: std.mem.Allocator, voila_root: []const u
     defer opts.deinit(allocator);
     try container_run_opts.writeRunOpts(allocator, voila_root, id, opts);
     const code = try spawnContainerWorkerAndWait(io, allocator, voila_root, id, log_path, .{ .pty = spec.tty, .terminal = spec.tty or spec.interactive }, &st);
+    const t_cleanup = trace.begin("record exit and remove");
+    defer t_cleanup.end();
     var st_exit = try container_store.readState(allocator, voila_root, id);
     defer container_store.freeState(allocator, st_exit);
     markExited(allocator, &st_exit, code);
@@ -431,14 +434,19 @@ fn runMounted(
     try voila_login_creds.loadIntoHub(allocator);
     try voila_registry_creds.loadFromCredsFile(allocator, voila_root);
     try voila_registry.loadFromEnv(allocator);
+    const t_resolve = trace.begin("resolve image");
     const root_ref = try voila_loader.resolveRootRef(io, allocator, voila_root, image);
     defer allocator.free(root_ref);
+    t_resolve.end();
+    const t_tree = trace.begin("load manifest tree");
     const tree = try voila_loader.loadTreeRoot(io, allocator, voila_root, root_ref);
+    t_tree.end();
     var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(allocator, tree) };
     defer fuse_vfs.deinit();
     const vfs_exec = try mount_exec.resolveArgv0VfsPath(allocator, &fuse_vfs, cmd_argv[0]);
     defer allocator.free(vfs_exec);
     const ids = userns_ids.detect(allocator, .{});
+    const t_fuse = trace.begin("start FUSE server");
     var fuse_server = try container_fuse_sibling.startWith(io, allocator, voila_root, root_ref, mount_dir, .{
         .map_root = true,
         .subuid = ids.uid.sub,
@@ -450,6 +458,7 @@ fn runMounted(
     }
     try mount_exec.waitMountRootReady(mount_dir, io);
     if (!fuse_server.alive()) return error.FuseServerFailed;
+    t_fuse.end();
 
     defer releaseRwDir(allocator, rw_dir);
     const ctr_dir = std.fs.path.dirname(rw_dir) orelse rw_dir;

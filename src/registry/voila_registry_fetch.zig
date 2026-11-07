@@ -1,4 +1,5 @@
 const std = @import("std");
+const trace = @import("sys").trace;
 const voila_http = @import("./voila_http.zig");
 const voila_store = @import("store").voila_store;
 const voila_chunk_load = @import("store").voila_chunk_load;
@@ -58,12 +59,14 @@ pub fn fetchChunkRaw(
         try std.fmt.allocPrint(allocator, "{s}/v1/chunks/{s}", .{ cfg.base_url, chunk_hex });
     defer allocator.free(url);
 
+    const t_http = trace.begin("http GET chunk");
     const resp = getChunkResponse(reg_hub, io, allocator, url) catch |e| {
         log.err("could not reach the registry for chunk {s} ({s}): {s}", .{ chunk_hex, url, @errorName(e) });
         return error.RegistryFetch;
     };
     const stored = resp.body;
     defer allocator.free(stored);
+    t_http.endArgs("\"status\":{d},\"bytes\":{d}", .{ resp.status, stored.len });
     if (resp.status != 200) {
         if (resp.status == 404) {
             log.err("chunk missing on registry: {s}", .{chunk_hex});
@@ -73,6 +76,7 @@ pub fn fetchChunkRaw(
         return error.RegistryFetch;
     }
 
+    const t_decode = trace.begin("decompress and verify");
     var raw: []u8 = stored;
     var owned_decompress = false;
     if (stored.len >= 4 and std.mem.eql(u8, stored[0..4], "\x28\xb5\x2f\xfd")) {
@@ -85,9 +89,14 @@ pub fn fetchChunkRaw(
         return error.ChunkIntegrity;
     };
 
+    t_decode.endArgs("\"raw_bytes\":{d}", .{raw.len});
+    const t_store = trace.begin("store chunk");
     try voila_store.putChunkRaw(allocator, voila_root, chunk_hex, raw);
+    t_store.end();
     voila_fetch_stats.recordChunk(chunk_hex, raw.len);
     if (owned_decompress) allocator.free(raw);
+    const t_reload = trace.begin("reload chunk from store");
+    defer t_reload.end();
     return voila_store.loadChunkRaw(allocator, voila_root, chunk_hex, voila_store.AlgoRaw);
 }
 

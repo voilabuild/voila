@@ -1,4 +1,5 @@
 const std = @import("std");
+const trace = @import("sys").trace;
 const command = @import("command.zig");
 const flags = @import("flags.zig");
 const voila_refkey = @import("core").voila_refkey;
@@ -286,9 +287,14 @@ pub fn execute(ctx: command.Ctx) !void {
         std.debug.print("voila run: -p cannot be used with --network none\n", .{});
         std.process.exit(2);
     }
+    const t_prepare = trace.begin("registry session");
     try registry_session.prepare(ctx.io, gpa, parsed.runtime_cfg.store_root);
+    t_prepare.end();
+    const t_runtime = trace.begin("open runtime");
     var worker = try command.openRuntime(gpa, parsed.runtime_cfg);
     defer worker.deinit(gpa);
+    t_runtime.end();
+    const t_config = trace.begin("image config (cmd, env, workdir, user)");
     const argv = try commandArgv(ctx.io, gpa, parsed);
     defer {
         for (argv) |s| gpa.free(s);
@@ -318,6 +324,7 @@ pub fn execute(ctx: command.Ctx) !void {
     const image_user = try voila_image_run_config.imageUser(ctx.io, gpa, parsed.runtime_cfg.store_root, parsed.image);
     defer gpa.free(image_user);
     const user = parsed.user orelse image_user;
+    t_config.end();
     const code = try worker.run(ctx.io, gpa, .{
         .image = parsed.image,
         .argv = argv,

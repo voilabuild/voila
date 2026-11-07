@@ -1,5 +1,6 @@
 //! Run libfuse in a child process so the parent can chroot into the mount without deadlocking.
 const std = @import("std");
+const trace = @import("sys").trace;
 const fuse_linux = @import("mount").fuse.fuse_linux;
 const fuse_vfs_mod = @import("mount").fuse.fuse_vfs;
 const voila_vfs_mod = @import("mount").fuse.voila_vfs;
@@ -194,7 +195,9 @@ fn serveChild(
     voila_login_creds.loadIntoHub(allocator) catch return;
     voila_registry_creds.loadFromCredsFile(allocator, voila_root) catch return;
     voila_registry.loadFromEnv(allocator) catch return;
+    const t_tree = trace.begin("load manifest tree");
     const tree = voila_loader.loadTreeRoot(io, allocator, voila_root, image) catch return;
+    t_tree.end();
     var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(allocator, tree) };
     defer fuse_vfs.deinit();
     // libfuse threads are not zio tasks, and the zio executor (this thread) is parked in
@@ -217,21 +220,27 @@ fn serveChild(
         .gid = .{ .host = std.c.getgid(), .sub = opts.subgid },
     };
     posix_util.makePath(mount_dir) catch return;
+    const t_mount = trace.begin("mount (fusermount3)");
     var ctx: ServeCtx = .{
         .session = fuse_linux.mountSession(allocator, mount_dir, &fuse_vfs) catch return,
         .err = null,
     };
+    t_mount.end();
+    const t_listed = trace.begin("wait until mount is listed");
     for (0..10_000) |_| {
         if (mount_exec.mountListed(mount_dir)) break;
         posix_util.sleepMs(1);
     }
+    t_listed.end();
     _ = std.c.write(ready_w, &[_]u8{1}, 1);
     _ = std.c.close(ready_w);
     // EOF on the stop pipe (parent closed it or died) unmounts, which ends the serve loop.
     const watcher = std.Thread.spawn(.{}, watchStop, .{ stop_r, mount_dir, &ctx.session }) catch null;
+    const t_serve = trace.begin("serving");
     fuse_linux.serveSessionMt(&ctx.session, fuse_threads) catch |e| {
         ctx.err = e;
     };
+    t_serve.end();
     unmountQuietly(mount_dir);
     if (watcher) |t| t.join();
     ctx.session.deinit();

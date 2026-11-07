@@ -1,4 +1,5 @@
 const std = @import("std");
+const trace = @import("sys").trace;
 
 const log = std.log.scoped(.registry);
 const request_timeout: std.Io.Duration = .fromSeconds(30);
@@ -108,13 +109,25 @@ pub const Session = struct {
             .payload = payload,
             .response_writer = response_writer,
         };
-        return fetchTimed(&self.client, opts) catch |e| switch (e) {
-            error.Timeout => {
-                log.err("registry request timed out: {s}", .{url});
-                return error.Timeout;
-            },
-            else => return error.HttpStatus,
+        const span = trace.begin(switch (method) {
+            .GET => "http GET",
+            .PUT => "http PUT",
+            .POST => "http POST",
+            else => "http",
+        });
+        const pooled = self.client.connection_pool.free_len > 0;
+        const result = fetchTimed(&self.client, opts) catch |e| {
+            span.endArgs("\"url\":{f},\"keep_alive\":{},\"pooled_conn\":{},\"error\":{f}", .{ trace.str(url), self.keep_alive, pooled, trace.str(@errorName(e)) });
+            switch (e) {
+                error.Timeout => {
+                    log.err("registry request timed out: {s}", .{url});
+                    return error.Timeout;
+                },
+                else => return error.HttpStatus,
+            }
         };
+        span.endArgs("\"url\":{f},\"keep_alive\":{},\"pooled_conn\":{},\"status\":{d}", .{ trace.str(url), self.keep_alive, pooled, @backingInt(result.status) });
+        return result;
     }
 };
 

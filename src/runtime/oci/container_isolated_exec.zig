@@ -1,5 +1,6 @@
 //! Enter user/mount/PID namespaces and pivot into the image root without holding FUSE fds (re-exec entrypoint).
 const std = @import("std");
+const trace = @import("sys").trace;
 const ns = @import("sys").ns;
 const posix_util = @import("sys").posix_util;
 const container_bind = @import("container_bind.zig");
@@ -49,7 +50,11 @@ pub fn run(spec: Spec) Error!u8 {
     const parent = std.os.linux.getppid();
     ns.setParentDeathSignal(.KILL) catch return error.SetupFailed;
     if (std.os.linux.getppid() != parent) return error.SetupFailed;
-    if (spec.join_pid > 0) return runJoined(spec);
+    if (spec.join_pid > 0) {
+        trace.close();
+        return runJoined(spec);
+    }
+    const t_setup = trace.begin("namespaces and mounts");
     if (spec.map_up_fd >= 0 and spec.map_down_fd >= 0) {
         if (!map_handshake.childEnter(spec.map_up_fd, spec.map_down_fd)) return error.UserNamespacesRequired;
         if (!map_handshake.childAwaitNet(spec.map_up_fd, spec.map_down_fd)) return error.SetupFailed;
@@ -70,6 +75,10 @@ pub fn run(spec: Spec) Error!u8 {
     // A host path: open it before the root changes.
     const log_fd: std.posix.fd_t = if (spec.console_fd >= 0 or spec.log_path.len == 0) -1 else openLogAppend(spec.log_path);
     const keep = [_]std.posix.fd_t{ log_fd, spec.console_fd };
+    t_setup.end();
+    // The PID namespace step closes every fd but `keep`; a reused trace fd number would
+    // write events into the container's files.
+    trace.close();
     if (container_root.enterPidNamespace(&keep) catch return error.SetupFailed) |code| return code;
     try enterRoot(spec);
     if (container_root.forkCommand(&keep) catch return error.SetupFailed) |code| return code;
@@ -332,6 +341,7 @@ pub fn spawnAndWait(io: std.Io, allocator: std.mem.Allocator, spec: Spec, timeou
         _ = std.c.close(down[1]);
     }
     var maps_done = false;
+    const t_maps = trace.begin("uid/gid maps");
     if (!joined) {
         const applied = map_handshake.parentApply(allocator, pid, up[0], down[1]);
         if (!applied.ids.isRange()) {
@@ -340,6 +350,8 @@ pub fn spawnAndWait(io: std.Io, allocator: std.mem.Allocator, spec: Spec, timeou
         // The child holds until pasta has configured its netns (#151).
         maps_done = map_handshake.parentAwaitMaps(up[0]);
     }
+    t_maps.end();
+    const t_net = trace.begin("network (pasta)");
     const net: []container_ports.Forwarder = if (spec.start_net and maps_done)
         container_ports.start(io, pid, spec.opts.ports) catch |e| {
             _ = std.c.kill(pid, std.c.SIG.KILL);
@@ -351,6 +363,9 @@ pub fn spawnAndWait(io: std.Io, allocator: std.mem.Allocator, spec: Spec, timeou
         &.{};
     defer container_ports.stopAll(net);
     if (!joined) map_handshake.parentReleaseNet(down[1]);
+    t_net.end();
+    const t_ctr = trace.begin("container running");
+    defer t_ctr.end();
     signalReady(spec.ready_fd);
     var status: i32 = 0;
     const early = std.c.waitpid(pid, &status, std.c.W.NOHANG);
