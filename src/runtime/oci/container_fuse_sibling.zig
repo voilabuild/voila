@@ -245,9 +245,6 @@ fn serveChild(
     _ = std.c.close(ready_w);
     // EOF on the stop pipe (parent closed it or died) unmounts, which ends the serve loop.
     const watcher = std.Thread.spawn(.{}, watchStop, .{ stop_r, mount_dir, &ctx.session }) catch null;
-    // Joined before the pool and the VFS go away; the walk finishes long before serving ends.
-    const manifests = std.Thread.spawn(.{}, voila_vfs_mod.VoilaVfs.prefetchManifests, .{&fuse_vfs.voila}) catch null;
-    defer if (manifests) |t| t.join();
     const t_serve = trace.begin("serving");
     fuse_linux.serveSessionMt(&ctx.session, fuse_threads) catch |e| {
         ctx.err = e;
