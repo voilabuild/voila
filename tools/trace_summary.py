@@ -87,6 +87,14 @@ def main() -> None:
         for (who, method, host), xs in sorted(groups.items(), key=lambda kv: -sum(e["dur"] for e in kv[1])):
             fresh = sum(1 for e in xs if not e["args"].get("pooled_conn"))
             print(f"  {who:<28} {method:<4} {host:<24} {len(xs):4d} {fresh:4d}  {ms(sum(e['dur'] for e in xs))}  {ms(max(e['dur'] for e in xs))}")
+        cdn: dict[tuple[str, str], list[int]] = defaultdict(list)
+        for e in reqs:
+            if e["args"].get("cdn_cache"):
+                cdn[(e["args"]["cdn_cache"], e["args"].get("cdn_colo", "?"))].append(e["dur"])
+        if cdn:
+            print("\nCDN (cf-cache-status, edge, requests, median time):")
+            for (status, colo), durs in sorted(cdn.items(), key=lambda kv: -len(kv[1])):
+                print(f"  {status:<8} {colo:<5} {len(durs):5d}  {ms(statistics.median(durs))}")
         errors = [e for e in reqs if "error" in e["args"]]
         for e in errors[:10]:
             print(f"  error: {e['args']['error']} after {ms(e['dur'])}: {e['args'].get('url')}")

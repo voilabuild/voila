@@ -153,7 +153,8 @@ pub const Session = struct {
             else => "http",
         });
         const pooled = self.client.connection_pool.free_len > 0;
-        const result = fetchTimed(&self.client, opts) catch |e| {
+        var cdn: CdnInfo = .{};
+        const result = fetchTimed(&self.client, opts, &cdn) catch |e| {
             span.endArgs("\"url\":{f},\"keep_alive\":{},\"pooled_conn\":{},\"error\":{f}", .{ trace.str(url), self.keep_alive, pooled, trace.str(@errorName(e)) });
             switch (e) {
                 error.Timeout => {
@@ -163,19 +164,56 @@ pub const Session = struct {
                 else => return error.HttpStatus,
             }
         };
-        span.endArgs("\"url\":{f},\"keep_alive\":{},\"pooled_conn\":{},\"status\":{d}", .{ trace.str(url), self.keep_alive, pooled, @backingInt(result.status) });
+        span.endArgs("\"url\":{f},\"keep_alive\":{},\"pooled_conn\":{},\"status\":{d},\"cdn_cache\":{f},\"cdn_colo\":{f},\"cdn_age\":{d}", .{ trace.str(url), self.keep_alive, pooled, @backingInt(result.status), trace.str(cdn.cache()), trace.str(cdn.colo()), cdn.age });
         return result;
     }
 };
 
-fn fetchTimed(client: *std.http.Client, opts: std.http.Client.FetchOptions) !std.http.Client.FetchResult {
+/// What a CDN in front of the registry said about a response (Cloudflare headers), for
+/// the trace: whether the chunk came from the edge cache, and which edge served it.
+pub const CdnInfo = struct {
+    cache_buf: [16]u8 = undefined,
+    cache_len: usize = 0,
+    colo_buf: [8]u8 = undefined,
+    colo_len: usize = 0,
+    /// Seconds the edge has held the response (`age`), -1 when absent.
+    age: i64 = -1,
+
+    pub fn cache(self: *const CdnInfo) []const u8 {
+        return self.cache_buf[0..self.cache_len];
+    }
+
+    pub fn colo(self: *const CdnInfo) []const u8 {
+        return self.colo_buf[0..self.colo_len];
+    }
+
+    fn record(self: *CdnInfo, head: std.http.Client.Response.Head) void {
+        var it = head.iterateHeaders();
+        while (it.next()) |h| {
+            if (std.ascii.eqlIgnoreCase(h.name, "cf-cache-status")) {
+                self.cache_len = @min(h.value.len, self.cache_buf.len);
+                @memcpy(self.cache_buf[0..self.cache_len], h.value[0..self.cache_len]);
+            } else if (std.ascii.eqlIgnoreCase(h.name, "cf-ray")) {
+                // `<id>-<colo>`: the edge location, e.g. YUL.
+                const dash = std.mem.lastIndexOfScalar(u8, h.value, '-') orelse continue;
+                const c = h.value[dash + 1 ..];
+                self.colo_len = @min(c.len, self.colo_buf.len);
+                @memcpy(self.colo_buf[0..self.colo_len], c[0..self.colo_len]);
+            } else if (std.ascii.eqlIgnoreCase(h.name, "age")) {
+                self.age = std.fmt.parseInt(i64, h.value, 10) catch -1;
+            }
+        }
+    }
+};
+
+fn fetchTimed(client: *std.http.Client, opts: std.http.Client.FetchOptions, cdn: *CdnInfo) !std.http.Client.FetchResult {
     const Result = union(enum) {
         fetch: std.http.Client.FetchError!std.http.Client.FetchResult,
         timeout: void,
     };
     var buf: [2]Result = undefined;
     var sel = std.Io.Select(Result).init(client.io, &buf);
-    sel.concurrent(.fetch, runFetch, .{ client, opts }) catch return client.fetch(opts);
+    sel.concurrent(.fetch, runFetch, .{ client, opts, cdn }) catch return fetchRecording(client, opts, cdn);
     sel.async(.timeout, sleepRequestTimeout, .{client.io});
     const first = sel.await() catch {
         sel.cancelDiscard();
@@ -188,8 +226,70 @@ fn fetchTimed(client: *std.http.Client, opts: std.http.Client.FetchOptions) !std
     };
 }
 
-fn runFetch(client: *std.http.Client, opts: std.http.Client.FetchOptions) std.http.Client.FetchError!std.http.Client.FetchResult {
-    return client.fetch(opts);
+fn runFetch(client: *std.http.Client, opts: std.http.Client.FetchOptions, cdn: *CdnInfo) std.http.Client.FetchError!std.http.Client.FetchResult {
+    return fetchRecording(client, opts, cdn);
+}
+
+/// `std.http.Client.fetch` for the options voila uses (no redirect buffer, no
+/// decompress buffer), plus recording the CDN headers of the response.
+fn fetchRecording(client: *std.http.Client, options: std.http.Client.FetchOptions, cdn: *CdnInfo) std.http.Client.FetchError!std.http.Client.FetchResult {
+    const uri = switch (options.location) {
+        .url => |u| try std.Uri.parse(u),
+        .uri => |u| u,
+    };
+    const method: std.http.Method = options.method orelse if (options.payload != null) .POST else .GET;
+    const redirect_behavior: std.http.Client.Request.RedirectBehavior = options.redirect_behavior orelse
+        if (options.payload == null) @fromBackingInt(@intCast(3)) else .unhandled;
+
+    var req = try client.request(method, uri, .{
+        .redirect_behavior = redirect_behavior,
+        .headers = options.headers,
+        .extra_headers = options.extra_headers,
+        .privileged_headers = options.privileged_headers,
+        .keep_alive = options.keep_alive,
+    });
+    defer req.deinit();
+
+    if (options.payload) |payload| {
+        req.transfer_encoding = .{ .content_length = payload.len };
+        var body = try req.sendBodyUnflushed(&.{});
+        try body.writer.writeAll(payload);
+        try body.end();
+        try req.connection.?.flush();
+    } else {
+        try req.sendBodiless();
+    }
+
+    const redirect_buffer: []u8 = if (redirect_behavior == .unhandled) &.{} else try client.allocator.alloc(u8, 8 * 1024);
+    defer client.allocator.free(redirect_buffer);
+
+    var response = try req.receiveHead(redirect_buffer);
+    if (trace.enabled()) cdn.record(response.head);
+
+    const response_writer = options.response_writer orelse {
+        const reader = response.reader(&.{});
+        _ = reader.discardRemaining() catch |err| switch (err) {
+            error.ReadFailed => return response.bodyErr().?,
+        };
+        return .{ .status = response.head.status };
+    };
+
+    const decompress_buffer: []u8 = switch (response.head.content_encoding) {
+        .identity => &.{},
+        .zstd => try client.allocator.alloc(u8, std.compress.zstd.default_window_len),
+        .deflate, .gzip => try client.allocator.alloc(u8, std.compress.flate.max_window_len),
+        .compress => return error.UnsupportedCompressionMethod,
+    };
+    defer client.allocator.free(decompress_buffer);
+
+    var transfer_buffer: [64]u8 = undefined;
+    var decompress: std.http.Decompress = undefined;
+    const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
+    _ = reader.streamRemaining(response_writer) catch |err| switch (err) {
+        error.ReadFailed => return response.bodyErr().?,
+        else => |e| return e,
+    };
+    return .{ .status = response.head.status };
 }
 
 fn sleepRequestTimeout(io: std.Io) void {
