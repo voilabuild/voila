@@ -5,6 +5,8 @@ const fuse_vfs_mod = @import("mount").fuse.fuse_vfs;
 const voila_vfs_mod = @import("mount").fuse.voila_vfs;
 const voila_loader = @import("../voila_loader.zig");
 const voila_registry = @import("registry").voila_registry;
+const voila_registry_fetch = @import("registry").voila_registry_fetch;
+const voila_registry_hub = @import("registry").voila_registry_hub;
 const voila_registry_creds = @import("registry").voila_registry_creds;
 const voila_login_creds = @import("registry").voila_login_creds;
 const posix_util = @import("sys").posix_util;
@@ -446,6 +448,7 @@ fn runMounted(
     const vfs_exec = try mount_exec.resolveArgv0VfsPath(allocator, &fuse_vfs, cmd_argv[0]);
     defer allocator.free(vfs_exec);
     const ids = userns_ids.detect(allocator, .{});
+    voila_registry_fetch.exportChunkEndpoint(voila_registry_hub.defaultHub(), allocator);
     const t_fuse = trace.begin("start FUSE server");
     var fuse_server = try container_fuse_sibling.startWith(io, allocator, voila_root, root_ref, mount_dir, .{
         .map_root = true,

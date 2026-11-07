@@ -1,6 +1,8 @@
 //! Run libfuse in a child process so the parent can chroot into the mount without deadlocking.
 const std = @import("std");
 const trace = @import("sys").trace;
+const voila_registry_fetch = @import("registry").voila_registry_fetch;
+const voila_registry_hub = @import("registry").voila_registry_hub;
 const fuse_linux = @import("mount").fuse.fuse_linux;
 const fuse_vfs_mod = @import("mount").fuse.fuse_vfs;
 const voila_vfs_mod = @import("mount").fuse.voila_vfs;
@@ -179,6 +181,9 @@ fn execFuseServe(
     _ = std.c.execve(zargs[0].ptr, @ptrCast(&cargv), std.c.environ);
 }
 
+/// Connections opened to the chunk endpoint before the first read.
+const warm_connections = 4;
+
 fn serveChild(
     io: std.Io,
     voila_root: []const u8,
@@ -213,6 +218,8 @@ fn serveChild(
     if (pool) |*p| {
         p.start();
         fuse_vfs.voila.pool = p;
+        // Handshakes overlap the mount and the container's namespace setup.
+        voila_registry_fetch.warmChunkConnections(voila_registry_hub.defaultHub(), fetch_io, warm_connections);
     }
     defer if (pool) |*p| p.deinit();
     if (opts.map_root) fuse_vfs.voila.owner_map = .{

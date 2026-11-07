@@ -7,6 +7,8 @@ const voila_runtime = @import("runtime").open;
 const run_flags = @import("runtime").run_flags;
 const voila_image_run_config = @import("runtime").oci.voila_image_run_config;
 const registry_session = @import("registry").registry_session;
+const voila_registry_fetch = @import("registry").voila_registry_fetch;
+const voila_registry_hub = @import("registry").voila_registry_hub;
 const posix_util = @import("sys").posix_util;
 
 pub const Parsed = struct {
@@ -325,6 +327,7 @@ pub fn execute(ctx: command.Ctx) !void {
     defer gpa.free(image_user);
     const user = parsed.user orelse image_user;
     t_config.end();
+    voila_registry_fetch.exportChunkEndpoint(voila_registry_hub.defaultHub(), gpa);
     const code = try worker.run(ctx.io, gpa, .{
         .image = parsed.image,
         .argv = argv,

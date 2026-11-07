@@ -23,6 +23,43 @@ pub const Session = struct {
         self.client.deinit();
     }
 
+    /// Opens a connection to `url`'s host and leaves it idle in this session's pool, so
+    /// the next request there skips the TCP and TLS handshakes. False when it could not.
+    pub fn warm(self: *Session, url: []const u8) bool {
+        const uri = std.Uri.parse(url) catch return false;
+        const protocol = std.http.Client.Protocol.fromUri(uri) orelse return false;
+        // `connect` does not load the CA bundle the way `request` does.
+        if (protocol == .tls and !self.loadCaBundle()) return false;
+        var host_buf: [std.Io.net.HostName.max_len]u8 = undefined;
+        const host = std.Io.net.HostName.fromUri(uri, &host_buf) catch return false;
+        const port: u16 = uri.port orelse switch (protocol) {
+            .tls => 443,
+            .plain => 80,
+        };
+        const conn = self.client.connect(host, port, protocol) catch return false;
+        self.client.connection_pool.release(conn, self.client.io);
+        return true;
+    }
+
+    fn loadCaBundle(self: *Session) bool {
+        const c = &self.client;
+        const io = c.io;
+        {
+            c.ca_bundle_lock.lockShared(io) catch return false;
+            defer c.ca_bundle_lock.unlockShared(io);
+            if (c.now != null) return true;
+        }
+        var bundle: std.crypto.Certificate.Bundle = .empty;
+        defer bundle.deinit(c.allocator);
+        const now = std.Io.Clock.real.now(io);
+        bundle.rescan(c.allocator, io, now) catch return false;
+        c.ca_bundle_lock.lock(io) catch return false;
+        defer c.ca_bundle_lock.unlock(io);
+        c.now = now;
+        std.mem.swap(std.crypto.Certificate.Bundle, &c.ca_bundle, &bundle);
+        return true;
+    }
+
     pub fn postStatus(self: *Session, url: []const u8, bearer_token: []const u8, body: []const u8) !u16 {
         const result = try self.fetch(url, .POST, bearer_token, "application/json", null, body, null);
         return @backingInt(result.status);

@@ -160,3 +160,23 @@ test "makePath creates nested dirs" {
     try makePath(nested);
     try std.testing.expect((try fs.lstat(nested)).kind == .dir);
 }
+
+/// `name` from the environment, or null when unset.
+pub fn getenv(name: [*:0]const u8) ?[]const u8 {
+    const v = std.c.getenv(name) orelse return null;
+    return std.mem.span(v);
+}
+
+pub const SetenvError = error{ OutOfMemory, SetenvFailed };
+
+/// Sets `name` for this process and the children it spawns afterwards. Not thread-safe
+/// against concurrent `getenv`: call it before starting threads that read the environment.
+pub fn setenv(allocator: std.mem.Allocator, name: [*:0]const u8, value: []const u8) SetenvError!void {
+    const z = try allocator.dupeSentinel(u8, value, 0);
+    defer allocator.free(z);
+    if (libc.setenv(name, z.ptr, 1) != 0) return error.SetenvFailed;
+}
+
+const libc = struct {
+    extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+};

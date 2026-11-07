@@ -48,7 +48,7 @@ def main() -> None:
 
     print("phases (start offset, duration):")
     skip = ("fuse ", "http ", "fetch for read", "prefetch", "http GET chunk", "decompress and verify",
-            "store chunk", "reload chunk from store", "wait for another fetch")
+            "store chunk", "reload chunk from store", "wait for another fetch", "vfs lock wait", "warm connection")
     for e in sorted(spans, key=lambda e: e["ts"]):
         if e["name"].startswith(skip):
             continue
@@ -70,7 +70,7 @@ def main() -> None:
             xs = [e for e in spans if e["name"] == name]
             if xs:
                 print(f"  {name}: {len(xs)} chunks, {ms(sum(e['dur'] for e in xs))} summed")
-        for name in ("decompress and verify", "store chunk", "reload chunk from store", "wait for another fetch"):
+        for name in ("decompress and verify", "store chunk", "reload chunk from store", "wait for another fetch", "vfs lock wait", "warm connection"):
             xs = [e["dur"] for e in spans if e["name"] == name]
             if xs:
                 print(f"  {name}: {len(xs)}x, {ms(sum(xs))} summed, max {ms(max(xs))}")

@@ -1,4 +1,5 @@
 const std = @import("std");
+const trace = @import("sys").trace;
 const fuse_abi = @import("./fuse_abi.zig");
 const voila_index = @import("core").voila_index;
 const voila_tree = @import("store").voila_tree;
@@ -105,7 +106,12 @@ pub const VoilaVfs = struct {
     }
 
     pub fn lock(self: *VoilaVfs) void {
-        if (self.lock_io) |io| self.mu.lockUncancelable(io);
+        const io = self.lock_io orelse return;
+        if (!trace.enabled()) return self.mu.lockUncancelable(io);
+        const start = trace.nowUs();
+        self.mu.lockUncancelable(io);
+        // Only waits long enough to matter, to keep the trace small.
+        if (trace.nowUs() - start >= 1000) (trace.Span{ .name = "vfs lock wait", .start = start }).end();
     }
 
     pub fn unlock(self: *VoilaVfs) void {

@@ -5,6 +5,11 @@ const voila_store = @import("store").voila_store;
 const voila_chunk_load = @import("store").voila_chunk_load;
 const voila_fetch_stats = @import("./voila_fetch_stats.zig");
 const hub = @import("./voila_registry_hub.zig");
+const posix_util = @import("sys").posix_util;
+
+/// The chunk endpoint a parent process already looked up for this run, so children skip
+/// `GET /v1/registry/config`. "" means the registry serves chunks itself.
+pub const chunk_endpoint_env = "VOILA_CHUNK_ENDPOINT";
 
 const log = std.log.scoped(.registry);
 
@@ -19,9 +24,14 @@ fn ensureOrigin(h: *hub.Hub, io: std.Io, allocator: std.mem.Allocator, cfg: hub.
     defer h.origin_mu.unlock(io);
     if (h.chunk_origin_loaded) return;
     h.chunk_origin_loaded = true;
+    if (posix_util.getenv(chunk_endpoint_env)) |ep| {
+        const trimmed = trimRightSlash(ep);
+        if (trimmed.len != 0) h.chunk_origin = try allocator.dupe(u8, trimmed);
+        return;
+    }
     const url = try std.fmt.allocPrint(allocator, "{s}/v1/registry/config", .{cfg.base_url});
     defer allocator.free(url);
-    const body = voila_http.httpGet(io, allocator, url, cfg.token) catch return;
+    const body = pooledGetOk(h, io, allocator, url, cfg.token) catch return;
     defer allocator.free(body);
     const needle = "\"chunk_endpoint\"";
     if (std.mem.indexOf(u8, body, needle)) |i| {
@@ -100,13 +110,64 @@ pub fn fetchChunkRaw(
     return voila_store.loadChunkRaw(allocator, voila_root, chunk_hex, voila_store.AlgoRaw);
 }
 
-/// GET on a pooled keep-alive session. A pooled connection the server already closed
-/// fails, so one transport error retries on a fresh session.
+/// Publishes this process's chunk endpoint to the children it spawns next (the worker,
+/// the FUSE server). Call before spawning, while no other thread reads the environment.
+pub fn exportChunkEndpoint(reg_hub: *hub.Hub, allocator: std.mem.Allocator) void {
+    if (!reg_hub.chunk_origin_loaded) return;
+    // Children fall back to fetching the config themselves.
+    posix_util.setenv(allocator, chunk_endpoint_env, reg_hub.chunk_origin orelse "") catch {};
+}
+
+/// Opens `n` connections to the chunk endpoint in the background and pools them for
+/// `io`, so the first reads do not each wait for a handshake. Best-effort: a failed or
+/// late warm-up only means a read opens its own connection, as before.
+pub fn warmChunkConnections(reg_hub: *hub.Hub, io: std.Io, n: usize) void {
+    for (0..n) |_| {
+        const t = std.Thread.spawn(.{}, warmOne, .{ reg_hub, io }) catch return;
+        t.detach();
+    }
+}
+
+fn warmOne(reg_hub: *hub.Hub, io: std.Io) void {
+    const span = trace.begin("warm connection");
+    var ok = false;
+    defer span.endArgs("\"ok\":{}", .{ok});
+    const allocator = std.heap.smp_allocator;
+    const cfg = reg_hub.getConfigCopy(allocator) orelse return;
+    defer {
+        allocator.free(cfg.base_url);
+        allocator.free(cfg.token);
+        allocator.free(cfg.org);
+    }
+    ensureOrigin(reg_hub, io, allocator, cfg) catch return;
+    const target = reg_hub.chunk_origin orelse cfg.base_url;
+    const s = reg_hub.acquireSession(io, true) orelse return;
+    ok = s.warm(target);
+    reg_hub.releaseSession(s, ok);
+}
+
 fn getChunkResponse(reg_hub: *hub.Hub, io: std.Io, allocator: std.mem.Allocator, url: []const u8) !voila_http.Response {
+    return pooledGet(reg_hub, io, allocator, url, "");
+}
+
+/// `pooledGet` that wants a 2xx with a body; returns the owned body.
+pub fn pooledGetOk(reg_hub: *hub.Hub, io: std.Io, allocator: std.mem.Allocator, url: []const u8, token: []const u8) ![]u8 {
+    const resp = try pooledGet(reg_hub, io, allocator, url, token);
+    if (resp.status < 200 or resp.status >= 300 or resp.body.len == 0) {
+        allocator.free(resp.body);
+        return error.HttpStatus;
+    }
+    return resp.body;
+}
+
+/// GET on a pooled keep-alive session, so one run shares TLS connections across
+/// requests and hosts. A pooled connection the server already closed fails, so one
+/// transport error retries on a fresh session.
+pub fn pooledGet(reg_hub: *hub.Hub, io: std.Io, allocator: std.mem.Allocator, url: []const u8, token: []const u8) !voila_http.Response {
     var attempt: u8 = 0;
     while (true) : (attempt += 1) {
-        const s = reg_hub.acquireSession(io, attempt > 0) orelse return voila_http.httpGetResponse(io, allocator, url, "");
-        const resp = s.getResponse(allocator, url, "") catch |e| {
+        const s = reg_hub.acquireSession(io, attempt > 0) orelse return voila_http.httpGetResponse(io, allocator, url, token);
+        const resp = s.getResponse(allocator, url, token) catch |e| {
             reg_hub.releaseSession(s, false);
             if (attempt == 0 and e != error.Timeout) continue;
             return e;
