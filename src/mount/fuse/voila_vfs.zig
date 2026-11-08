@@ -25,6 +25,14 @@ const chunk_cache_max = 64;
 /// A cold file up to this size is prefetched whole once one of its chunks is read.
 const prefetch_file_max: u64 = 64 << 20;
 
+/// Set to "1" in the FUSE server's environment by `voila run --prefetch-dirs`.
+pub const prefetch_dirs_env = "VOILA_PREFETCH_DIRS";
+
+/// With `prefetch_dirs`, a directory whose files add up to more than this is not
+/// prefetched: in images these are /usr/bin, /usr/lib/<triple> and the like, of which a
+/// job reads a few files.
+const prefetch_dir_max: u64 = 8 << 20;
+
 /// Chunks a single read waits for directly; more than this fall back to inline fetches.
 const read_chunks_max = 16;
 
@@ -47,6 +55,14 @@ pub const VoilaVfs = struct {
     pool: ?*FetchPool = null,
     /// Inodes whose chunks were already queued for prefetch.
     prefetched: std.AutoHashMap(u64, void),
+    /// `--prefetch-dirs`: the first read of a file also queues the other files in its
+    /// directory (not subdirectories).
+    prefetch_dirs: bool = false,
+    /// Directory each looked-up inode was found in (the first, for hard links). Kept
+    /// only with `prefetch_dirs`.
+    parent_of: std.AutoHashMapUnmanaged(u64, u64) = .empty,
+    /// Directories whose files were already queued.
+    prefetched_dirs: std.AutoHashMapUnmanaged(u64, void) = .empty,
     /// Guards everything above when FUSE serves on several threads; `lock_io` null means
     /// single-threaded use and no locking.
     mu: std.Io.Mutex = .init,
@@ -138,6 +154,8 @@ pub const VoilaVfs = struct {
         self.chunk_cache.deinit();
         self.chunk_order.deinit(self.allocator);
         self.prefetched.deinit();
+        self.parent_of.deinit(self.allocator);
+        self.prefetched_dirs.deinit(self.allocator);
         var rit = self.readdir_by_ino.iterator();
         while (rit.next()) |e| self.allocator.free(e.value_ptr.*);
         self.readdir_by_ino.deinit();
@@ -175,6 +193,10 @@ pub const VoilaVfs = struct {
                 const dir = tree.dir_by_inode.get(parent) orelse return null;
                 const child = dir.entries.get(name) orelse return null;
                 tree.ensureInode(child) catch return null;
+                if (self.prefetch_dirs) {
+                    const gop = self.parent_of.getOrPut(self.allocator, child) catch return child; // no parent known: this file's directory is just not prefetched
+                    if (!gop.found_existing) gop.value_ptr.* = parent;
+                }
                 return child;
             },
         };
@@ -343,6 +365,7 @@ pub const VoilaVfs = struct {
                     rest.append(self.allocator, hex) catch {}; // prefetch is optional; a skipped chunk is fetched on read
                 }
             }
+            if (whole and self.prefetch_dirs) self.appendSiblingChunks(tree, ino, &rest);
         }
         if (rest.items.len != 0) {
             const slices = self.allocator.alloc([]const u8, rest.items.len) catch return;
@@ -351,6 +374,36 @@ pub const VoilaVfs = struct {
             pool.enqueue(slices);
         }
         for (need[0..n_need]) |*h| pool.ensure(h) catch {}; // readFuse refetches a still-missing chunk (short read if that fails too)
+    }
+
+    /// Queues the chunks of the other files in `ino`'s directory, once per directory.
+    /// Only entries the tree already holds: no manifest fetches just to prefetch, and
+    /// subdirectories are left alone. Caller holds `mu`.
+    fn appendSiblingChunks(self: *VoilaVfs, tree: *voila_tree.Tree, ino: u64, out: *std.ArrayList([64]u8)) void {
+        const dir_ino = self.parent_of.get(ino) orelse return;
+        if ((self.prefetched_dirs.getOrPut(self.allocator, dir_ino) catch return).found_existing) return;
+        const dir = tree.dir_by_inode.get(dir_ino) orelse return;
+        var total: u64 = 0;
+        var sizes = dir.entries.valueIterator();
+        while (sizes.next()) |child| {
+            const f = tree.file_by_inode.get(child.*) orelse continue;
+            total += f.size;
+            if (total > prefetch_dir_max) return;
+        }
+        const t_dir = trace.begin("queue directory");
+        var queued: usize = 0;
+        defer t_dir.endArgs("\"files\":{d}", .{queued});
+        var it = dir.entries.valueIterator();
+        while (it.next()) |child| {
+            if (child.* == ino) continue;
+            const f = tree.file_by_inode.get(child.*) orelse continue;
+            if ((self.prefetched.getOrPut(child.*) catch continue).found_existing) continue;
+            queued += 1;
+            for (f.blocks) |b| {
+                if (b.chunk_id.len != 32) continue;
+                out.append(self.allocator, std.fmt.bytesToHex(b.chunk_id[0..32].*, .lower)) catch return; // prefetch is optional; the rest is fetched on read
+            }
+        }
     }
 
     pub fn readFuse(self: *VoilaVfs, ino: u64, buf: []u8, off: u64) usize {
