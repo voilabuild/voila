@@ -88,9 +88,9 @@ The script checks the download's checksum and sets up the AppArmor profile
 that Ubuntu 24.04+ needs. Other options are in [doc/INSTALL.md](doc/INSTALL.md).
 
 To share images, sign up at https://registry.voila.build, run `voila login`,
-then `voila push <org>/myapp:1`. On another machine, `voila run
-<org>/myapp:1` starts without pulling the image first. Images are private to
-your org by default.
+then `voila push <org>/myapp:1`. On another machine, `voila login` and then
+`voila run <org>/myapp:1` starts without pulling the image first. Images are
+private to your org by default, which is why the second machine logs in too.
 
 ## How it works
 
