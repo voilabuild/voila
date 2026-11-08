@@ -121,3 +121,19 @@ def test_short_run_with_slow_registry_exits_cleanly(voila: Voila, registry_serve
         assert "Segmentation fault" not in res.err + res.out, res.err
         assert took < 1.0, f"run took {took:.2f}s waiting on the registry"
     assert voila.run("ps").out.count("\n") == 1, "container left behind"
+
+
+def test_chunk_slower_than_the_request_timeout_fails_cleanly(machine: Machine, registry_server: Registry) -> None:
+    """A chunk whose download outlasts the request timeout must fail the read, not
+    panic the FUSE server: std's fetch unwrapped the missing body error of a
+    canceled read with `.?`."""
+    a = machine("a")
+    a.run("import", "alpine:3.20")
+    a.run("push", "alpine:3.20")
+    registry_server.state.trickle_over_bytes = 100_000
+    b = machine("b")
+    res = b.run("run", "--rm", "alpine:3.20", "--", "cat", "/etc/os-release", check=False)
+    assert "panic" not in res.err, res.err
+    assert "Segmentation fault" not in res.err, res.err
+    assert "timed out" in res.err, res.err
+    assert res.rc != 0

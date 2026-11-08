@@ -232,6 +232,10 @@ fn runFetch(client: *std.http.Client, opts: std.http.Client.FetchOptions, cdn: *
 
 /// `std.http.Client.fetch` for the options voila uses (no redirect buffer, no
 /// decompress buffer), plus recording the CDN headers of the response.
+///
+/// A body read that fails because the request timed out (its task was canceled) has
+/// no `bodyErr`; std's `fetch` unwraps it with `.?` and panics, which took down the
+/// FUSE server whenever one chunk took longer than the request timeout to download.
 fn fetchRecording(client: *std.http.Client, options: std.http.Client.FetchOptions, cdn: *CdnInfo) std.http.Client.FetchError!std.http.Client.FetchResult {
     const uri = switch (options.location) {
         .url => |u| try std.Uri.parse(u),
@@ -269,7 +273,7 @@ fn fetchRecording(client: *std.http.Client, options: std.http.Client.FetchOption
     const response_writer = options.response_writer orelse {
         const reader = response.reader(&.{});
         _ = reader.discardRemaining() catch |err| switch (err) {
-            error.ReadFailed => return response.bodyErr().?,
+            error.ReadFailed => return response.bodyErr() orelse error.Canceled,
         };
         return .{ .status = response.head.status };
     };
@@ -286,7 +290,7 @@ fn fetchRecording(client: *std.http.Client, options: std.http.Client.FetchOption
     var decompress: std.http.Decompress = undefined;
     const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
     _ = reader.streamRemaining(response_writer) catch |err| switch (err) {
-        error.ReadFailed => return response.bodyErr().?,
+        error.ReadFailed => return response.bodyErr() orelse error.Canceled,
         else => |e| return e,
     };
     return .{ .status = response.head.status };

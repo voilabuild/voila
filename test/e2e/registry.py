@@ -4,10 +4,12 @@ Standalone: uv run uvicorn registry:app --port 7423
 """
 
 import asyncio
+from collections.abc import AsyncIterator
 from collections import Counter
 from dataclasses import dataclass, field
 
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 
@@ -19,6 +21,9 @@ class State:
     chunk_puts: Counter[str] = field(default_factory=Counter[str])
     put_delay_ms: float = 0
     config_delay_ms: float = 0
+    # Chunks bigger than this are sent slowly (4 KiB every 0.5 s), slower than the
+    # client's request timeout allows for a 1 MiB chunk.
+    trickle_over_bytes: int | None = None
     inflight: int = 0
     max_inflight: int = 0
 
@@ -49,7 +54,16 @@ def get_chunk(chunk_id: str) -> Response:
     if body is None:
         return Response(status_code=404)
     state.chunk_gets[chunk_id] += 1
+    limit = state.trickle_over_bytes
+    if limit is not None and len(body) > limit:
+        return StreamingResponse(trickle(body), media_type="application/octet-stream", headers={"Content-Length": str(len(body))})
     return Response(body, media_type="application/octet-stream")
+
+
+async def trickle(body: bytes) -> AsyncIterator[bytes]:
+    for i in range(0, len(body), 4096):
+        yield body[i : i + 4096]
+        await asyncio.sleep(0.5)
 
 
 @app.put("/registry/v1/chunks/{chunk_id}")
