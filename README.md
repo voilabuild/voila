@@ -31,26 +31,26 @@ getting the image.
 
 **A CI job: build and test a small project**
 
-| Job | Docker | voila | Downloaded: Docker / voila |
-|---|---|---|---|
-| Go: `go vet`, `go build`, `go test` (`golang:1.23`) | 28.5 s | 22.1 s | 623 / 310 MB |
-| Python: `pip install pytest`, `pytest` (`python:3.12`) | 18.2 s | 6.9 s | 849 / 161 MB |
-| Node: `npm test` (`node:22`) | 15.4 s | 5.7 s | 839 / 182 MB |
+| Job | Docker | voila | voila, first run | Downloaded: Docker / voila |
+|---|---|---|---|---|
+| Go: `go vet`, `go build`, `go test` (`golang:1.23`) | 28.6 s | 23.3 s | 36.0 s | 623 / 310 MB |
+| Python: `pip install pytest`, `pytest` (`python:3.12`) | 18.0 s | 7.1 s | 13.0 s | 849 / 161 MB |
+| Node: `npm test` (`node:22`) | 16.0 s | 7.0 s | 19.4 s | 839 / 182 MB |
 
 **Starting a service, until it answers a request**
 
-| Service | Docker | voila | Downloaded: Docker / voila |
-|---|---|---|---|
-| postgres 16 (`postgres:16`) | 6.5 s | 4.1 s | 329 / 204 MB |
-| redis 7 (`redis:7`) | 2.1 s | 1.0 s | 90 / 55 MB |
-| Next.js 15 app (`node:22`) | 15.8 s | 3.1 s | 838 / 173 MB |
+| Service | Docker | voila | voila, first run | Downloaded: Docker / voila |
+|---|---|---|---|---|
+| postgres 16 (`postgres:16`) | 5.8 s | 3.3 s | 6.6 s | 329 / 204 MB |
+| redis 7 (`redis:7`) | 1.9 s | 0.9 s | 1.6 s | 90 / 55 MB |
+| Next.js 15 app (`node:22`) | 13.7 s | 2.6 s | 6.5 s | 838 / 173 MB |
 
-Medians of 3 runs each, voila built from
-[`perf/prefetch-dirs`](https://github.com/voilabuild/voila/tree/perf/prefetch-dirs)
-(not released yet) and Docker 28.0.4, on 2026-11-08
-([CI jobs](https://github.com/voilabuild/voila-bench/actions/runs/42446426119),
-[services](https://github.com/voilabuild/voila-bench/actions/runs/42450191191)).
-"Downloaded" is what the runner's network interface received.
+Medians of 3 runs each, plus voila's first run on its own, for voila
+`v0.1.0-alpha.6-rc.3` and Docker 28.0.4 on 2026-11-08
+([CI jobs](https://github.com/voilabuild/voila-bench/actions/runs/42495325898),
+[services](https://github.com/voilabuild/voila-bench/actions/runs/42495332569)).
+"Downloaded" is what the runner's network interface received. Docker's
+first run is within about a second of its median.
 
 What this shows:
 
@@ -59,15 +59,17 @@ What this shows:
   `npm test` then takes under a second. voila starts right away and fetches
   only the files the job reads, so the bigger the image and the shorter the
   job, the bigger the win.
-- **A job that reads many files is closer.** `go build` reads thousands of
+- **The first run is much slower, and can lose.** Every chunk was a CDN
+  cache hit, but on the first run each one took about 4x longer (42 ms
+  instead of 11 ms): the CDN edge near the runner fetched it from an upper
+  cache tier before keeping it. voila waits on thousands of these, so the
+  first `npm test` took 19.4 s, longer than Docker's 16.0 s. A CI fleet
+  that keeps running the same images warms its edge; a one-off run doesn't.
+- **A job that reads many files is closest.** `go build` reads thousands of
   small standard-library files, and each one not yet fetched costs a round
   trip. voila fetches the other files of a directory as soon as one is
-  read, which brought Go from 29.7 s to 22.1 s, but that's still the job
-  where Docker comes closest.
-- **The first run can be much slower.** In an earlier run the very first
-  voila Go job took 189 s and Node 115 s, probably because the CDN edge had
-  never seen those chunks. Later runs were normal. A popular image would
-  rarely hit this; one nobody has pulled lately might.
+  read, which helps (29.7 s without it, in an earlier run), but this is
+  still where Docker comes closest.
 
 These numbers come from one shared VM and move between runs (the same build
 measured 30-40% apart on different days). Treat them as a rough picture,
