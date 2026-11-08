@@ -40,10 +40,13 @@ address. Because the address is the content hash:
 
 A container's FUSE server runs on up to 16 libfuse threads. A read waits only
 for the chunks it covers; the first read of a cold file (up to 64 MiB) queues
-the rest of that file for 8 fetch workers, and a chunk is never fetched twice at
-once. Chunk GETs reuse pooled keep-alive connections. Registry fetches there run
-on a thread-based `std.Io`, because the zio executor thread is parked in the
-FUSE loop.
+the rest of that file for prefetch, and a chunk is never fetched twice at once.
+Every registry fetch in the server (file data and lazily loaded manifest
+chunks) goes through one fetch pool: 64 tasks on its own zio runtime (up to 4
+executor threads), since the CLI's executor thread is parked in the FUSE loop.
+libfuse threads queue a chunk and block until it is local. Reads go ahead of
+prefetch, and prefetch never holds the last 8 tasks, so a read never waits
+behind it. Chunk GETs reuse pooled keep-alive connections.
 
 ## Other components
 
