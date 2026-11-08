@@ -1,5 +1,8 @@
 //! Run libfuse in a child process so the parent can chroot into the mount without deadlocking.
 const std = @import("std");
+const trace = @import("sys").trace;
+const voila_registry_fetch = @import("registry").voila_registry_fetch;
+const voila_registry_hub = @import("registry").voila_registry_hub;
 const fuse_linux = @import("mount").fuse.fuse_linux;
 const fuse_vfs_mod = @import("mount").fuse.fuse_vfs;
 const voila_vfs_mod = @import("mount").fuse.voila_vfs;
@@ -178,6 +181,9 @@ fn execFuseServe(
     _ = std.c.execve(zargs[0].ptr, @ptrCast(&cargv), std.c.environ);
 }
 
+/// Connections opened to the chunk endpoint before the first read.
+const warm_connections = 4;
+
 fn serveChild(
     io: std.Io,
     voila_root: []const u8,
@@ -194,7 +200,9 @@ fn serveChild(
     voila_login_creds.loadIntoHub(allocator) catch return;
     voila_registry_creds.loadFromCredsFile(allocator, voila_root) catch return;
     voila_registry.loadFromEnv(allocator) catch return;
+    const t_tree = trace.begin("load manifest tree");
     const tree = voila_loader.loadTreeRoot(io, allocator, voila_root, image) catch return;
+    t_tree.end();
     var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(allocator, tree) };
     defer fuse_vfs.deinit();
     // libfuse threads are not zio tasks, and the zio executor (this thread) is parked in
@@ -202,39 +210,64 @@ fn serveChild(
     // Unlimited async: past the limit `Io.async` runs inline, and each request's
     // timeout is an async sleep that would then block its caller for the full timeout.
     var threaded: std.Io.Threaded = .init(allocator, .{ .async_limit = .unlimited });
-    defer threaded.deinit();
+    defer {
+        const t = trace.begin("stop fetch threads");
+        threaded.deinit();
+        t.end();
+    }
     const fetch_io = threaded.io();
     fuse_vfs.voila.lock_io = fetch_io;
+    if (posix_util.getenv(voila_vfs_mod.prefetch_dirs_env)) |v| fuse_vfs.voila.prefetch_dirs = !std.mem.eql(u8, v, "0");
     fuse_vfs.voila.setFetchIo(fetch_io);
     var pool: ?FetchPool = if (fuse_vfs.voila.fetcher) |f| FetchPool.init(allocator, fetch_io, f, voila_root) else null;
     if (pool) |*p| {
         p.start();
         fuse_vfs.voila.pool = p;
     }
-    defer if (pool) |*p| p.deinit();
+    // Handshakes overlap the mount and the container's namespace setup. Joined before
+    // the pool and `threaded` are torn down: the threads use both.
+    var warmup: voila_registry_fetch.Warmup = if (pool != null) .start(voila_registry_hub.defaultHub(), fetch_io, warm_connections) else .{};
+    defer {
+        const t = trace.begin("join warm-up");
+        warmup.join();
+        t.end();
+    }
+    defer if (pool) |*p| {
+        const t = trace.begin("stop prefetch");
+        p.deinit();
+        t.end();
+    };
     if (opts.map_root) fuse_vfs.voila.owner_map = .{
         .uid = .{ .host = std.c.getuid(), .sub = opts.subuid },
         .gid = .{ .host = std.c.getgid(), .sub = opts.subgid },
     };
     posix_util.makePath(mount_dir) catch return;
+    const t_mount = trace.begin("mount (fusermount3)");
     var ctx: ServeCtx = .{
         .session = fuse_linux.mountSession(allocator, mount_dir, &fuse_vfs) catch return,
         .err = null,
     };
+    t_mount.end();
+    const t_listed = trace.begin("wait until mount is listed");
     for (0..10_000) |_| {
         if (mount_exec.mountListed(mount_dir)) break;
         posix_util.sleepMs(1);
     }
+    t_listed.end();
     _ = std.c.write(ready_w, &[_]u8{1}, 1);
     _ = std.c.close(ready_w);
     // EOF on the stop pipe (parent closed it or died) unmounts, which ends the serve loop.
     const watcher = std.Thread.spawn(.{}, watchStop, .{ stop_r, mount_dir, &ctx.session }) catch null;
+    const t_serve = trace.begin("serving");
     fuse_linux.serveSessionMt(&ctx.session, fuse_threads) catch |e| {
         ctx.err = e;
     };
+    t_serve.end();
+    const t_unmount = trace.begin("unmount");
     unmountQuietly(mount_dir);
     if (watcher) |t| t.join();
     ctx.session.deinit();
+    t_unmount.end();
 }
 
 fn watchStop(stop_r: std.posix.fd_t, mount_dir: []const u8, session: *fuse_linux.Session) void {

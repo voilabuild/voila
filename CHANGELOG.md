@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented here.
 
+## v0.1.0-alpha.6-rc.3 — 2026-11-08
+
+Release candidate. Faster cold runs from the registry, three data-safety fixes, and a timing trace.
+
+### Highlights
+
+- Cold runs fetch the other files of a directory as soon as one is read (no subdirectories; directories over 8 MiB of files are skipped). On a fresh GitHub runner: Go `vet`/`build`/`test` 29.7 → 22.1 s, `pytest` 11.3 → 6.9 s, `npm test` 9.2 → 5.7 s, postgres ready 4.6 → 4.1 s, for 4–30 MB more download. `--no-prefetch-dirs` turns it off
+- Fewer round trips before the first read: the chunk endpoint is looked up once per run and passed to the FUSE server, manifests come over pooled keep-alive connections, and connections are warmed during mount
+- `VOILA_TRACE=<file>` writes a Chrome/Perfetto trace from every voila process (CLI, worker, FUSE server, container setup): phases, HTTP requests with CDN cache status, chunk fetches, FUSE operations. `tools/trace_summary.py` summarizes one
+- README: what voila is, an honest "toy project" section, and numbers from real CI jobs and service starts against Docker ([voila-bench](https://github.com/voilabuild/voila-bench))
+
+### Fixed
+
+- A file whose first bytes are the zstd magic (any `.zst` file in an image) read back empty, with exit 0, after a lazy pull from a registry that stores chunks decoded. The fetch now verifies the chunk as-is before decoding it
+- Pushing such a file sent its chunk unwrapped, and the hub rejected it (`golang:1.23` could not be pushed)
+- A chunk slower than the request timeout crashed the FUSE server mid-read; it now fails the read with "timed out"
+- A short run against a slow registry could crash at exit (connection warm-up used memory already freed)
+- (rc.2) A warm run no longer waits at exit for prefetches of files it never read (rc.1: warm `run --rm` 0.5-0.9 s instead of 0.09 s), and dropped prefetches are not printed as errors
+- (rc.3) The image server dying while the command is still starting is reported as exit 125 ("the image filesystem server exited"), not 126 ("cannot exec")
+
+### Install this build
+
+```bash
+curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sh -s -- --version v0.1.0-alpha.6-rc.3 --yes
+```
+
 ## v0.1.0-alpha.5 — 2026-11-05
 
 Fixes from validating alpha.4 against a Docker-user scenario (#166).

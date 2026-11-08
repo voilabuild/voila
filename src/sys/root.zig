@@ -6,6 +6,7 @@ pub const fusermount = @import("fusermount.zig");
 pub const ns = @import("ns.zig");
 pub const posix_util = @import("posix_util.zig");
 pub const process = @import("process.zig");
+pub const trace = @import("trace.zig");
 pub const voila_paths = @import("voila_paths.zig");
 
 test {
@@ -16,5 +17,6 @@ test {
     _ = @import("posix_util.zig");
     if (@import("build_options").privileged) _ = @import("privileged_test.zig");
     _ = @import("process.zig");
+    _ = @import("trace.zig");
     _ = @import("voila_paths.zig");
 }

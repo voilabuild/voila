@@ -1,4 +1,5 @@
 const std = @import("std");
+const trace = @import("sys").trace;
 const fuse_vfs = @import("./fuse_vfs.zig");
 
 const c = @import("fuse3");
@@ -38,8 +39,18 @@ fn fillStatFromAttr(vfs: *fuse_vfs.FuseVfs, ino: u64, stbuf: ?*c.struct_stat) bo
     return true;
 }
 
+fn opSpan(comptime name: []const u8) trace.Span {
+    return trace.begin(name);
+}
+
+fn endOp(span: trace.Span, path: [*c]const u8) void {
+    span.endArgs("\"path\":{f}", .{trace.str(pathSlice(path))});
+}
+
 fn getattrCb(path: [*c]const u8, stbuf: ?*c.struct_stat, fi: ?*c.struct_fuse_file_info) callconv(.c) c_int {
     _ = fi;
+    const span = opSpan("fuse getattr");
+    defer endOp(span, path);
     const vfs = vfsFromCtx();
     const ino = vfs.inoFromPath(pathSlice(path)) orelse return negErr(.NOENT);
     if (!fillStatFromAttr(vfs, ino, stbuf)) return negErr(.NOENT);
@@ -47,6 +58,8 @@ fn getattrCb(path: [*c]const u8, stbuf: ?*c.struct_stat, fi: ?*c.struct_fuse_fil
 }
 
 fn readlinkCb(path: [*c]const u8, buf: [*c]u8, size: usize) callconv(.c) c_int {
+    const span = opSpan("fuse readlink");
+    defer endOp(span, path);
     const vfs = vfsFromCtx();
     const ino = vfs.inoFromPath(pathSlice(path)) orelse return negErr(.NOENT);
     const target = vfs.readlink(ino) orelse return negErr(.INVAL);
@@ -59,6 +72,8 @@ fn readlinkCb(path: [*c]const u8, buf: [*c]u8, size: usize) callconv(.c) c_int {
 }
 
 fn openCb(path: [*c]const u8, fi: ?*c.struct_fuse_file_info) callconv(.c) c_int {
+    const span = opSpan("fuse open");
+    defer endOp(span, path);
     const vfs = vfsFromCtx();
     const ino = vfs.inoFromPath(pathSlice(path)) orelse return negErr(.NOENT);
     if (!vfs.isFile(ino)) return negErr(.ISDIR);
@@ -76,7 +91,9 @@ fn readCb(path: [*c]const u8, buf: [*c]u8, size: usize, offset: c.off_t, fi: ?*c
     if (size == 0) return 0;
     const off: u64 = @intCast(offset);
     const slice = @as([*]u8, @ptrCast(buf))[0..size];
+    const span = trace.begin("fuse read");
     const n = vfs.readFuse(ino, slice, off);
+    span.endArgs("\"path\":{f},\"off\":{d},\"size\":{d},\"got\":{d}", .{ trace.str(pathSlice(path)), off, size, n });
     return @intCast(n);
 }
 
@@ -90,6 +107,8 @@ fn readdirCb(
 ) callconv(.c) c_int {
     _ = fi;
     _ = flags;
+    const span = opSpan("fuse readdir");
+    defer endOp(span, path);
     const vfs = vfsFromCtx();
     const dir_ino = vfs.inoFromPath(pathSlice(path)) orelse return negErr(.NOTDIR);
     if (!vfs.isDir(dir_ino)) return negErr(.NOTDIR);

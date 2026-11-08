@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const zio = @import("zio");
 const cli = @import("cli");
+const trace = @import("sys").trace;
 
 pub const std_options_debug_io = zio.debug_io;
 
@@ -37,6 +38,9 @@ pub fn main(init: std.process.Init) !void {
         cli.usage.printCommand(sub);
         return;
     }
+
+    var name_buf: [64]u8 = undefined;
+    trace.init(std.fmt.bufPrint(&name_buf, "voila {s}", .{sub_name}) catch "voila");
 
     const ctx = cli.command.Ctx{ .io = io, .init = init, .args = &args, .allocator = gpa };
     cli.dispatch.run(sub, ctx) catch |e| {

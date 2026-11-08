@@ -5,6 +5,7 @@ const voila_manifest_json = @import("codec").voila_manifest_json;
 const voila_refkey = @import("core").voila_refkey;
 const registry_ref = @import("./voila_registry_ref.zig");
 const voila_registry_hub = @import("./voila_registry_hub.zig");
+const voila_registry_fetch = @import("./voila_registry_fetch.zig");
 const voila_registry = @import("./voila_registry.zig");
 const ocireg = @import("./voila_ocireg.zig");
 const posix_util = @import("sys").posix_util;
@@ -24,7 +25,7 @@ pub fn pullManifestOnce(
     defer allocator.free(escaped);
     const url = try std.fmt.allocPrint(allocator, "{s}/v1/images/{s}", .{ cfg.base_url, escaped });
     defer allocator.free(url);
-    const body = try voila_http.httpGet(io, allocator, url, cfg.token);
+    const body = try voila_registry_fetch.pooledGetOk(voila_registry_hub.defaultHub(), io, allocator, url, cfg.token);
     defer allocator.free(body);
     const man = try voila_manifest_json.parse(allocator, body);
     const store_ref = if (man.image_ref.len != 0) man.image_ref else ref;

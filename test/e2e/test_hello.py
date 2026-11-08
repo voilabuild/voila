@@ -1,5 +1,8 @@
+import hashlib
 import time
 from pathlib import Path
+
+import pytest
 
 from conftest import Machine, Registry, Voila
 
@@ -104,3 +107,60 @@ def test_push_overlaps_chunk_puts(machine: Machine, registry_server: Registry, t
     serial = n * 0.05
     assert elapsed < serial * 0.6, f"push took {elapsed:.2f}s for {n} chunks (serial {serial:.2f}s)"
     assert registry_server.state.max_inflight > 1, registry_server.state.max_inflight
+
+
+
+def test_short_run_with_slow_registry_exits_cleanly(voila: Voila, registry_server: Registry) -> None:
+    """A run that ends at once must not tear down the FUSE server under background
+    registry work. A warm-up thread still waiting on a slow registry crashed the FUSE
+    server (use after free of its Io) and stalled the run. A local image needs no
+    registry, so the run must also not wait for it."""
+    voila.run("import", "alpine:3.20")
+    registry_server.state.config_delay_ms = 1500
+    for _ in range(3):
+        start = time.monotonic()
+        res = voila.run("run", "--rm", "alpine:3.20", "--", "true")
+        took = time.monotonic() - start
+        assert "Segmentation fault" not in res.err + res.out, res.err
+        assert took < 1.0, f"run took {took:.2f}s waiting on the registry"
+    assert voila.run("ps").out.count("\n") == 1, "container left behind"
+
+
+def test_chunk_slower_than_the_request_timeout_fails_cleanly(machine: Machine, registry_server: Registry) -> None:
+    """A chunk whose download outlasts the request timeout must fail the read, not
+    panic the FUSE server: std's fetch unwrapped the missing body error of a
+    canceled read with `.?`."""
+    a = machine("a")
+    a.run("import", "alpine:3.20")
+    a.run("push", "alpine:3.20")
+    registry_server.state.trickle_over_bytes = 100_000
+    b = machine("b")
+    res = b.run("run", "--rm", "alpine:3.20", "--", "cat", "/etc/os-release", check=False)
+    assert "panic" not in res.err, res.err
+    assert "Segmentation fault" not in res.err, res.err
+    assert "timed out" in res.err, res.err
+    assert res.rc != 0
+
+
+@pytest.mark.parametrize("decode_uploads", [False, True], ids=["stores-as-uploaded", "stores-raw"])
+def test_file_starting_with_zstd_magic_survives_push_and_lazy_pull(
+    machine: Machine, registry_server: Registry, tmp_path: Path, decode_uploads: bool
+) -> None:
+    """A chunk whose raw bytes start with the zstd magic (any .zst file in an image)
+    was uploaded as if voila had compressed it, and a registry that serves raw bytes
+    had it decoded once too often on fetch: the hub rejected the id, and a lazy read
+    of the file came back empty."""
+    if decode_uploads:
+        pytest.importorskip("compression.zstd")
+    registry_server.state.decode_uploads = decode_uploads
+    ctx = tmp_path / "ctx"
+    ctx.mkdir()
+    payload = b"\x28\xb5\x2f\xfd" + bytes(range(256)) * 64
+    (ctx / "data.zst").write_bytes(payload)
+    (ctx / "Dockerfile").write_text(f"FROM {BASE}\nCOPY data.zst /data.zst\n")
+    a, b = machine("a"), machine("b")
+    a.run("import", BASE)
+    a.run("build", "-t", "zst:1", str(ctx))
+    a.run("push", "zst:1")
+    res = b.run("run", "--rm", "zst:1", "--", "md5sum", "/data.zst")
+    assert res.out.split()[0] == hashlib.md5(payload).hexdigest(), res.out + res.err

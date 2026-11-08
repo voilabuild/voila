@@ -98,17 +98,41 @@ fn chunkIdFromHex(hex: []const u8) [32]u8 {
     return id;
 }
 
+/// The upload body is always one zstd frame that decodes to the chunk's raw bytes.
+/// The index, not the bytes, says whether a stored chunk is already compressed: a raw
+/// chunk can itself start with the zstd magic (a `.zst` file in the image), and sending
+/// it as-is made the registry decode it once too often and reject the id.
 fn chunkWireBody(allocator: std.mem.Allocator, voila_root: []const u8, chunk_hex: []const u8) ![]u8 {
-    const stored = try voila_store.loadStoredBytes(allocator, voila_root, chunk_hex);
-    defer allocator.free(stored);
-    if (stored.len >= 4 and std.mem.eql(u8, stored[0..4], &zstd_magic)) {
-        return allocator.dupe(u8, stored);
-    }
     const cid = chunkIdFromHex(chunk_hex);
     const algo = @import("store").voila_chunk_index.compAlgoForChunk(voila_root, &cid) catch voila_store.AlgoRaw;
+    if (algo == voila_store.AlgoZstd) return voila_store.loadStoredBytes(allocator, voila_root, chunk_hex);
     const raw = voila_store.loadChunkRaw(allocator, voila_root, chunk_hex, algo) catch return error.MissingChunk;
     defer allocator.free(raw);
     return voila_store.compressZstdPublic(allocator, raw);
+}
+
+test "a raw chunk that starts with the zstd magic is wrapped, so one decode gives it back" {
+    const fs = @import("sys").fs;
+    const ingest_chunk_store = @import("store").ingest.ingest_chunk_store;
+    const a = std.testing.allocator;
+    const root = try fs.makeTempDir(a, "voila-wire-zstd");
+    defer a.free(root);
+    defer fs.removeTree(a, root) catch {}; // leftover temp dir is fine
+    // A complete zstd frame of "hello world " x 11000, as Go ships in internal/zstd/testdata.
+    const big = try a.alloc(u8, 12 * 11000);
+    defer a.free(big);
+    for (0..11000) |i| @memcpy(big[i * 12 ..][0..12], "hello world ");
+    const raw = try voila_store.compressZstdPublic(a, big);
+    defer a.free(raw);
+    try std.testing.expect(std.mem.eql(u8, raw[0..4], &zstd_magic));
+
+    const id = try ingest_chunk_store.putBytes(a, root, raw);
+    const hex = ingest_chunk_store.idToHex(id);
+    const wire = try chunkWireBody(a, root, &hex);
+    defer a.free(wire);
+    const decoded = try voila_store.decompressZstdPublic(a, wire);
+    defer a.free(decoded);
+    try std.testing.expectEqualSlices(u8, raw, decoded);
 }
 
 pub const Error = error{ ChunkPut, MissingChunk };

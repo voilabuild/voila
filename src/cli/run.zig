@@ -1,4 +1,5 @@
 const std = @import("std");
+const trace = @import("sys").trace;
 const command = @import("command.zig");
 const flags = @import("flags.zig");
 const voila_refkey = @import("core").voila_refkey;
@@ -6,7 +7,10 @@ const voila_runtime = @import("runtime").open;
 const run_flags = @import("runtime").run_flags;
 const voila_image_run_config = @import("runtime").oci.voila_image_run_config;
 const registry_session = @import("registry").registry_session;
+const voila_registry_fetch = @import("registry").voila_registry_fetch;
+const voila_registry_hub = @import("registry").voila_registry_hub;
 const posix_util = @import("sys").posix_util;
+const voila_vfs = @import("mount").fuse.voila_vfs;
 
 pub const Parsed = struct {
     runtime_cfg: voila_runtime.Config,
@@ -27,6 +31,10 @@ pub const Parsed = struct {
     user: ?[]const u8 = null,
     hostname: ?[]const u8 = null,
     network: ?[]const u8 = null,
+    /// The first read of a file in the image also fetches the other files in its
+    /// directory (not subdirectories; skipped past 8 MiB of files). Off with
+    /// `--no-prefetch-dirs`.
+    prefetch_dirs: bool = true,
 
     pub fn deinit(self: Parsed, allocator: std.mem.Allocator) void {
         if (self.hostname) |h| allocator.free(h);
@@ -65,6 +73,7 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator,
     var detach = false;
     var name: ?[]const u8 = null;
     var rm_on_exit = false;
+    var prefetch_dirs = true;
     var env_list: std.ArrayList(run_flags.EnvPair) = .empty;
     var vol_list: std.ArrayList(run_flags.Volume) = .empty;
     var port_list: std.ArrayList(run_flags.PortMap) = .empty;
@@ -108,6 +117,10 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator,
         }
         if (std.mem.eql(u8, arg, "--rm")) {
             rm_on_exit = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--prefetch-dirs") or std.mem.eql(u8, arg, "--no-prefetch-dirs")) {
+            prefetch_dirs = arg[2] == 'p';
             continue;
         }
         if (std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "--env")) {
@@ -229,6 +242,7 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator,
         .user = user,
         .hostname = hostname,
         .network = network,
+        .prefetch_dirs = prefetch_dirs,
     };
 }
 
@@ -286,9 +300,14 @@ pub fn execute(ctx: command.Ctx) !void {
         std.debug.print("voila run: -p cannot be used with --network none\n", .{});
         std.process.exit(2);
     }
+    const t_prepare = trace.begin("registry session");
     try registry_session.prepare(ctx.io, gpa, parsed.runtime_cfg.store_root);
+    t_prepare.end();
+    const t_runtime = trace.begin("open runtime");
     var worker = try command.openRuntime(gpa, parsed.runtime_cfg);
     defer worker.deinit(gpa);
+    t_runtime.end();
+    const t_config = trace.begin("image config (cmd, env, workdir, user)");
     const argv = try commandArgv(ctx.io, gpa, parsed);
     defer {
         for (argv) |s| gpa.free(s);
@@ -318,6 +337,9 @@ pub fn execute(ctx: command.Ctx) !void {
     const image_user = try voila_image_run_config.imageUser(ctx.io, gpa, parsed.runtime_cfg.store_root, parsed.image);
     defer gpa.free(image_user);
     const user = parsed.user orelse image_user;
+    t_config.end();
+    voila_registry_fetch.exportChunkEndpoint(voila_registry_hub.defaultHub(), gpa);
+    try posix_util.setenv(gpa, voila_vfs.prefetch_dirs_env, if (parsed.prefetch_dirs) "1" else "0");
     const code = try worker.run(ctx.io, gpa, .{
         .image = parsed.image,
         .argv = argv,
@@ -352,6 +374,21 @@ test "run parses --entrypoint, -u and keeps args for the entrypoint" {
     try std.testing.expectEqualStrings("/bin/echo", parsed.entrypoint.?);
     try std.testing.expectEqualStrings("1000:1000", parsed.user.?);
     try std.testing.expectEqualStrings("hi", parsed.cmd[0]);
+}
+
+test "run prefetches directories unless --no-prefetch-dirs" {
+    const alloc = std.testing.allocator;
+    const argv: []const [*:0]const u8 = &.{ "-root", "/voila-test-root", "--no-prefetch-dirs", "alpine:3", "true" };
+    var it = std.process.Args.Iterator.init(.{ .vector = argv });
+    var diag: Diag = .{};
+    const parsed = try parseArgs(alloc, &it, &diag);
+    defer parsed.deinit(alloc);
+    try std.testing.expect(!parsed.prefetch_dirs);
+    const argv2: []const [*:0]const u8 = &.{ "-root", "/voila-test-root", "alpine:3", "true" };
+    var it2 = std.process.Args.Iterator.init(.{ .vector = argv2 });
+    const parsed2 = try parseArgs(alloc, &it2, &diag);
+    defer parsed2.deinit(alloc);
+    try std.testing.expect(parsed2.prefetch_dirs);
 }
 
 test "parseEnvFile skips comments, blanks and bare keys" {

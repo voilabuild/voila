@@ -1,10 +1,14 @@
 //! Fetches missing chunks on worker threads. A read waits only for its own chunks;
 //! queued chunks (the rest of a file) download in parallel behind it.
 const std = @import("std");
+const trace = @import("sys").trace;
 const voila_store = @import("store").voila_store;
 const voila_chunk_load = @import("store").voila_chunk_load;
 
 pub const worker_count = 8;
+
+/// Fetches running right now, across demand reads and prefetch workers (trace counter).
+var in_flight: std.atomic.Value(i64) = .init(0);
 
 const State = enum { queued, inflight, done, failed };
 
@@ -20,7 +24,9 @@ pub const FetchPool = struct {
     queue: std.ArrayList([]const u8) = .empty,
     head: usize = 0,
     stopping: bool = false,
-    threads: [worker_count]?std.Thread = @splat(null),
+    /// Workers run as `io` tasks so `deinit` can cancel a fetch in flight: at exit,
+    /// prefetched chunks nobody read are not worth waiting for.
+    workers: std.Io.Group = .init,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, fetcher: voila_chunk_load.Fetcher, voila_root: []const u8) FetchPool {
         return .{
@@ -34,7 +40,7 @@ pub const FetchPool = struct {
 
     /// Starts the workers; `self` must not move afterwards.
     pub fn start(self: *FetchPool) void {
-        for (&self.threads) |*t| t.* = std.Thread.spawn(.{}, workerMain, .{self}) catch null;
+        for (0..worker_count) |_| self.workers.concurrent(self.io, workerMain, .{self}) catch break; // fewer workers only means slower prefetch
     }
 
     pub fn deinit(self: *FetchPool) void {
@@ -42,10 +48,8 @@ pub const FetchPool = struct {
         self.stopping = true;
         self.cond.broadcast(self.io);
         self.mu.unlock(self.io);
-        for (&self.threads) |*t| if (t.*) |th| {
-            th.join();
-            t.* = null;
-        };
+        // Idle workers see `stopping`; one mid-fetch gets error.Canceled from it.
+        self.workers.cancel(self.io);
         var it = self.states.keyIterator();
         while (it.next()) |k| self.allocator.free(k.*);
         self.states.deinit();
@@ -72,7 +76,10 @@ pub const FetchPool = struct {
             };
             added = true;
         }
-        if (added) self.cond.broadcast(self.io);
+        if (added) {
+            trace.counter("chunks queued", @intCast(self.queue.items.len - self.head));
+            self.cond.broadcast(self.io);
+        }
     }
 
     /// Returns once `hex` is local. Fetches it on this thread unless another thread
@@ -87,7 +94,9 @@ pub const FetchPool = struct {
                     return;
                 },
                 .inflight => {
+                    const t_wait = trace.begin("wait for another fetch");
                     self.cond.waitUncancelable(self.io, &self.mu);
+                    t_wait.end();
                     continue;
                 },
                 .queued, .failed => {
@@ -108,7 +117,7 @@ pub const FetchPool = struct {
             }
         }
         self.mu.unlock(self.io);
-        const ok = self.fetchOne(hex);
+        const ok = self.fetchOne(hex, "fetch for read");
         self.finish(hex, ok);
         if (!ok) return error.FetchFailed;
     }
@@ -120,14 +129,21 @@ pub const FetchPool = struct {
         self.cond.broadcast(self.io);
     }
 
-    fn fetchOne(self: *FetchPool, hex: []const u8) bool {
+    fn fetchOne(self: *FetchPool, hex: []const u8, comptime why: []const u8) bool {
         if (voila_store.hasChunk(self.voila_root, hex)) return true;
+        const span = trace.begin(why);
+        trace.counter("fetches in flight", in_flight.fetchAdd(1, .monotonic) + 1);
+        defer {
+            trace.counter("fetches in flight", in_flight.fetchSub(1, .monotonic) - 1);
+            span.endArgs("\"chunk\":{f}", .{trace.str(hex[0..@min(hex.len, 12)])});
+        }
         const data = self.fetcher.fetch(self.allocator, self.voila_root, hex) catch return false;
         self.allocator.free(data);
         return true;
     }
 
     fn workerMain(self: *FetchPool) void {
+        trace.threadName("prefetch worker");
         self.mu.lockUncancelable(self.io);
         while (true) {
             while (!self.stopping and self.head == self.queue.items.len) {
@@ -143,8 +159,10 @@ pub const FetchPool = struct {
             const st = self.states.getPtr(hex) orelse continue;
             if (st.* != .queued) continue;
             st.* = .inflight;
+            const queued = self.queue.items.len - self.head;
             self.mu.unlock(self.io);
-            const ok = self.fetchOne(hex);
+            trace.counter("chunks queued", @intCast(queued));
+            const ok = self.fetchOne(hex, "prefetch");
             self.finish(hex, ok);
             self.mu.lockUncancelable(self.io);
         }
