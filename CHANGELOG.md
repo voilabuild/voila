@@ -2,9 +2,11 @@
 
 All notable changes to this project are documented here.
 
-## v0.1.0-alpha.6-rc.3 — 2026-11-08
+## v0.1.0-alpha.6 — 2026-11-08
 
-Release candidate. Faster cold runs from the registry, three data-safety fixes, and a timing trace.
+Faster cold runs from the registry, three data-safety fixes, and a timing trace.
+
+Same code as `v0.1.0-alpha.6-rc.3`, which passed the e2e suite (44/44) and the Docker-user scenario (61/61, 3 runs out of 3) (#169).
 
 ### Highlights
 
@@ -19,13 +21,12 @@ Release candidate. Faster cold runs from the registry, three data-safety fixes, 
 - Pushing such a file sent its chunk unwrapped, and the hub rejected it (`golang:1.23` could not be pushed)
 - A chunk slower than the request timeout crashed the FUSE server mid-read; it now fails the read with "timed out"
 - A short run against a slow registry could crash at exit (connection warm-up used memory already freed)
-- (rc.2) A warm run no longer waits at exit for prefetches of files it never read (rc.1: warm `run --rm` 0.5-0.9 s instead of 0.09 s), and dropped prefetches are not printed as errors
-- (rc.3) The image server dying while the command is still starting is reported as exit 125 ("the image filesystem server exited"), not 126 ("cannot exec")
+- The image server dying while the command is still starting is reported as exit 125 ("the image filesystem server exited"), not 126 ("cannot exec")
 
 ### Install this build
 
 ```bash
-curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sh -s -- --version v0.1.0-alpha.6-rc.3 --yes
+curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sh -s -- --version v0.1.0-alpha.6 --yes
 ```
 
 ## v0.1.0-alpha.5 — 2026-11-05
