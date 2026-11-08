@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from conftest import Machine, Registry
+from conftest import Machine, Registry, Voila
 
 BASE = "alpine:3.20"
 
@@ -22,7 +22,7 @@ def build_and_push(machine: Machine, tmp_path: Path) -> None:
     a.run("push", "dirs:1")
 
 
-def chunk_gets(machine: Machine, registry_server: Registry, script: str, *flags: str) -> int:
+def chunk_gets(machine: Voila, registry_server: Registry, script: str, *flags: str) -> int:
     registry_server.state.chunk_gets.clear()
     # The sleep keeps the FUSE server up until queued prefetches have landed.
     machine.run("run", "--rm", *flags, "dirs:1", "--", "sh", "-c", f"{script}sleep 1")
