@@ -87,17 +87,20 @@ pub fn fetchChunkRaw(
     }
 
     const t_decode = trace.begin("decompress and verify");
+    // A registry may serve a chunk zstd-compressed or as its raw bytes, and raw bytes can
+    // themselves start with the zstd magic (a .zst file in the image). The id is the hash
+    // of the raw bytes, so a body that already matches it is raw; only otherwise decode.
     var raw: []u8 = stored;
     var owned_decompress = false;
-    if (stored.len >= 4 and std.mem.eql(u8, stored[0..4], "\x28\xb5\x2f\xfd")) {
+    if (voila_store.verifyChunkIdPublic(chunk_hex, stored)) |_| {} else |_| {
+        if (stored.len < 4 or !std.mem.eql(u8, stored[0..4], "\x28\xb5\x2f\xfd")) return error.ChunkIntegrity;
         raw = voila_store.decompressZstdPublic(allocator, stored) catch return error.RegistryFetch;
         owned_decompress = true;
+        voila_store.verifyChunkIdPublic(chunk_hex, raw) catch {
+            allocator.free(raw);
+            return error.ChunkIntegrity;
+        };
     }
-
-    voila_store.verifyChunkIdPublic(chunk_hex, raw) catch {
-        if (owned_decompress) allocator.free(raw);
-        return error.ChunkIntegrity;
-    };
 
     t_decode.endArgs("\"raw_bytes\":{d}", .{raw.len});
     const t_store = trace.begin("store chunk");

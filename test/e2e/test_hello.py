@@ -2,6 +2,8 @@ import hashlib
 import time
 from pathlib import Path
 
+import pytest
+
 from conftest import Machine, Registry, Voila
 
 BASE = "alpine:3.20"
@@ -140,12 +142,17 @@ def test_chunk_slower_than_the_request_timeout_fails_cleanly(machine: Machine, r
     assert res.rc != 0
 
 
+@pytest.mark.parametrize("decode_uploads", [False, True], ids=["stores-as-uploaded", "stores-raw"])
 def test_file_starting_with_zstd_magic_survives_push_and_lazy_pull(
-    machine: Machine, registry_server: Registry, tmp_path: Path
+    machine: Machine, registry_server: Registry, tmp_path: Path, decode_uploads: bool
 ) -> None:
     """A chunk whose raw bytes start with the zstd magic (any .zst file in an image)
-    was uploaded as if voila had compressed it, so readers decoded it once too often:
-    the hub rejected the id and a lazy read got the wrong bytes."""
+    was uploaded as if voila had compressed it, and a registry that serves raw bytes
+    had it decoded once too often on fetch: the hub rejected the id, and a lazy read
+    of the file came back empty."""
+    if decode_uploads:
+        pytest.importorskip("compression.zstd")
+    registry_server.state.decode_uploads = decode_uploads
     ctx = tmp_path / "ctx"
     ctx.mkdir()
     payload = b"\x28\xb5\x2f\xfd" + bytes(range(256)) * 64

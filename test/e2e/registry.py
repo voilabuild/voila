@@ -24,6 +24,8 @@ class State:
     # Chunks bigger than this are sent slowly (4 KiB every 0.5 s), slower than the
     # client's request timeout allows for a 1 MiB chunk.
     trickle_over_bytes: int | None = None
+    # Like registry.voila.build: decode zstd uploads and store (and serve) raw bytes.
+    decode_uploads: bool = False
     inflight: int = 0
     max_inflight: int = 0
 
@@ -74,7 +76,12 @@ async def put_chunk(chunk_id: str, request: Request) -> Response:
         if state.put_delay_ms > 0:
             await asyncio.sleep(state.put_delay_ms / 1000)
         existed = chunk_id in state.chunks
-        state.chunks[chunk_id] = await request.body()
+        body = await request.body()
+        if state.decode_uploads and request.headers.get("content-encoding") == "zstd":
+            from compression import zstd  # Python 3.14+; tests that set this skip otherwise
+
+            body = zstd.decompress(body)
+        state.chunks[chunk_id] = body
         state.chunk_puts[chunk_id] += 1
         return Response(status_code=200 if existed else 201)
     finally:
