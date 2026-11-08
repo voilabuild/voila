@@ -31,7 +31,12 @@ fn ensureOrigin(h: *hub.Hub, io: std.Io, allocator: std.mem.Allocator, cfg: hub.
     }
     const url = try std.fmt.allocPrint(allocator, "{s}/v1/registry/config", .{cfg.base_url});
     defer allocator.free(url);
-    const body = pooledGetOk(h, io, allocator, url, cfg.token) catch return;
+    // Without the config, chunks come from the registry itself. Canceled is passed on:
+    // swallowing it would let this fetch run on uncanceled.
+    const body = pooledGetOk(h, io, allocator, url, cfg.token) catch |e| {
+        if (e == error.Canceled) return error.Canceled;
+        return;
+    };
     defer allocator.free(body);
     const needle = "\"chunk_endpoint\"";
     if (std.mem.indexOf(u8, body, needle)) |i| {
@@ -71,7 +76,8 @@ pub fn fetchChunkRaw(
 
     const t_http = trace.begin("http GET chunk");
     const resp = getChunkResponse(reg_hub, io, allocator, url) catch |e| {
-        log.err("could not reach the registry for chunk {s} ({s}): {s}", .{ chunk_hex, url, @errorName(e) });
+        // Canceled: the FUSE server is stopping and dropping prefetches; nothing failed.
+        if (e != error.Canceled) log.err("could not reach the registry for chunk {s} ({s}): {s}", .{ chunk_hex, url, @errorName(e) });
         return error.RegistryFetch;
     };
     const stored = resp.body;
@@ -187,7 +193,8 @@ pub fn pooledGet(reg_hub: *hub.Hub, io: std.Io, allocator: std.mem.Allocator, ur
         const s = reg_hub.acquireSession(io, attempt > 0) orelse return voila_http.httpGetResponse(io, allocator, url, token);
         const resp = s.getResponse(allocator, url, token) catch |e| {
             reg_hub.releaseSession(s, false);
-            if (attempt == 0 and e != error.Timeout) continue;
+            // A retry would run uncanceled: the cancel request was used up by this attempt.
+            if (attempt == 0 and e != error.Timeout and e != error.Canceled) continue;
             return e;
         };
         reg_hub.releaseSession(s, true);

@@ -161,6 +161,8 @@ pub const Session = struct {
                     log.err("registry request timed out: {s}", .{url});
                     return error.Timeout;
                 },
+                // Shutting down: the caller must not retry.
+                error.Canceled => return error.Canceled,
                 else => return error.HttpStatus,
             }
         };
@@ -215,9 +217,10 @@ fn fetchTimed(client: *std.http.Client, opts: std.http.Client.FetchOptions, cdn:
     var sel = std.Io.Select(Result).init(client.io, &buf);
     sel.concurrent(.fetch, runFetch, .{ client, opts, cdn }) catch return fetchRecording(client, opts, cdn);
     sel.async(.timeout, sleepRequestTimeout, .{client.io});
-    const first = sel.await() catch {
+    // Canceled (the caller is shutting down) is passed on, so nothing retries it.
+    const first = sel.await() catch |e| {
         sel.cancelDiscard();
-        return error.HttpStatus;
+        return e;
     };
     sel.cancelDiscard();
     return switch (first) {

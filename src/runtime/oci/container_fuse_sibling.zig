@@ -210,7 +210,11 @@ fn serveChild(
     // Unlimited async: past the limit `Io.async` runs inline, and each request's
     // timeout is an async sleep that would then block its caller for the full timeout.
     var threaded: std.Io.Threaded = .init(allocator, .{ .async_limit = .unlimited });
-    defer threaded.deinit();
+    defer {
+        const t = trace.begin("stop fetch threads");
+        threaded.deinit();
+        t.end();
+    }
     const fetch_io = threaded.io();
     fuse_vfs.voila.lock_io = fetch_io;
     if (posix_util.getenv(voila_vfs_mod.prefetch_dirs_env)) |v| fuse_vfs.voila.prefetch_dirs = !std.mem.eql(u8, v, "0");
@@ -223,8 +227,16 @@ fn serveChild(
     // Handshakes overlap the mount and the container's namespace setup. Joined before
     // the pool and `threaded` are torn down: the threads use both.
     var warmup: voila_registry_fetch.Warmup = if (pool != null) .start(voila_registry_hub.defaultHub(), fetch_io, warm_connections) else .{};
-    defer warmup.join();
-    defer if (pool) |*p| p.deinit();
+    defer {
+        const t = trace.begin("join warm-up");
+        warmup.join();
+        t.end();
+    }
+    defer if (pool) |*p| {
+        const t = trace.begin("stop prefetch");
+        p.deinit();
+        t.end();
+    };
     if (opts.map_root) fuse_vfs.voila.owner_map = .{
         .uid = .{ .host = std.c.getuid(), .sub = opts.subuid },
         .gid = .{ .host = std.c.getgid(), .sub = opts.subgid },
@@ -251,9 +263,11 @@ fn serveChild(
         ctx.err = e;
     };
     t_serve.end();
+    const t_unmount = trace.begin("unmount");
     unmountQuietly(mount_dir);
     if (watcher) |t| t.join();
     ctx.session.deinit();
+    t_unmount.end();
 }
 
 fn watchStop(stop_r: std.posix.fd_t, mount_dir: []const u8, session: *fuse_linux.Session) void {

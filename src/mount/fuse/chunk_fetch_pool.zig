@@ -24,7 +24,9 @@ pub const FetchPool = struct {
     queue: std.ArrayList([]const u8) = .empty,
     head: usize = 0,
     stopping: bool = false,
-    threads: [worker_count]?std.Thread = @splat(null),
+    /// Workers run as `io` tasks so `deinit` can cancel a fetch in flight: at exit,
+    /// prefetched chunks nobody read are not worth waiting for.
+    workers: std.Io.Group = .init,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, fetcher: voila_chunk_load.Fetcher, voila_root: []const u8) FetchPool {
         return .{
@@ -38,7 +40,7 @@ pub const FetchPool = struct {
 
     /// Starts the workers; `self` must not move afterwards.
     pub fn start(self: *FetchPool) void {
-        for (&self.threads) |*t| t.* = std.Thread.spawn(.{}, workerMain, .{self}) catch null;
+        for (0..worker_count) |_| self.workers.concurrent(self.io, workerMain, .{self}) catch break; // fewer workers only means slower prefetch
     }
 
     pub fn deinit(self: *FetchPool) void {
@@ -46,10 +48,8 @@ pub const FetchPool = struct {
         self.stopping = true;
         self.cond.broadcast(self.io);
         self.mu.unlock(self.io);
-        for (&self.threads) |*t| if (t.*) |th| {
-            th.join();
-            t.* = null;
-        };
+        // Idle workers see `stopping`; one mid-fetch gets error.Canceled from it.
+        self.workers.cancel(self.io);
         var it = self.states.keyIterator();
         while (it.next()) |k| self.allocator.free(k.*);
         self.states.deinit();

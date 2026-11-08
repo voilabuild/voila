@@ -1,4 +1,5 @@
 import os
+import time
 from pathlib import Path
 
 from conftest import Machine, Registry, Voila
@@ -45,3 +46,20 @@ def test_no_prefetch_dirs_fetches_only_what_is_read(machine: Machine, registry_s
     base = chunk_gets(machine("base"), registry_server, "", "--no-prefetch-dirs")
     d = chunk_gets(machine("d"), registry_server, "cat /d/a >/dev/null; ", "--no-prefetch-dirs")
     assert d - base == 1, (base, d)
+
+
+def test_exit_does_not_wait_for_prefetch(machine: Machine, registry_server: Registry, tmp_path: Path) -> None:
+    """A run that only reads local files exits at once, even with sibling prefetches
+    still downloading: they used to hold the FUSE server open until they finished
+    (a canceled request was retried uncanceled), so every warm run waited a round
+    trip, or a slow registry's worth, at exit."""
+    build_and_push(machine, tmp_path)
+    b = machine("b")
+    b.run("run", "--rm", "--no-prefetch-dirs", "dirs:1", "--", "cat", "/d/a")
+    registry_server.state.chunk_delay_ms = 5000
+    t = time.monotonic()
+    res = b.run("run", "--rm", "dirs:1", "--", "cat", "/d/a")
+    took = time.monotonic() - t
+    assert registry_server.state.chunk_gets, "the run should have started prefetching /d's other files"
+    assert took < 1.5, f"run took {took:.1f} s: exit waited for prefetch"
+    assert "error" not in res.err, res.err  # dropped prefetches are not failures
