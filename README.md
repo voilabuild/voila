@@ -18,43 +18,60 @@ break. Don't run anything you care about on it.
 - It covers the common Docker commands (`run`, `build`, `push`, `ps`,
   `exec`, `logs`, `-p`, `-v`, `-e`), but not everything. For example,
   `--network host`, compose and Windows/macOS aren't supported.
-- The hosted registry (registry.voila.build) is a single small deployment,
-  not a CDN.
+- The hosted registry (registry.voila.build) is a single small deployment;
+  chunks are served through Cloudflare's CDN.
 
 ## Numbers
 
 Measured on a stock GitHub `ubuntu-24.04` runner (4 CPUs) by
-[voila-bench](https://github.com/voilabuild/voila-bench), which re-runs every
-week. Docker pulls from Docker Hub; voila runs the same image straight from
-registry.voila.build.
+[voila-bench](https://github.com/voilabuild/voila-bench). Every run starts
+from an empty machine: Docker pulls the official image from Docker Hub,
+voila runs the same image straight from registry.voila.build. Times include
+getting the image.
 
-| `python -c 'print(1)'` on an empty machine | Docker | voila |
-|---|---|---|
-| `python:3.12-slim` (119 MB unpacked) | 3.2 s, 89 MB downloaded | 2.3 s, 22 MB downloaded |
-| `python:3.12` (1.1 GB unpacked) | 16.6 s, 846 MB downloaded | 2.4 s, 68 MB downloaded |
+**A CI job: build and test a small project**
 
-| Image already local | Docker | voila |
-|---|---|---|
-| alpine `true` | 175 ms | 67 ms |
-| python `print(1)` | 191 ms | 118 ms |
+| Job | Docker | voila | Downloaded: Docker / voila |
+|---|---|---|---|
+| Go: `go vet`, `go build`, `go test` (`golang:1.23`) | 28.5 s | 22.1 s | 623 / 310 MB |
+| Python: `pip install pytest`, `pytest` (`python:3.12`) | 18.2 s | 6.9 s | 849 / 161 MB |
+| Node: `npm test` (`node:22`) | 15.4 s | 5.7 s | 839 / 182 MB |
 
-Medians of 3 cold runs and 10 warm runs on voila 0.1.0-alpha.5 and Docker
-28.0.4 ([run](https://github.com/voilabuild/voila-bench/actions/runs/42324931048)).
+**Starting a service, until it answers a request**
+
+| Service | Docker | voila | Downloaded: Docker / voila |
+|---|---|---|---|
+| postgres 16 (`postgres:16`) | 6.5 s | 4.1 s | 329 / 204 MB |
+| redis 7 (`redis:7`) | 2.1 s | 1.0 s | 90 / 55 MB |
+| Next.js 15 app (`node:22`) | 15.8 s | 3.1 s | 838 / 173 MB |
+
+Medians of 3 runs each, voila built from
+[`perf/prefetch-dirs`](https://github.com/voilabuild/voila/tree/perf/prefetch-dirs)
+(not released yet) and Docker 28.0.4, on 2026-11-08
+([CI jobs](https://github.com/voilabuild/voila-bench/actions/runs/42446426119),
+[services](https://github.com/voilabuild/voila-bench/actions/runs/42450191191)).
+"Downloaded" is what the runner's network interface received.
 
 What this shows:
 
-- **voila downloads a fraction of the image.** It fetches only the file data
-  the command reads, so the bigger the image, the bigger the win: 68 MB
-  instead of 846 MB for the full Python image.
-- **The first run on a runner is slower.** For both tools, the first cold
-  start was the slowest of the three: voila took 4.5 s (slim) and 5.0 s
-  (full), Docker 4.6 s and 17.6 s. The medians above are the later runs. A
-  separate quick run once took voila 7.1 s and Docker 4.7 s, so on a bad
-  day Docker can win a small image.
-- **Warm runs are quicker** because there's no daemon in the way.
+- **voila wins by skipping the pull.** Docker spends most of these runs
+  downloading the image (13-15 s for the big ones), and a short job like
+  `npm test` then takes under a second. voila starts right away and fetches
+  only the files the job reads, so the bigger the image and the shorter the
+  job, the bigger the win.
+- **A job that reads many files is closer.** `go build` reads thousands of
+  small standard-library files, and each one not yet fetched costs a round
+  trip. voila fetches the other files of a directory as soon as one is
+  read, which brought Go from 29.7 s to 22.1 s, but that's still the job
+  where Docker comes closest.
+- **The first run can be much slower.** In an earlier run the very first
+  voila Go job took 189 s and Node 115 s, probably because the CDN edge had
+  never seen those chunks. Later runs were normal. A popular image would
+  rarely hit this; one nobody has pulled lately might.
 
-These numbers come from one shared VM and move between runs. Treat them as
-a rough picture, not a promise.
+These numbers come from one shared VM and move between runs (the same build
+measured 30-40% apart on different days). Treat them as a rough picture,
+not a promise.
 
 ## Try it
 
