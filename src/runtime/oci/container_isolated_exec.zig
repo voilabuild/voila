@@ -369,7 +369,10 @@ pub fn spawnAndWait(io: std.Io, allocator: std.mem.Allocator, spec: Spec, timeou
     signalReady(spec.ready_fd);
     var status: i32 = 0;
     const early = std.c.waitpid(pid, &status, std.c.W.NOHANG);
-    if (early == pid) return ns.exitCode(@bitCast(status));
+    if (early == pid) {
+        if (fuseServerExited(spec.fuse_pid)) return error.FuseServerFailed;
+        return ns.exitCode(@bitCast(status));
+    }
     var pty_master: std.posix.fd_t = -1;
     if (console) |c| {
         ns.close(c[1]);
@@ -391,7 +394,12 @@ pub fn spawnAndWait(io: std.Io, allocator: std.mem.Allocator, spec: Spec, timeou
     const deadline_ms: ?i64 = if (timeout_ms == 0) null else monotonicMs() + @as(i64, @intCast(timeout_ms));
     while (true) {
         const w = std.c.waitpid(pid, &status, std.c.W.NOHANG);
-        if (w == pid) break;
+        if (w == pid) {
+            // The command often dies *because* the image went away (an exec or read
+            // fails); report that, not the command's own exit code.
+            if (fuseServerExited(spec.fuse_pid)) return error.FuseServerFailed;
+            break;
+        }
         if (w < 0 and std.c.errno(-1) != .CHILD) return error.ForkFailed;
         if (spec.fuse_pid > 0) {
             var fst: i32 = 0;
@@ -412,6 +420,13 @@ pub fn spawnAndWait(io: std.Io, allocator: std.mem.Allocator, spec: Spec, timeou
     }
     if (out_thread) |t| t.join();
     return ns.exitCode(@bitCast(status));
+}
+
+/// True once the FUSE server (a child of this process) has exited; reaps it.
+fn fuseServerExited(fuse_pid: std.c.pid_t) bool {
+    if (fuse_pid <= 0) return false;
+    var fst: i32 = 0;
+    return std.c.waitpid(fuse_pid, &fst, std.c.W.NOHANG) == fuse_pid;
 }
 
 pub fn parseCliArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !Spec {

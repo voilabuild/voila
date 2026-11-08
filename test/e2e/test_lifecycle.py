@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import VOILA_BIN, Voila
+from conftest import VOILA_BIN, Machine, Registry, Voila
 
 BASE = "alpine:3.20"
 
@@ -194,3 +194,43 @@ def test_rm_handles_a_root_with_spaces(voila: Voila, tmp_path: Path) -> None:
     assert sentinel.exists()
     assert containers(spaced) == []
     assert [p.name for p in (root / "containers").iterdir() if p.is_dir()] == []
+
+
+def fuse_server_of(worker: int) -> int | None:
+    for task in Path(f"/proc/{worker}/task").iterdir():
+        for child in (task / "children").read_text().split():
+            try:
+                if b"container-fuse-serve" in Path(f"/proc/{child}/cmdline").read_bytes():
+                    return int(child)
+            except OSError:
+                continue
+    return None
+
+
+def test_fuse_server_dying_while_the_command_starts_reports_125(
+    machine: Machine, registry_server: Registry, tmp_path: Path
+) -> None:
+    """The image server dying while the command is still being exec'd made the exec
+    fail, and the container was recorded as `exited (126)` ("cannot exec"), blaming
+    the command. It is the image that went away: 125, as for a server dying later."""
+    ctx = tmp_path / "ctx"
+    ctx.mkdir()
+    (ctx / "Dockerfile").write_text(f"FROM {BASE}\n")
+    a = machine("a")
+    a.run("import", BASE)
+    a.run("build", "-t", "lazy:1", str(ctx))
+    a.run("push", "lazy:1")
+    b = machine("b")
+    # Fetch the manifests, busybox and musl, so only apk's own file is left remote.
+    b.run("run", "--rm", "--no-prefetch-dirs", "lazy:1", "--", "true")
+    registry_server.state.chunk_delay_ms = 3000  # exec'ing apk now waits on its chunk
+    b.run("run", "-d", "--no-prefetch-dirs", "--name", "dying", "lazy:1", "--", "apk", "--version")
+    assert wait_until(lambda: running(b))
+    worker = int(containers(b)[0]["pid"])
+    assert wait_until(lambda: fuse_server_of(worker) is not None)
+    fuse = fuse_server_of(worker)
+    assert fuse is not None
+    os.kill(fuse, signal.SIGKILL)
+    assert wait_until(lambda: containers(b)[0]["status"].startswith("exited")), containers(b)
+    assert "125" in containers(b)[0]["status"], (containers(b), b.run("logs", "dying", check=False).err)
+    b.run("rm", "dying")
