@@ -213,7 +213,7 @@ fn serveChild(
     defer threaded.deinit();
     const fetch_io = threaded.io();
     fuse_vfs.voila.lock_io = fetch_io;
-    if (posix_util.getenv(voila_vfs_mod.prefetch_dirs_env)) |v| fuse_vfs.voila.prefetch_dirs = std.mem.eql(u8, v, "1");
+    if (posix_util.getenv(voila_vfs_mod.prefetch_dirs_env)) |v| fuse_vfs.voila.prefetch_dirs = !std.mem.eql(u8, v, "0");
     fuse_vfs.voila.setFetchIo(fetch_io);
     var pool: ?FetchPool = if (fuse_vfs.voila.fetcher) |f| FetchPool.init(allocator, fetch_io, f, voila_root) else null;
     if (pool) |*p| {

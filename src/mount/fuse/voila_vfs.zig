@@ -25,7 +25,7 @@ const chunk_cache_max = 64;
 /// A cold file up to this size is prefetched whole once one of its chunks is read.
 const prefetch_file_max: u64 = 64 << 20;
 
-/// Set to "1" in the FUSE server's environment by `voila run --prefetch-dirs`.
+/// Set to "0" in the FUSE server's environment by `voila run --no-prefetch-dirs`.
 pub const prefetch_dirs_env = "VOILA_PREFETCH_DIRS";
 
 /// With `prefetch_dirs`, a directory whose files add up to more than this is not
@@ -55,9 +55,9 @@ pub const VoilaVfs = struct {
     pool: ?*FetchPool = null,
     /// Inodes whose chunks were already queued for prefetch.
     prefetched: std.AutoHashMap(u64, void),
-    /// `--prefetch-dirs`: the first read of a file also queues the other files in its
-    /// directory (not subdirectories).
-    prefetch_dirs: bool = false,
+    /// On unless `--no-prefetch-dirs`: the first read of a file also queues the other
+    /// files in its directory (not subdirectories).
+    prefetch_dirs: bool = true,
     /// Directory each looked-up inode was found in (the first, for hard links). Kept
     /// only with `prefetch_dirs`.
     parent_of: std.AutoHashMapUnmanaged(u64, u64) = .empty,

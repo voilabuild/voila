@@ -31,9 +31,10 @@ pub const Parsed = struct {
     user: ?[]const u8 = null,
     hostname: ?[]const u8 = null,
     network: ?[]const u8 = null,
-    /// `--prefetch-dirs`: the first read of a file in the image also fetches the other
-    /// files in its directory (not subdirectories; skipped past 8 MiB of files).
-    prefetch_dirs: bool = false,
+    /// The first read of a file in the image also fetches the other files in its
+    /// directory (not subdirectories; skipped past 8 MiB of files). Off with
+    /// `--no-prefetch-dirs`.
+    prefetch_dirs: bool = true,
 
     pub fn deinit(self: Parsed, allocator: std.mem.Allocator) void {
         if (self.hostname) |h| allocator.free(h);
@@ -72,7 +73,7 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator,
     var detach = false;
     var name: ?[]const u8 = null;
     var rm_on_exit = false;
-    var prefetch_dirs = false;
+    var prefetch_dirs = true;
     var env_list: std.ArrayList(run_flags.EnvPair) = .empty;
     var vol_list: std.ArrayList(run_flags.Volume) = .empty;
     var port_list: std.ArrayList(run_flags.PortMap) = .empty;
@@ -118,8 +119,8 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator,
             rm_on_exit = true;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--prefetch-dirs")) {
-            prefetch_dirs = true;
+        if (std.mem.eql(u8, arg, "--prefetch-dirs") or std.mem.eql(u8, arg, "--no-prefetch-dirs")) {
+            prefetch_dirs = arg[2] == 'p';
             continue;
         }
         if (std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "--env")) {
@@ -338,7 +339,7 @@ pub fn execute(ctx: command.Ctx) !void {
     const user = parsed.user orelse image_user;
     t_config.end();
     voila_registry_fetch.exportChunkEndpoint(voila_registry_hub.defaultHub(), gpa);
-    if (parsed.prefetch_dirs) try posix_util.setenv(gpa, voila_vfs.prefetch_dirs_env, "1");
+    try posix_util.setenv(gpa, voila_vfs.prefetch_dirs_env, if (parsed.prefetch_dirs) "1" else "0");
     const code = try worker.run(ctx.io, gpa, .{
         .image = parsed.image,
         .argv = argv,
@@ -375,19 +376,19 @@ test "run parses --entrypoint, -u and keeps args for the entrypoint" {
     try std.testing.expectEqualStrings("hi", parsed.cmd[0]);
 }
 
-test "run parses --prefetch-dirs, off by default" {
+test "run prefetches directories unless --no-prefetch-dirs" {
     const alloc = std.testing.allocator;
-    const argv: []const [*:0]const u8 = &.{ "-root", "/voila-test-root", "--prefetch-dirs", "alpine:3", "true" };
+    const argv: []const [*:0]const u8 = &.{ "-root", "/voila-test-root", "--no-prefetch-dirs", "alpine:3", "true" };
     var it = std.process.Args.Iterator.init(.{ .vector = argv });
     var diag: Diag = .{};
     const parsed = try parseArgs(alloc, &it, &diag);
     defer parsed.deinit(alloc);
-    try std.testing.expect(parsed.prefetch_dirs);
+    try std.testing.expect(!parsed.prefetch_dirs);
     const argv2: []const [*:0]const u8 = &.{ "-root", "/voila-test-root", "alpine:3", "true" };
     var it2 = std.process.Args.Iterator.init(.{ .vector = argv2 });
     const parsed2 = try parseArgs(alloc, &it2, &diag);
     defer parsed2.deinit(alloc);
-    try std.testing.expect(!parsed2.prefetch_dirs);
+    try std.testing.expect(parsed2.prefetch_dirs);
 }
 
 test "parseEnvFile skips comments, blanks and bare keys" {

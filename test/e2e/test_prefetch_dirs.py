@@ -22,15 +22,15 @@ def build_and_push(machine: Machine, tmp_path: Path) -> None:
     a.run("push", "dirs:1")
 
 
-def chunk_gets(machine: Machine, registry_server: Registry, script: str) -> int:
+def chunk_gets(machine: Machine, registry_server: Registry, script: str, *flags: str) -> int:
     registry_server.state.chunk_gets.clear()
     # The sleep keeps the FUSE server up until queued prefetches have landed.
-    machine.run("run", "--rm", "--prefetch-dirs", "dirs:1", "--", "sh", "-c", f"{script}sleep 1")
+    machine.run("run", "--rm", *flags, "dirs:1", "--", "sh", "-c", f"{script}sleep 1")
     return sum(registry_server.state.chunk_gets.values())
 
 
 def test_prefetch_dirs_fetches_sibling_files_only(machine: Machine, registry_server: Registry, tmp_path: Path) -> None:
-    """--prefetch-dirs: reading /d/a also fetches /d/b../d/e, but not /d/sub/x, and
+    """By default, reading /d/a also fetches /d/b../d/e, but not /d/sub/x, and
     nothing next to /big/a, whose directory holds more than 8 MiB. Each count is taken
     against a run that reads neither, so the base image's own directories cancel out."""
     build_and_push(machine, tmp_path)
@@ -38,3 +38,10 @@ def test_prefetch_dirs_fetches_sibling_files_only(machine: Machine, registry_ser
     d = chunk_gets(machine("d"), registry_server, "cat /d/a >/dev/null; ")
     big = chunk_gets(machine("big"), registry_server, "cat /big/a >/dev/null; ")
     assert (d - base, big - base) == (5, 1), (base, d, big)
+
+
+def test_no_prefetch_dirs_fetches_only_what_is_read(machine: Machine, registry_server: Registry, tmp_path: Path) -> None:
+    build_and_push(machine, tmp_path)
+    base = chunk_gets(machine("base"), registry_server, "", "--no-prefetch-dirs")
+    d = chunk_gets(machine("d"), registry_server, "cat /d/a >/dev/null; ", "--no-prefetch-dirs")
+    assert d - base == 1, (base, d)
