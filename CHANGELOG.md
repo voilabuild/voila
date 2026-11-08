@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## v0.1.0-alpha.6-rc.1 — 2026-11-08
+## v0.1.0-alpha.6-rc.2 — 2026-11-08
 
 Release candidate. Faster cold runs from the registry, three data-safety fixes, and a timing trace.
 
@@ -19,11 +19,12 @@ Release candidate. Faster cold runs from the registry, three data-safety fixes, 
 - Pushing such a file sent its chunk unwrapped, and the hub rejected it (`golang:1.23` could not be pushed)
 - A chunk slower than the request timeout crashed the FUSE server mid-read; it now fails the read with "timed out"
 - A short run against a slow registry could crash at exit (connection warm-up used memory already freed)
+- (rc.2) A warm run no longer waits at exit for prefetches of files it never read (rc.1: warm `run --rm` 0.5-0.9 s instead of 0.09 s), and dropped prefetches are not printed as errors
 
 ### Install this build
 
 ```bash
-curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sh -s -- --version v0.1.0-alpha.6-rc.1 --yes
+curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sh -s -- --version v0.1.0-alpha.6-rc.2 --yes
 ```
 
 ## v0.1.0-alpha.5 — 2026-11-05

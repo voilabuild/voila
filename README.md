@@ -10,7 +10,7 @@ lazily: a chunk is downloaded only when a process reads a file that needs it.
 ## Be warned: this is a toy project
 
 voila is an experiment, not a Docker replacement. It's alpha software
-(`v0.1.0-alpha.6-rc.1`, [changelog](CHANGELOG.md)) and you should expect it to
+(`v0.1.0-alpha.6-rc.2`, [changelog](CHANGELOG.md)) and you should expect it to
 break. Don't run anything you care about on it.
 
 - Linux only. One static binary, no daemon, runs rootless (user namespaces
@@ -76,7 +76,7 @@ not a promise.
 ## Try it
 
 ```bash
-curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sh -s -- --version v0.1.0-alpha.6-rc.1 --yes
+curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sh -s -- --version v0.1.0-alpha.6-rc.2 --yes
 
 voila import alpine:3.20                    # copy an image from Docker Hub
 voila run --rm alpine:3.20 -- echo hi
