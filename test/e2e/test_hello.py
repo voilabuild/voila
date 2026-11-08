@@ -1,3 +1,4 @@
+import hashlib
 import time
 from pathlib import Path
 
@@ -137,3 +138,22 @@ def test_chunk_slower_than_the_request_timeout_fails_cleanly(machine: Machine, r
     assert "Segmentation fault" not in res.err, res.err
     assert "timed out" in res.err, res.err
     assert res.rc != 0
+
+
+def test_file_starting_with_zstd_magic_survives_push_and_lazy_pull(
+    machine: Machine, registry_server: Registry, tmp_path: Path
+) -> None:
+    """A chunk whose raw bytes start with the zstd magic (any .zst file in an image)
+    was uploaded as if voila had compressed it, so readers decoded it once too often:
+    the hub rejected the id and a lazy read got the wrong bytes."""
+    ctx = tmp_path / "ctx"
+    ctx.mkdir()
+    payload = b"\x28\xb5\x2f\xfd" + bytes(range(256)) * 64
+    (ctx / "data.zst").write_bytes(payload)
+    (ctx / "Dockerfile").write_text(f"FROM {BASE}\nCOPY data.zst /data.zst\n")
+    a, b = machine("a"), machine("b")
+    a.run("import", BASE)
+    a.run("build", "-t", "zst:1", str(ctx))
+    a.run("push", "zst:1")
+    res = b.run("run", "--rm", "zst:1", "--", "md5sum", "/data.zst")
+    assert res.out.split()[0] == hashlib.md5(payload).hexdigest(), res.out + res.err
