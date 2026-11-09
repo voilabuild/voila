@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here.
 
+## v0.1.0-alpha.7 — 2026-11-09
+
+Faster cold runs: chunks are fetched on an async runtime, many at once (#171).
+
+### Highlights
+
+- The FUSE server fetches chunks on a zio async runtime: 64 in flight by default instead of 8 threads, with reads served ahead of prefetch. On a fresh GitHub runner against alpha.6: Go `vet`/`build`/`test` 29.9 → 20.9 s, `pytest` 11.7 → 8.3 s, `npm test` 13.7 → 11.5 s. Peak FUSE server threads 70 → 23, memory about the same
+- `VOILA_FETCH_CONCURRENCY=<n>` sets how many chunk fetches run at once (default 64)
+
+### Install this build
+
+```bash
+curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sh -s -- --version v0.1.0-alpha.7 --yes
+```
+
 ## v0.1.0-alpha.6 — 2026-11-08
 
 Faster cold runs from the registry, three data-safety fixes, and a timing trace.
