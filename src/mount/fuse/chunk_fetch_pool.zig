@@ -15,12 +15,13 @@ pub const Options = struct {
     executors: u8 = 4,
 };
 
-/// Env var the FUSE server reads to override `Options.concurrency`.
+/// Env var the CLI reads to override `Options.concurrency` in the FUSE server.
 pub const concurrency_env = "VOILA_FETCH_CONCURRENCY";
 
-const State = enum { queued_prefetch, queued_read, inflight, done, failed };
+/// `queued_refetch`: a read whose local copy failed to load, fetched even if a file exists.
+const State = enum { queued_prefetch, queued_read, queued_refetch, inflight, done, failed };
 
-const Job = struct { hex: []const u8, read: bool };
+const Job = struct { hex: []const u8, read: bool, force: bool = false };
 
 /// Keys in `FetchPool.states` waiting for a worker, in arrival order.
 const Fifo = struct {
@@ -156,6 +157,17 @@ pub const FetchPool = struct {
     /// fetch already running; a chunk that failed before is tried once more.
     pub fn ensure(self: *FetchPool, hex: []const u8) error{FetchFailed}!void {
         if (voila_store.hasChunk(self.voila_root, hex)) return;
+        return self.wantChunk(hex, false);
+    }
+
+    /// Like `ensure` for a chunk whose local copy failed to load (corrupt or truncated):
+    /// downloads it again and replaces the file.
+    pub fn refetch(self: *FetchPool, hex: []const u8) error{FetchFailed}!void {
+        return self.wantChunk(hex, true);
+    }
+
+    fn wantChunk(self: *FetchPool, hex: []const u8, force: bool) error{FetchFailed}!void {
+        const queued: State = if (force) .queued_refetch else .queued_read;
         self.mu.lockUncancelable(self.io);
         defer self.mu.unlock(self.io);
         var asked = false;
@@ -163,25 +175,34 @@ pub const FetchPool = struct {
         defer if (wait) |w| w.end();
         while (!self.stopping) {
             const st = self.states.getPtr(hex) orelse {
-                const key = self.addState(hex, .queued_read) orelse return error.FetchFailed;
+                const key = self.addState(hex, queued) orelse return error.FetchFailed;
                 if (!self.queueRead(key)) return error.FetchFailed;
                 asked = true;
                 continue;
             };
             switch (st.*) {
-                .done => return,
-                .failed => {
-                    if (asked) return error.FetchFailed;
-                    st.* = .queued_read;
+                .done, .failed => {
+                    if (asked) {
+                        if (st.* == .failed) return error.FetchFailed;
+                        return;
+                    }
+                    // A done chunk is local unless its file is the bad copy being replaced.
+                    if (st.* == .done and !force) return;
+                    st.* = queued;
                     if (!self.queueRead(hex)) return error.FetchFailed;
                     asked = true;
                 },
                 .queued_prefetch => {
-                    st.* = .queued_read;
+                    st.* = queued;
                     if (!self.queueRead(hex)) return error.FetchFailed;
                     asked = true;
                 },
-                .queued_read, .inflight => {},
+                .queued_read => if (force) {
+                    st.* = .queued_refetch; // already in `reads`
+                    asked = true;
+                },
+                .queued_refetch => asked = true,
+                .inflight => {},
             }
             if (wait == null) wait = trace.begin("wait for chunk");
             self.finished.waitUncancelable(self.io, &self.mu);
@@ -215,10 +236,11 @@ pub const FetchPool = struct {
         self.allocator.free(key);
     }
 
-    /// Prefetch leaves this many workers to reads, so a read never queues behind it.
+    /// Prefetch leaves at least one worker (up to 8) to reads, so a read never queues
+    /// behind it. With a concurrency of 1 there is no prefetch.
     fn prefetchLimit(self: *const FetchPool) usize {
         const n: usize = self.opts.concurrency;
-        return n - @min(8, n / 4);
+        return n - std.math.clamp(n / 4, 1, 8);
     }
 
     /// Caller holds `mu`; returns with it held. Null once stopping.
@@ -226,9 +248,10 @@ pub const FetchPool = struct {
         while (!self.stopping) {
             while (self.reads.pop()) |hex| {
                 const st = self.states.getPtr(hex).?;
-                if (st.* != .queued_read) continue;
+                if (st.* != .queued_read and st.* != .queued_refetch) continue;
+                const force = st.* == .queued_refetch;
                 st.* = .inflight;
-                return .{ .hex = hex, .read = true };
+                return .{ .hex = hex, .read = true, .force = force };
             }
             if (self.prefetching < self.prefetchLimit()) while (self.prefetch.pop()) |hex| {
                 const st = self.states.getPtr(hex).?;
@@ -257,7 +280,7 @@ pub const FetchPool = struct {
     }
 
     fn fetchOne(self: *FetchPool, job: Job) bool {
-        if (voila_store.hasChunk(self.voila_root, job.hex)) return true;
+        if (!job.force and voila_store.hasChunk(self.voila_root, job.hex)) return true;
         const span = trace.begin(if (job.read) "fetch for read" else "prefetch");
         trace.counter("fetches in flight", self.in_flight.fetchAdd(1, .monotonic) + 1);
         defer {
@@ -272,7 +295,8 @@ pub const FetchPool = struct {
 
 fn fetchThroughPool(f: voila_chunk_load.Fetcher, allocator: std.mem.Allocator, voila_root: []const u8, chunk_hex: []const u8) voila_chunk_load.FetchError![]u8 {
     const pool: *FetchPool = @ptrCast(@alignCast(f.ctx.?));
-    pool.ensure(chunk_hex) catch return error.FetchFailed;
+    // Called after the local load failed, so a file that exists is a bad copy.
+    pool.refetch(chunk_hex) catch return error.FetchFailed;
     return voila_store.loadChunkRaw(allocator, voila_root, chunk_hex, voila_store.AlgoRaw) catch |e| switch (e) {
         error.OutOfMemory => error.OutOfMemory,
         else => error.FetchFailed,
@@ -328,17 +352,18 @@ test "ensure and enqueue fetch each chunk once" {
     try std.testing.expectEqual(@as(u32, 6), net.fetches.load(.monotonic));
 }
 
-test "a read is fetched while prefetch holds every worker it may use" {
+fn expectReadNotBlockedByPrefetch(concurrency: u16) !void {
     const root = try testRoot();
     defer removeTestRoot(root);
     var net: TestNet = .{};
-    var pool = FetchPool.init(std.testing.allocator, .{ .io = undefined, .ctx = &net, .fetchFn = TestNet.fetch }, root, .{ .concurrency = 4, .executors = 2 });
+    var pool = FetchPool.init(std.testing.allocator, .{ .io = undefined, .ctx = &net, .fetchFn = TestNet.fetch }, root, .{ .concurrency = concurrency, .executors = 2 });
     defer pool.deinit();
     try pool.start();
     defer net.gate.set(pool.io);
 
-    var bufs: [10][64]u8 = undefined;
-    var hexes: [10][]const u8 = undefined;
+    // More prefetch than the pool may run, so every prefetch slot ends up blocked.
+    var bufs: [64][64]u8 = undefined;
+    var hexes: [64][]const u8 = undefined;
     for (&bufs, &hexes, 0..) |*b, *h, i| h.* = testHex(b, 'b', i);
     pool.enqueue(&hexes);
     while (net.fetches.load(.monotonic) < pool.prefetchLimit()) @import("sys").posix_util.sleepMs(1);
@@ -346,6 +371,54 @@ test "a read is fetched while prefetch holds every worker it may use" {
     // Hangs if the read queues behind the blocked prefetch.
     try pool.ensure(testHex(&rb, 'a', 0));
     try std.testing.expectEqual(@as(u32, @intCast(pool.prefetchLimit() + 1)), net.fetches.load(.monotonic));
+}
+
+test "a read is fetched while prefetch holds every worker it may use" {
+    try expectReadNotBlockedByPrefetch(32);
+    try expectReadNotBlockedByPrefetch(4);
+    try expectReadNotBlockedByPrefetch(2);
+}
+
+const StoringNet = struct {
+    payload: []const u8,
+    fetches: u32 = 0,
+
+    fn fetch(f: voila_chunk_load.Fetcher, allocator: std.mem.Allocator, voila_root: []const u8, chunk_hex: []const u8) voila_chunk_load.FetchError![]u8 {
+        const self: *StoringNet = @ptrCast(@alignCast(f.ctx.?));
+        self.fetches += 1;
+        voila_store.putChunkRaw(allocator, voila_root, chunk_hex, self.payload) catch return error.FetchFailed;
+        return allocator.dupe(u8, self.payload) catch error.OutOfMemory;
+    }
+};
+
+test "a corrupt local chunk is downloaded again through the pool fetcher" {
+    const a = std.testing.allocator;
+    const posix_util = @import("sys").posix_util;
+    const root = try testRoot();
+    defer removeTestRoot(root);
+    const payload = "chunk bytes";
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.Blake3.hash(payload, &digest, .{});
+    const hex = std.fmt.bytesToHex(digest, .lower);
+
+    const path = try voila_store.chunkBlobPath(a, root, &hex);
+    defer a.free(path);
+    try posix_util.makePath(std.fs.path.dirname(path).?);
+    try @import("sys").fs.writeFile(path, "garbage", 0o644);
+
+    var net: StoringNet = .{ .payload = payload };
+    var pool = FetchPool.init(a, .{ .io = undefined, .ctx = &net, .fetchFn = StoringNet.fetch }, root, .{ .concurrency = 2, .executors = 1 });
+    defer pool.deinit();
+    try pool.start();
+
+    const f = pool.fetcher();
+    const got = try voila_chunk_load.loadChunkRaw(f, a, root, &hex, voila_store.AlgoRaw);
+    defer a.free(got);
+    try std.testing.expectEqualStrings(payload, got);
+    try std.testing.expectEqual(@as(u32, 1), net.fetches);
+    const again = try voila_store.loadChunkRaw(a, root, &hex, voila_store.AlgoRaw);
+    defer a.free(again);
+    try std.testing.expectEqualStrings(payload, again);
 }
 
 test "a failed chunk is retried by the next read, then reported" {

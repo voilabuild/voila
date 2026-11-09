@@ -150,7 +150,7 @@ pub fn startWith(
 }
 
 pub fn runServe(io: std.Io, cli: ServeCli) void {
-    serveChild(io, cli.root, cli.image, cli.mount, cli.ready_fd, cli.stop_fd, .{ .map_root = cli.map_root, .subuid = cli.subuid, .subgid = cli.subgid });
+    serveChild(io, cli.root, cli.image, cli.mount, cli.ready_fd, cli.stop_fd, .{ .map_root = cli.map_root, .subuid = cli.subuid, .subgid = cli.subgid }, cli.fetch_concurrency);
 }
 
 fn execFuseServe(
@@ -185,12 +185,9 @@ fn execFuseServe(
 /// Connections opened to the chunk endpoint before the first read.
 const warm_connections = 4;
 
-/// `VOILA_FETCH_CONCURRENCY` overrides how many chunk fetches run at once.
-fn fetchOptions() chunk_fetch_pool.Options {
+fn fetchOptions(concurrency: ?u16) chunk_fetch_pool.Options {
     var o: chunk_fetch_pool.Options = .{};
-    if (posix_util.getenv(chunk_fetch_pool.concurrency_env)) |v| {
-        if (std.fmt.parseInt(u16, v, 10)) |n| o.concurrency = n else |_| {} // a bad value keeps the default
-    }
+    if (concurrency) |n| o.concurrency = n;
     const cpus = std.Thread.getCpuCount() catch 1;
     o.executors = @intCast(std.math.clamp(cpus, 1, o.executors));
     return o;
@@ -204,6 +201,7 @@ fn serveChild(
     ready_w: std.posix.fd_t,
     stop_r: std.posix.fd_t,
     opts: Options,
+    fetch_concurrency: ?u16,
 ) void {
     // page_allocator maps a page per allocation; decoding a large manifest makes ~10^5 of them.
     const allocator = std.heap.smp_allocator;
@@ -222,7 +220,7 @@ fn serveChild(
     // registry fetch runs on the pool's own runtime.
     fuse_vfs.voila.lock_io = io;
     if (posix_util.getenv(voila_vfs_mod.prefetch_dirs_env)) |v| fuse_vfs.voila.prefetch_dirs = !std.mem.eql(u8, v, "0");
-    var pool: ?FetchPool = if (fuse_vfs.voila.fetcher) |f| FetchPool.init(allocator, f, voila_root, fetchOptions()) else null;
+    var pool: ?FetchPool = if (fuse_vfs.voila.fetcher) |f| FetchPool.init(allocator, f, voila_root, fetchOptions(fetch_concurrency)) else null;
     defer if (pool) |*p| {
         const t = trace.begin("stop fetches");
         p.deinit();
@@ -302,6 +300,8 @@ pub const ServeCli = struct {
     map_root: bool = false,
     subuid: ?idmap.Range = null,
     subgid: ?idmap.Range = null,
+    /// Chunk fetches in flight at once; null keeps the pool default.
+    fetch_concurrency: ?u16 = null,
 };
 
 /// `start:count`, or `-` for none.
