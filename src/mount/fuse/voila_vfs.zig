@@ -134,13 +134,12 @@ pub const VoilaVfs = struct {
         if (self.lock_io) |io| self.mu.unlock(io);
     }
 
-    /// Runs registry fetches (data and lazily loaded tree chunks) on `io`.
-    pub fn setFetchIo(self: *VoilaVfs, io: std.Io) void {
-        if (self.fetcher) |*f| f.io = io;
+    /// Routes every registry fetch (data and lazily loaded tree chunks) through `pool`.
+    pub fn usePool(self: *VoilaVfs, pool: *FetchPool) void {
+        self.pool = pool;
+        self.fetcher = pool.fetcher();
         switch (self.backend) {
-            .lazy_tree => |*t| if (t.fetcher) |*f| {
-                f.io = io;
-            },
+            .lazy_tree => |*t| t.fetcher = pool.fetcher(),
             .indexed => {},
         }
     }

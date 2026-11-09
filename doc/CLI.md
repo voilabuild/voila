@@ -151,6 +151,8 @@ a warning.
   A `voila push` or `voila build --push` of a ref without an org goes to
   `$VOILA_ORG/<ref>`; push tags it locally first. `import` and `FROM` resolution
   keep the Hub ref and do not upload anything.
+- `VOILA_FETCH_CONCURRENCY`: chunk fetches a container's FUSE server runs at
+  once, reads and prefetch together. Default: 64.
 - `VOILA_RUNTIME`: `local` (default) or `remote`. `remote` is not
   implemented yet.
 

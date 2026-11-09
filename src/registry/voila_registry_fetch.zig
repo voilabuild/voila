@@ -127,32 +127,16 @@ pub fn exportChunkEndpoint(reg_hub: *hub.Hub, allocator: std.mem.Allocator) void
     posix_util.setenv(allocator, chunk_endpoint_env, reg_hub.chunk_origin orelse "") catch {};
 }
 
-/// Background connections to the chunk endpoint, opened so the first reads do not each
+/// Whether this run already talks to the registry: the parent exported the chunk
+/// endpoint. A run whose image is local opens no connections ahead of time.
+pub fn chunkEndpointKnown() bool {
+    return posix_util.getenv(chunk_endpoint_env) != null;
+}
+
+/// Opens one connection to the chunk endpoint and pools it, so a first read does not
 /// wait for a handshake. Best-effort: a failed or late warm-up only means a read opens
-/// its own connection, as before. `join` before `io` or the hub's sessions go away.
-pub const Warmup = struct {
-    threads: [max_warm]?std.Thread = @splat(null),
-
-    pub const max_warm = 8;
-
-    /// Starts only when this run already talks to the registry: the parent exported the
-    /// chunk endpoint. A run whose image is local opens no connections.
-    pub fn start(reg_hub: *hub.Hub, io: std.Io, n: usize) Warmup {
-        var w: Warmup = .{};
-        if (posix_util.getenv(chunk_endpoint_env) == null) return w;
-        for (w.threads[0..@min(n, max_warm)]) |*t| t.* = std.Thread.spawn(.{}, warmOne, .{ reg_hub, io }) catch null;
-        return w;
-    }
-
-    pub fn join(self: *Warmup) void {
-        for (&self.threads) |*t| if (t.*) |th| {
-            th.join();
-            t.* = null;
-        };
-    }
-};
-
-fn warmOne(reg_hub: *hub.Hub, io: std.Io) void {
+/// its own connection.
+pub fn warmConnection(reg_hub: *hub.Hub, io: std.Io) void {
     const span = trace.begin("warm connection");
     var ok = false;
     defer span.endArgs("\"ok\":{}", .{ok});
@@ -210,13 +194,13 @@ pub fn fetcher(io: std.Io) voila_chunk_load.Fetcher {
 pub fn fetcherForHub(reg_hub: *hub.Hub, io: std.Io) voila_chunk_load.Fetcher {
     return .{
         .io = io,
-        .hub = reg_hub,
+        .ctx = reg_hub,
         .fetchFn = fetchForStore,
     };
 }
 
 fn fetchForStore(f: voila_chunk_load.Fetcher, allocator: std.mem.Allocator, voila_root: []const u8, chunk_hex: []const u8) voila_chunk_load.FetchError![]u8 {
-    const reg_hub: *hub.Hub = if (f.hub) |p| @ptrCast(@alignCast(p)) else hub.defaultHub();
+    const reg_hub: *hub.Hub = if (f.ctx) |p| @ptrCast(@alignCast(p)) else hub.defaultHub();
     return fetchChunkRaw(reg_hub, f.io, allocator, voila_root, chunk_hex) catch |e| switch (e) {
         error.OutOfMemory => error.OutOfMemory,
         else => error.FetchFailed,

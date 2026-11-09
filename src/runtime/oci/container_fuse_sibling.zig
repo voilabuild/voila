@@ -6,7 +6,8 @@ const voila_registry_hub = @import("registry").voila_registry_hub;
 const fuse_linux = @import("mount").fuse.fuse_linux;
 const fuse_vfs_mod = @import("mount").fuse.fuse_vfs;
 const voila_vfs_mod = @import("mount").fuse.voila_vfs;
-const FetchPool = @import("mount").fuse.chunk_fetch_pool.FetchPool;
+const chunk_fetch_pool = @import("mount").fuse.chunk_fetch_pool;
+const FetchPool = chunk_fetch_pool.FetchPool;
 const voila_loader = @import("../voila_loader.zig");
 const voila_registry = @import("registry").voila_registry;
 const voila_registry_creds = @import("registry").voila_registry_creds;
@@ -149,7 +150,7 @@ pub fn startWith(
 }
 
 pub fn runServe(io: std.Io, cli: ServeCli) void {
-    serveChild(io, cli.root, cli.image, cli.mount, cli.ready_fd, cli.stop_fd, .{ .map_root = cli.map_root, .subuid = cli.subuid, .subgid = cli.subgid });
+    serveChild(io, cli.root, cli.image, cli.mount, cli.ready_fd, cli.stop_fd, .{ .map_root = cli.map_root, .subuid = cli.subuid, .subgid = cli.subgid }, cli.fetch_concurrency);
 }
 
 fn execFuseServe(
@@ -184,6 +185,14 @@ fn execFuseServe(
 /// Connections opened to the chunk endpoint before the first read.
 const warm_connections = 4;
 
+fn fetchOptions(concurrency: ?u16) chunk_fetch_pool.Options {
+    var o: chunk_fetch_pool.Options = .{};
+    if (concurrency) |n| o.concurrency = n;
+    const cpus = std.Thread.getCpuCount() catch 1;
+    o.executors = @intCast(std.math.clamp(cpus, 1, o.executors));
+    return o;
+}
+
 fn serveChild(
     io: std.Io,
     voila_root: []const u8,
@@ -192,6 +201,7 @@ fn serveChild(
     ready_w: std.posix.fd_t,
     stop_r: std.posix.fd_t,
     opts: Options,
+    fetch_concurrency: ?u16,
 ) void {
     // page_allocator maps a page per allocation; decoding a large manifest makes ~10^5 of them.
     const allocator = std.heap.smp_allocator;
@@ -205,38 +215,25 @@ fn serveChild(
     t_tree.end();
     var fuse_vfs: fuse_vfs_mod.FuseVfs = .{ .voila = voila_vfs_mod.VoilaVfs.initFromTree(allocator, tree) };
     defer fuse_vfs.deinit();
-    // libfuse threads are not zio tasks, and the zio executor (this thread) is parked in
-    // the FUSE loop, so registry fetches and the VFS lock run on a thread-based Io.
-    // Unlimited async: past the limit `Io.async` runs inline, and each request's
-    // timeout is an async sleep that would then block its caller for the full timeout.
-    var threaded: std.Io.Threaded = .init(allocator, .{ .async_limit = .unlimited });
-    defer {
-        const t = trace.begin("stop fetch threads");
-        threaded.deinit();
-        t.end();
-    }
-    const fetch_io = threaded.io();
-    fuse_vfs.voila.lock_io = fetch_io;
+    // libfuse threads are not zio tasks and this thread, the CLI's only zio executor, is
+    // parked in the FUSE loop: the VFS lock is taken from foreign threads, and every
+    // registry fetch runs on the pool's own runtime.
+    fuse_vfs.voila.lock_io = io;
     if (posix_util.getenv(voila_vfs_mod.prefetch_dirs_env)) |v| fuse_vfs.voila.prefetch_dirs = !std.mem.eql(u8, v, "0");
-    fuse_vfs.voila.setFetchIo(fetch_io);
-    var pool: ?FetchPool = if (fuse_vfs.voila.fetcher) |f| FetchPool.init(allocator, fetch_io, f, voila_root) else null;
-    if (pool) |*p| {
-        p.start();
-        fuse_vfs.voila.pool = p;
-    }
-    // Handshakes overlap the mount and the container's namespace setup. Joined before
-    // the pool and `threaded` are torn down: the threads use both.
-    var warmup: voila_registry_fetch.Warmup = if (pool != null) .start(voila_registry_hub.defaultHub(), fetch_io, warm_connections) else .{};
-    defer {
-        const t = trace.begin("join warm-up");
-        warmup.join();
-        t.end();
-    }
+    var pool: ?FetchPool = if (fuse_vfs.voila.fetcher) |f| FetchPool.init(allocator, f, voila_root, fetchOptions(fetch_concurrency)) else null;
     defer if (pool) |*p| {
-        const t = trace.begin("stop prefetch");
+        const t = trace.begin("stop fetches");
         p.deinit();
         t.end();
     };
+    if (pool) |*p| {
+        p.start() catch return;
+        fuse_vfs.voila.usePool(p);
+        // Handshakes overlap the mount and the container's namespace setup.
+        if (voila_registry_fetch.chunkEndpointKnown()) for (0..warm_connections) |_| {
+            p.spawn(voila_registry_fetch.warmConnection, .{ voila_registry_hub.defaultHub(), p.io });
+        };
+    }
     if (opts.map_root) fuse_vfs.voila.owner_map = .{
         .uid = .{ .host = std.c.getuid(), .sub = opts.subuid },
         .gid = .{ .host = std.c.getgid(), .sub = opts.subgid },
@@ -303,6 +300,8 @@ pub const ServeCli = struct {
     map_root: bool = false,
     subuid: ?idmap.Range = null,
     subgid: ?idmap.Range = null,
+    /// Chunk fetches in flight at once; null keeps the pool default.
+    fetch_concurrency: ?u16 = null,
 };
 
 /// `start:count`, or `-` for none.
