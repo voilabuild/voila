@@ -8,7 +8,7 @@ Faster cold runs: chunks are fetched on an async runtime, many at once (#171).
 
 ### Highlights
 
-- The FUSE server fetches chunks on a zio async runtime: 64 in flight by default instead of 8 threads, with reads served ahead of prefetch. On a fresh GitHub runner against alpha.6: Go `vet`/`build`/`test` 29.9 → 20.9 s, `pytest` 11.7 → 8.3 s, `npm test` 13.7 → 11.5 s. Peak FUSE server threads 70 → 23, memory about the same
+- The FUSE server fetches chunks on a zio async runtime: 64 in flight by default instead of 8 threads, with reads served ahead of prefetch. Same machine against a local CDN stand-in, Go `vet`/`build`/`test`: 20.0 → 11.4 s at 5 ms per request, 28.1 → 14.9 s at 30 ms. Peak FUSE server threads 70 → 23, memory about the same. README numbers are now from this release
 - `VOILA_FETCH_CONCURRENCY=<n>` sets how many chunk fetches run at once (default 64)
 
 ### Install this build
