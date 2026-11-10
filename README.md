@@ -71,9 +71,15 @@ What this shows:
   read, which helps (29.7 s without it, in an earlier run), but this is
   still where Docker comes closest.
 
-These numbers come from one shared VM and move between runs (the same build
-measured 30-40% apart on different days). Treat them as a rough picture,
-not a promise.
+These numbers come from one shared VM and move between runs, mostly with
+the CDN latency the runner gets: every chunk above came back in about
+11 ms. On 2026-11-10, `v0.1.0-alpha.7` on runners that got 32-58 ms took
+25.1 s (Go), 15.5 s (Python) and 15.3 s (Node)
+([run](https://github.com/voilabuild/voila-bench/actions/runs/42740505462)),
+with services about the same as above
+([run](https://github.com/voilabuild/voila-bench/actions/runs/42739192483)).
+alpha.7 fetches more chunks at once, which helps `go build` most and
+`npm test` least. Treat them as a rough picture, not a promise.
 
 ## Try it
 
